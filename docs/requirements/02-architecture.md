@@ -98,6 +98,7 @@ enum ArgusRequest {
 | 核心扫描 | `ignore` (ripgrep 同款) | 多线程高性能，自动尊重 .gitignore |
 | 文件监控 | `notify` | 跨平台文件变动通知 (inotify/FSEvents) |
 | 序列化 | `serde` + `serde_json` | Rust 生态标准，MVP 阶段便于 Debug |
+| 日志 | `tracing` + `tracing-subscriber` | 结构化 JSON + 终端彩色，支持 span 链路追踪 |
 | TUI 界面 | `ratatui` + `crossterm` | tui-rs 正统续作，事件驱动组件化 |
 | 异步运行时 | `tokio` | 全异步操作，保证 TUI 流畅 |
 | AI 客户端 | `async-openai` | 兼容 OpenAI 格式的本地/云端模型 |
