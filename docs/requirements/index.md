@@ -45,3 +45,7 @@ MVP+CLI   →    TUI极客版  →  Daemon自动化 → AI完全体   → GUI桌
 ## 需求来源
 
 当前以本目录下的 `01`-`11` 文档作为实现需求源。历史讨论稿不随仓库维护，AI Agent 实施时不应依赖仓库外部需求文件。
+
+## 进度入口
+
+如需跨会话续接实现进度，先读 [AGENT_PROGRESS.md](/Users/lex/code/github/argus/AGENT_PROGRESS.md)。
