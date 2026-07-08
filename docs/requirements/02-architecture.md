@@ -102,4 +102,6 @@ enum ArgusRequest {
 | 异步运行时 | `tokio` | 全异步操作，保证 TUI 流畅 |
 | AI 客户端 | `async-openai` | 兼容 OpenAI 格式的本地/云端模型 |
 | 守护进程通信 | Unix Domain Socket | 低延迟、安全、跨平台 |
+| 错误类型 | `thiserror` | Rust 标准 error 派生宏 |
+| 快照 hash | `sha2` | 生成 root_path_hash 用于快照文件命名（前 8 字符） |
 | 数据持久化 (后期) | SQLite / sled | 轻量嵌入式数据库 |

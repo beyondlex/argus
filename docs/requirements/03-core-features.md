@@ -111,6 +111,45 @@
 - 扫描循环内部定期（如每扫描 1000 个文件）检查 `is_cancelled` 标志位。
 - 收到取消信号后立刻退出并释放内存。
 
+**与 `ignore::WalkBuilder` 集成的具体方案**：
+
+`ignore::WalkBuilder` 是同步迭代器，没有原生取消接口。实现方式有两种：
+
+**方案 A（Phase 1 推荐）**：使用 `Walk::filter_entry` 回调检查取消标志。
+
+```rust
+use std::sync::atomic::{AtomicBool, Ordering};
+use ignore::WalkBuilder;
+
+fn scan(path: &Path, cancel: &AtomicBool) -> Result<Snapshot, ScanError> {
+    let mut file_count = 0;
+    let mut entries = Vec::new();
+
+    let walker = WalkBuilder::new(path)
+        .filter_entry(move |_| {
+            file_count += 1;
+            if file_count % 1000 == 0 {
+                !cancel.load(Ordering::Relaxed) // 每 1000 文件检查一次
+            } else {
+                true
+            }
+        })
+        .build();
+
+    for entry in walker {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+        // ... 正常处理 entry
+    }
+    // ... 构建树
+}
+```
+
+**方案 B（高性能场景）**：使用 `ignore::WalkParallel` + `ParallelVisitor`，在 `visit` 回调中检查标志。适用于超大规模目录。
+
+> **注意**：`filter_entry` 在目录进入前调用，因此无法在扫描中途取消（需等当前目录遍历完）。如果对取消响应时间有更高要求（如 TUI 追求毫秒级响应），应使用方案 B + 跨线程通知。
+
 ### 4.3 全异步操作
 
 - TUI 中所有扫描、Diff 计算、AI 请求均在后台线程/Tokio 任务中进行。

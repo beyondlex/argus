@@ -10,23 +10,38 @@
 # 单次扫描并保存快照
 argus scan --path ~/Downloads --output ./snap.json
 
-# 对比两个快照，按阈值过滤
-argus diff --old ./snap-a.json --new ./snap-b.json --threshold-bytes 52428800
+# 对比两个快照，按阈值过滤（支持人类可读格式如 50MB / 2.5GB）
+argus diff --old ./snap-a.json --new ./snap-b.json --threshold 50MB
 
 # 输出结构化报告（支持 text / json / markdown 格式）
 argus diff --old ./snap-a.json --new ./snap-b.json --threshold 100MB --format json
 
-# 模拟 AI 诊断：打印特征提取 Prompt
+# 模拟 AI 诊断：打印特征提取 Prompt（不调用任何 AI API）
 argus explain --old ./snap-a.json --new ./snap-b.json --target-path ~/Library/Caches
 ```
 
-### 1.2 输出格式
+### 1.2 阈值参数
 
-- 文本格式：终端彩色打印，人类友好。
+`--threshold` 参数接受人类可读的体积格式，由 `argus-core` 提供解析函数 `parse_human_size`：
+
+| 输入 | 实际值（字节） |
+|------|---------------|
+| `500B` | 500 |
+| `10KB` | 10,240 |
+| `50MB` | 52,428,800 |
+| `2.5GB` | 2,684,354,560 |
+
+默认值 `0` 表示显示所有变动（不过滤）。
+
+> **Phase 1 实现**：`argus-core` 中实现 `parse_human_size` 函数，`argus-cli` 在解析参数时调用。
+
+### 1.3 输出格式
+
+- 文本格式（默认）：终端彩色打印，人类友好。
 - JSON 格式：供 CI/CD 和自动化工具解析。
 - Markdown 格式：可直接嵌入报告或文档。
 
-### 1.3 退出码契约
+### 1.4 退出码契约
 
 CLI 退出码标准化，支持脚本化管道和 CI 集成：
 
