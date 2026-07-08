@@ -24,6 +24,7 @@
 | 09 | [迭代路线图](09-roadmap.md) | Phase 1-5 完整演进规划 |
 | 10 | [Phase 1 实施指南](10-phase1-guide.md) | MVP 阶段具体开发指导与验收标准 |
 | 11 | [日志系统设计](11-logging.md) | 等级规范、JSON 结构、Span 定义、AI Agent 调试 |
+| 12 | [Phase 2 实施指南](12-phase2-guide.md) | TUI 极客版具体开发指导与验收标准 |
 
 ---
 
