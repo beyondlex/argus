@@ -26,6 +26,26 @@ argus explain --old ./snap-a.json --new ./snap-b.json --target-path ~/Library/Ca
 - JSON 格式：供 CI/CD 和自动化工具解析。
 - Markdown 格式：可直接嵌入报告或文档。
 
+### 1.3 退出码契约
+
+CLI 退出码标准化，支持脚本化管道和 CI 集成：
+
+| 退出码 | 含义 | 适用场景 |
+|--------|------|---------|
+| `0` | 成功，未发现超阈值变动 | `argus scan` / `argus diff` 正常完成 |
+| `1` | 发现超阈值变动 | `argus diff` 存在 `size_delta >= threshold_bytes` 的条目 |
+| `2` | 参数错误 | 非法路径、缺失必选参数、格式错误 |
+| `3` | IO 错误 | 快照文件不存在、权限不足、写入失败 |
+| `4` | 内部错误 | 快照损坏、数据不一致、反序列化失败 |
+
+```bash
+# CI 用法示例：检查 Downloads 是否新增 >100MB
+argus diff --old snap_a.json --new snap_b.json --threshold 100MB
+if [ $? -eq 1 ]; then
+    echo "⚠️ 发现大变动，触发告警"
+fi
+```
+
 ## 2. TUI 端（Vim-like 核心极客版）
 
 基于 `ratatui` 开发，布局分为三块。

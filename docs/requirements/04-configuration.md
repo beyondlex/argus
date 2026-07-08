@@ -68,6 +68,9 @@ ai_panel_border = "#8888FF" # AI 面板边框
 # 是否忽略以 "." 开头的隐藏文件/目录
 ignore_hidden = true
 
+# 是否跟随符号链接（false 避免循环链接和重复统计）
+follow_symlinks = false
+
 # 用户自定义忽略路径（glob 模式）
 custom_ignore_paths = [
     "*/.git/*",

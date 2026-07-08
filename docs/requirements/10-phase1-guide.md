@@ -170,6 +170,40 @@ cargo run -p argus-cli -- explain --old ./snap_old.json --new ./snap_new.json --
 - 使用 mock 的简易 `FileNode` 树进行断言。
 - 通过单元测试可发现 80% 的算法 Debug 问题。
 
+### 4.7 测试数据构造辅助
+
+使用 `file_tree!` 宏（或等价 builder 模式）快速构造测试树，避免手动嵌套 `FileNode`：
+
+```rust
+// 期望的测试写法（macro 或 builder）
+let tree = file_tree! {
+    "/home" => 1000,
+    "/home/user" => 800,
+    "/home/user/Documents" => 500,
+    "/home/user/Downloads/big_file.iso" => 300,
+};
+
+// 等价于手写：
+// FileNode {
+//     name: "home".into(), size: 1000, is_dir: true,
+//     children: HashMap::from([
+//         ("user".into(), FileNode { ... }),
+//     ]),
+// }
+```
+
+**测试覆盖场景清单**：
+
+| 场景 | 输入 | 预期 |
+|------|------|------|
+| 两空树 | `A = {}, B = {}` | `None` |
+| 单文件新增 | `A = {}`, `B = {file: 100}` | `size_delta = +100` |
+| 单文件删除 | `A = {file: 100}`, `B = {}` | `size_delta = -100` |
+| 目录新增 | `A = {}`, `B = {dir: {file: 200}}` | `size_delta = +200` |
+| 目录缩小 | `A = {dir: {f1: 100, f2: 200}}`, `B = {dir: {f1: 100}}` | `size_delta = -200` |
+| 深层嵌套 | 3 级目录树，中间节点有变动 | 子节点 delta 累加到所有祖先 |
+| 阈值过滤 | delta < 50 的节点 | 结果中不包含小变动节点 |
+
 ## 5. 开发顺序建议
 
 ```

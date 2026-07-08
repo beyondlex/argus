@@ -36,6 +36,7 @@ pub struct FileNode {
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
+    pub version: u32,
     pub timestamp: DateTime<Utc>,
     pub root_path: PathBuf,
     pub total_size: u64,
@@ -109,7 +110,21 @@ pub struct AiContext {
 ### 3.1 MVP 阶段（JSON）
 
 - 使用 `serde_json` 序列化/反序列化。
-- 存储路径：`~/.config/argus/snapshots/{timestamp}.json`。
+- 存储路径：`~/.config/argus/snapshots/{root_path_hash}_{timestamp}.json`（`root_path_hash` 防止多盘扫描冲突，取 SHA256 前 8 字符）。
+- 快照文件头部包含 `version` 字段（当前为 `1`），用于格式演进：
+
+```rust
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Snapshot {
+    pub version: u32,          // 快照格式版本号，当前 = 1
+    pub timestamp: DateTime<Utc>,
+    pub root_path: PathBuf,
+    pub total_size: u64,
+    pub root_node: FileNode,
+}
+```
+
+- 反序列化时校验 `version`：不匹配时返回 `SnapshotError::VersionMismatch`，阻止加载旧格式。
 - 优点：开发时可肉眼 Debug，无需额外工具。
 
 ### 3.2 后期演进（二进制格式）
@@ -149,3 +164,71 @@ enum ArgusResponse {
     Error { message: String },
 }
 ```
+
+## 5. 错误类型体系
+
+所有公开 API 返回 `Result<T, XxxError>`，使用 `thiserror` 派生。错误类型分层如下：
+
+### 5.1 ScanError
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum ScanError {
+    #[error("路径不存在: {0}")]
+    PathNotFound(PathBuf),
+
+    #[error("权限不足: {0}")]
+    PermissionDenied(PathBuf),
+
+    #[error("扫描被用户取消")]
+    Cancelled,
+
+    #[error("IO 错误: {0}")]
+    Io(#[from] std::io::Error),
+}
+```
+
+**行为策略**：
+- `PermissionDenied`：记录日志，跳过该文件/目录，继续扫描（不终止）。
+- `Cancelled`：立即停止扫描，返回已构建的部分树。
+- `PathNotFound`：终止扫描，返回错误。
+
+### 5.2 SnapshotError
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum SnapshotError {
+    #[error("快照版本不兼容: 期望 v{expected}, 实际 v{actual}")]
+    VersionMismatch { expected: u32, actual: u32 },
+
+    #[error("快照文件损坏: {0}")]
+    Corrupted(String),
+
+    #[error("快照文件不存在: {0}")]
+    NotFound(PathBuf),
+
+    #[error("序列化错误: {0}")]
+    Serde(#[from] serde_json::Error),
+}
+```
+
+**行为策略**：
+- `VersionMismatch`：提示用户快照版本不兼容，推荐重新扫描，不自动修复。
+- `Corrupted`：记录日志，建议用户删除损坏快照重新生成。
+
+### 5.3 DiffError
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum DiffError {
+    #[error("快照根路径不匹配: {0} vs {1}")]
+    RootPathMismatch(PathBuf, PathBuf),
+
+    #[error("内部错误: {0}")]
+    Internal(String),
+}
+```
+
+**行为策略**：
+- `RootPathMismatch`：不允许对比不同根路径的快照（语义上无意义）。
+- `Internal`：panic 等价，作为兜底。正常流程不应触发。
