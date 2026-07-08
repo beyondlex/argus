@@ -88,6 +88,49 @@ argus/
 
 所有行为均通过调用 `argus-core` 实现，不依赖外部服务。
 
+#### 模式切换时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Client as argus-tui / argus-cli
+    participant Core as argus-core
+    participant Daemon as argusd
+    participant FS as Local FS / Snapshots
+    participant DB as Timeline DB
+
+    User->>Client: 启动客户端
+
+    alt 无 daemon 可连接
+        Client->>Core: 直接调用扫描 / diff / explain
+        Core->>FS: 读写 JSON 快照
+        Core-->>Client: 返回 Snapshot / DiffNode
+        Client-->>User: 独立模式可用
+    else daemon 可连接
+        Client->>Daemon: 连接 UDS
+        Daemon-->>Client: 握手成功
+        Client->>Daemon: 请求当前树 / 历史 delta
+        Daemon->>DB: 查询时序数据
+        DB-->>Daemon: 返回聚合结果
+        Daemon-->>Client: 返回 DiffNode / Tree 数据
+        Client-->>User: Server 模式可用
+    end
+
+    loop 运行期间持续更新
+        Daemon->>FS: 监听文件变更
+        Daemon->>DB: 写入去抖后的增量记录
+        Daemon-->>Client: 推送更新通知
+        Client->>Daemon: 重新查询当前视图
+        Daemon-->>Client: 返回最新树 / delta
+    end
+
+    opt daemon 断开或不可用
+        Client-->>User: 自动降级回独立模式
+        Client->>Core: 回退为本地快照模式
+    end
+```
+
 ### 3.2 IPC 通信协议
 
 Phase 3 守护进程通信使用基于 `serde` 的 RPC 消息体；传输编码优先采用 `bincode`，与 Phase 1 快照 JSON 格式相互独立：

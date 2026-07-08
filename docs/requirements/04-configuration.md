@@ -39,9 +39,9 @@ move_down = "j"
 enter_dir = "l"
 leave_dir = "h"
 sort_toggle = "o"         # 在体积排序与增量排序间切换
-ai_diagnose = "a"         # 手动触发 AI 诊断
+ai_diagnose = "a"         # Phase 4：手动触发 AI 诊断
 delete_item = "d"
-focus_panel = "tab"       # 在文件树与 AI 观察窗之间切换焦点
+focus_panel = "tab"       # 在主要面板之间切换焦点（Phase 2 仅文件树 / 筛选栏 / 元数据）
 quit = "q"
 ```
 
@@ -60,7 +60,7 @@ growth_high = "#FF4444"     # 暴涨颜色
 growth_medium = "#FF8800"   # 中度增长
 shrink_green = "#44FF44"    # 减少颜色
 text_primary = "#FFFFFF"    # 主文本
-ai_panel_border = "#8888FF" # AI 面板边框
+ai_panel_border = "#8888FF" # Phase 4：AI 面板边框
 ```
 
 ## 4. 扫描忽略规则组 `[ignore]`
