@@ -34,8 +34,8 @@ max_tokens_per_request = 4096
 
 ```toml
 [keybindings]
-move_up = "j"
-move_down = "k"
+move_up = "k"
+move_down = "j"
 enter_dir = "l"
 leave_dir = "h"
 sort_toggle = "o"         # 在体积排序与增量排序间切换
@@ -118,4 +118,4 @@ daily_limit = 0
 - 配置文件使用 TOML 格式，支持 Rust 的 `serde` 直接反序列化。
 - 所有配置项均有合理默认值，用户可增量覆盖。
 - 配置文件变更后无需重启守护进程，客户端下次连接时自动检测变更。
-- 支持通过 CLI 命令快速查看和修改配置（`argus config show` / `argus config set <key> <value>`）。
+- Phase 2+ 支持通过 CLI 命令快速查看和修改配置（`argus config show` / `argus config set <key> <value>`）。Phase 1 仅加载 `[ignore]` 配置，不实现配置修改命令。

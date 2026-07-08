@@ -1,5 +1,19 @@
 # Phase 1 实施指导文档 (Implementation Guide)
 
+## 0. Phase 1 实现契约
+
+AI Agent 实施 Phase 1 时以本文件为入口，但遇到跨文档重复定义时遵循以下权威来源：
+
+| 主题 | 权威文档 |
+|------|---------|
+| 数据结构与错误类型 | `08-data-model.md` |
+| CLI 命令、参数、退出码 | `05-ux-interaction.md` 与本文件 §3 |
+| 安全删除与系统黑名单 | `07-safety.md` |
+| 配置文件字段 | `04-configuration.md` |
+| 日志字段与输出 | `11-logging.md`（Phase 1 可暂不实现完整日志系统） |
+
+Phase 1 只交付 `argus-core` 与 `argus-cli`。守护进程、TUI、真实 AI API 调用、删除操作、配置修改命令、审计查看命令均不属于 Phase 1。
+
 ## 1. 环境准备与 Workspace 初始化
 
 ### 1.1 创建目录结构
@@ -36,6 +50,7 @@ edition = "2021"
 ignore = "=0.4.23"
 serde = { version = "=1.0.217", features = ["derive"] }
 serde_json = "=1.0.138"
+toml = "=0.8.20"
 chrono = { version = "=0.4.40", features = ["serde"] }
 thiserror = "=2.0"
 sha2 = "=0.10"
@@ -59,11 +74,11 @@ argus-core/src/
 定义 `FileNode`、`Snapshot`、`DiffNode` 三个核心结构体，全部派生 `Serialize/Deserialize`（DiffNode 除外，它仅用于展示）。
 
 #### scanner.rs
-使用 `ignore::WalkBuilder` 实现多线程扫描：
+使用 `ignore::WalkBuilder` 实现扫描。Phase 1 优先选择同步 `Walk`，保证行为简单可测；`WalkParallel` 留到大目录性能优化时引入。
 1. 收集扁平化文件条目。扫描时维护 `HashSet<(u64, u64)>` 记录已见过的 `(device, inode)`。重复的硬链接**跳过**，不累加 size（参见 `08-data-model.md` §2.1）。
 2. 按路径深度排序，自底向上构建树。
 3. 自动跳过 `.gitignore` 匹配的路径。
-4. **取消机制**：使用 `AtomicBool` 共享取消标志。在 `Walk::filter_entry` 回调中定期检查（每 1000 个文件）。扫描函数签名 `scan(path, cancel: &AtomicBool) -> Result<Snapshot, ScanError>`。收到 `Cancelled` 信号时返回已构建的部分树，不丢弃已扫描数据。
+4. **取消机制**：使用 `AtomicBool` 共享取消标志。在 `Walk::filter_entry` 回调中定期检查（每 1000 个文件）。扫描函数签名 `scan(path, cancel: &AtomicBool) -> Result<Snapshot, ScanError>`。收到取消信号时返回 `Err(ScanError::Cancelled)`，不返回部分快照。
 5. **进度感知**：扫描 30 秒后自动启用进度指示器。每扫描 10,000 个文件通过 `mpsc::Sender` 推送一次进度更新 `(file_count, total_bytes)`，上层 CLI/TUI 可选择监听渲染。
 
 #### diff.rs
@@ -236,7 +251,7 @@ cargo run -p argus-cli -- scan --path ~/Downloads --output ./snap_new.json
 ### 4.4 测试时间差分输出
 
 ```bash
-cargo run -p argus-cli -- diff --old ./snap_old.json --new ./snap_new.json --threshold-bytes 5242880
+cargo run -p argus-cli -- diff --old ./snap_old.json --new ./snap_new.json --threshold 5MB
 ```
 
 **验证点**：终端应清晰打印出制造的 50MB 变动文件及其父目录路径，变动量为正。
@@ -275,24 +290,7 @@ let tree = file_tree! {
     "home/user/Downloads/big_file.iso" => 300,
 };
 
-// 等价于手写：
-// FileNode {
-//     name: "home".into(), size: 1000, is_dir: true,
-//     children: HashMap::from([
-//         ("user".into(), FileNode {
-//             name: "user".into(), size: 800, is_dir: true,
-//             children: HashMap::from([
-//                 ("Documents".into(), FileNode { name: "Documents".into(), size: 500, is_dir: true, children: HashMap::new() }),
-//                 ("Downloads".into(), FileNode {
-//                     name: "Downloads".into(), is_dir: true, size: 300,
-//                     children: HashMap::from([
-//                         ("big_file.iso".into(), FileNode { name: "big_file.iso".into(), size: 300, is_dir: false, children: HashMap::new() }),
-//                     ]),
-//                 }),
-//             ]),
-//         }),
-//     ]),
-// }
+// builder/macro 负责补齐 FileNode 的 file_type、modified、inode、device、children 等字段。
 ```
 
 **宏实现概要**：宏接收 `"path/to/node" => size` 条目列表。对每个条目，按 `/` 分割路径，逐级在树中 upsert。叶子节点 size 使用给定值，中间节点 size 为子节点累加和（由自底向上构建逻辑保证）。

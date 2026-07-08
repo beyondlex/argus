@@ -42,6 +42,6 @@ Phase 1         Phase 2      Phase 3        Phase 4      Phase 5
 MVP+CLI   →    TUI极客版  →  Daemon自动化 → AI完全体   → GUI桌面版
 ```
 
-## 相关链接
+## 需求来源
 
-- [原始需求讨论稿](../requirements.md)
+当前以本目录下的 `01`-`11` 文档作为实现需求源。历史讨论稿不随仓库维护，AI Agent 实施时不应依赖仓库外部需求文件。

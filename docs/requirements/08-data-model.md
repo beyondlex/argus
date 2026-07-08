@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 pub struct FileNode {
     pub name: String,
     pub is_dir: bool,
+    pub file_type: FileType,
     pub size: u64,
     pub modified: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -23,12 +24,25 @@ pub struct FileNode {
     pub device: Option<u64>,
     pub children: HashMap<String, FileNode>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileType {
+    File,
+    Directory,
+    Symlink,
+    Fifo,
+    Socket,
+    Device,
+    Other,
+}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | `String` | 文件/目录名（不含路径） |
 | `is_dir` | `bool` | 是否为目录 |
+| `file_type` | `FileType` | 文件类型。Phase 1 用于标记符号链接、FIFO、socket、设备文件等特殊文件；目录节点必须为 `Directory`，普通文件为 `File` |
 | `size` | `u64` | 当前时间点的总大小（字节） |
 | `modified` | `Option<DateTime<Utc>>` | 最后修改时间（部分文件系统不可用，故为 Option） |
 | `inode` | `Option<u64>` | 文件 inode 号，用于硬链接去重（macOS/Linux）。扫描器内部维护 `HashSet<(device, inode)>`，已见过的 inode 不再累加 size。非序列化关键字段，`skip_serializing_if` 减少快照体积 |
@@ -271,7 +285,7 @@ pub enum ScanError {
 
 **行为策略**：
 - `PermissionDenied`：记录日志，跳过该文件/目录，继续扫描（不终止）。
-- `Cancelled`：立即停止扫描，返回已构建的部分树。
+- `Cancelled`：立即停止扫描并返回错误。Phase 1 不返回已构建的部分树，避免调用方误把不完整目录树写入快照。
 - `PathNotFound`：终止扫描，返回错误。
 
 ### 5.2 SnapshotError

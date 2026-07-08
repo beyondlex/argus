@@ -81,7 +81,7 @@ argus/
 
 ### 3.2 IPC 通信协议
 
-基于 `serde` + `bincode` 的简单 RPC 消息体：
+Phase 3 守护进程通信使用基于 `serde` 的 RPC 消息体；传输编码优先采用 `bincode`，与 Phase 1 快照 JSON 格式相互独立：
 
 ```rust
 enum ArgusRequest {
@@ -97,7 +97,8 @@ enum ArgusRequest {
 |------|------|---------|
 | 核心扫描 | `ignore` (ripgrep 同款) | 多线程高性能，自动尊重 .gitignore |
 | 文件监控 | `notify` | 跨平台文件变动通知 (inotify/FSEvents) |
-| 序列化 | `serde` + `serde_json` | Rust 生态标准，MVP 阶段便于 Debug |
+| 快照序列化 | `serde` + `serde_json` | Phase 1 快照格式，便于 Debug |
+| IPC 编码 (Phase 3) | `serde` + `bincode` | 守护进程 RPC 传输编码，低开销；不影响快照 JSON 格式 |
 | 日志 | `tracing` + `tracing-subscriber` | 结构化 JSON + 终端彩色，支持 span 链路追踪 |
 | TUI 界面 | `ratatui` + `crossterm` | tui-rs 正统续作，事件驱动组件化 |
 | 异步运行时 | `tokio` | 全异步操作，保证 TUI 流畅 |

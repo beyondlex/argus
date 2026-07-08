@@ -107,6 +107,17 @@ Design Standalone first. Server mode is an enhancement.
 - Core algorithms (e.g. `compare_trees`) need ASCII diagram or pseudocode comment.
 - Run `cargo test && cargo clippy && cargo fmt --check` after every commit.
 
+### 4.5 Clean Code Principles
+
+- **DRY**: Don't duplicate business logic, constants, parsing rules, or error mapping. Extract a helper only after real duplication appears.
+- **KISS**: Prefer straightforward concrete code over clever generic abstractions.
+- **YAGNI**: Don't implement hooks, traits, factories, or feature switches before a current requirement needs them.
+- **Single responsibility**: each function/module should have one clear reason to change.
+- Prefer clear names over comments. Comments explain non-obvious *why*, not obvious *what*.
+- Keep business rules centralized: protected paths, exit codes, config defaults, snapshot versions, and data format versions must have one authoritative definition.
+- Make small, scoped changes. Avoid unrelated refactors while implementing a feature.
+- Tests should verify observable behavior and edge cases, not private implementation details.
+
 ## 5. Test Strategy
 
 | Layer | Tool | Coverage |

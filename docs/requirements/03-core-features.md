@@ -4,7 +4,7 @@
 
 ### 1.1 基准扫描
 
-- 多线程并行扫描指定目录，在内存中构建 `FileTree`。
+- 使用 `ignore` 库扫描指定目录，在内存中构建 `FileTree`。Phase 1 以 [10-phase1-guide.md](10-phase1-guide.md) 的同步 `Walk` 实现为准；多线程 `WalkParallel` 是后续性能优化目标。
 - 自动尊重 `.gitignore` 规则（基于 `ignore` 库）。
 - 支持扫描可中断：用户按下 Esc/Ctrl+C 时能立刻停止，释放内存。
 - 支持自定义忽略规则（参见 [04-configuration.md](04-configuration.md)）。
@@ -81,12 +81,7 @@
 
 ### 3.1 硬编码黑名单 (System Shield)
 
-以下系统关键目录严禁在任何客户端中显示"删除"动作：
-
-| 平台 | 受保护目录 |
-|------|-----------|
-| macOS | `/System`, `/System/Volumes`, `/usr/bin`, `/bin` |
-| Linux | `/boot`, `/etc`, `/dev`, `/proc`, `/sys` |
+以下系统关键目录严禁在任何客户端中显示"删除"动作。受保护目录列表以 [07-safety.md](07-safety.md) §2.1 为唯一权威来源，核心功能文档不重复维护清单，避免实现时出现安全规则分叉。
 
 ### 3.2 两阶段确认
 
@@ -100,16 +95,17 @@
 
 ## 4. 高性能与可中断扫描
 
-### 4.1 并行扫描
+### 4.1 扫描性能
 
-- 使用 `ignore` 库的多线程并行扫描，比单线程快数倍。
+- Phase 1 使用 `ignore` 库的同步 `Walk`，优先保证行为简单可测。
+- 后续可切换到 `WalkParallel` 做多线程并行扫描，以提升大目录性能。
 - 自动过滤 `.gitignore` 中标记的临时文件。
 
 ### 4.2 取消机制
 
 - 使用 `AtomicBool` 共享取消标志（Phase 1 同步阶段适用，Phase 3 Daemon 模式可改用 `tokio::sync::oneshot`）。
 - 扫描循环内部定期（如每扫描 1000 个文件）检查 `is_cancelled` 标志位。
-- 收到取消信号后立刻退出并释放内存。
+- 收到取消信号后立刻退出并释放内存。Phase 1 不返回部分快照，避免持久化不完整目录树；如后续需要渐进式扫描结果，应新增显式的 `ScanOutcome::Cancelled { partial, stats }` 类型。
 
 **与 `ignore::WalkBuilder` 集成的具体方案**：
 

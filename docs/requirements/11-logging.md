@@ -202,7 +202,9 @@ format = "auto"
 | 删除流程取消 | `INFO` | `path`, `reason` |
 | 删除流程完成 | `INFO` | `path`, `method`, `success` |
 
-## 8. 初始化代码（Phase 1 模板）
+## 8. 初始化代码（后续阶段模板）
+
+Phase 1 可暂不实现完整日志系统；如果提前实现，需同步把 `tracing`、`tracing-subscriber`、`tracing-appender`、`dirs` 等依赖加入对应 `Cargo.toml`。
 
 ```rust
 use tracing_subscriber::{
