@@ -16,7 +16,7 @@ pub struct FileNode {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
-    pub modified: DateTime<Utc>,
+    pub modified: Option<DateTime<Utc>>,
     pub children: HashMap<String, FileNode>,
 }
 ```
@@ -26,8 +26,8 @@ pub struct FileNode {
 | `name` | `String` | 文件/目录名（不含路径） |
 | `is_dir` | `bool` | 是否为目录 |
 | `size` | `u64` | 当前时间点的总大小（字节） |
-| `modified` | `DateTime<Utc>` | 最后修改时间 |
-| `children` | `HashMap<String, FileNode>` | 子节点（目录专用） |
+| `modified` | `Option<DateTime<Utc>>` | 最后修改时间（部分文件系统不可用，故为 Option） |
+| `children` | `HashMap<String, FileNode>` | 子节点（目录专用；TUI 展示时需排序，可考虑 IndexMap/BTreeMap） |
 
 ### 1.2 Snapshot（快照）
 

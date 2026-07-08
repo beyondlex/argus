@@ -68,7 +68,7 @@
 ### 3.2 废纸篓优先
 
 - **macOS**：调用 `NSFileManager` 的 `trashItemAtURL` API 移至废纸篓。
-- **Linux**：使用 `gio trash` 或 `kioclient5 move` 移至桌面环境废纸篓。
+- **Linux**：使用 `trash` crate 的 `trash::delete` API 调用桌面环境废纸篓（遵循 FreeDesktop Trash 规范）。
 - 仅在废纸篓不可用或用户强制要求时使用硬删除。
 - 硬删除使用安全删除模式（覆写后再删）作为可选配置。
 

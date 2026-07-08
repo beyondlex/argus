@@ -104,7 +104,7 @@
 
 ### 4.2 取消机制
 
-- 使用 `tokio::sync::oneshot` 发送取消信号。
+- 使用 `AtomicBool` 共享取消标志（Phase 1 同步阶段适用，Phase 3 Daemon 模式可改用 `tokio::sync::oneshot`）。
 - 扫描循环内部定期（如每扫描 1000 个文件）检查 `is_cancelled` 标志位。
 - 收到取消信号后立刻退出并释放内存。
 

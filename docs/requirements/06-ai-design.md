@@ -46,8 +46,6 @@ pub struct AiContext {
 【目录采样】:
   - access.log (+4.1GB)
   - error.log (+10MB)
-【文件头部采样】:
-  "192.168.1.100 - - [08/Jul/2026:14:15:00] "GET /api/v1/auth HTTP/1.1" 401 ..."
 ```
 
 **AI 输出**：根因分析 + 治理建议（如配置 fail2ban 规则、限流配置等）。

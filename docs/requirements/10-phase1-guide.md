@@ -33,12 +33,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ignore = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-walkdir = "2.4"
-rayon = "1.8"
-chrono = { version = "0.4", features = ["serde"] }
+ignore = "=0.4.23"
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+chrono = { version = "=0.4.40", features = ["serde"] }
 ```
 
 ### 2.2 模块结构
