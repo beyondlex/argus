@@ -1,0 +1,116 @@
+# 配置系统设计
+
+配置文件路径：`~/.config/argus/config.toml`
+
+各客户端（CLI/TUI/GUI/Daemon）启动时自动加载。
+
+## 1. AI 配置组 `[ai]`
+
+AI 功能默认关闭，用户无需配置即可使用全部传统功能。
+
+```toml
+[ai]
+# 总开关：false 时完全禁用 AI 相关功能
+enabled = false
+
+# 模型名称，默认支持 gpt-4o, gemini-1.5-flash 等
+model = "gpt-4o"
+
+# API 密钥
+api_key = ""
+
+# 自定义中转 URL（兼容 OpenAI 格式的任意服务）
+api_url = ""
+
+# 单次请求 Token 上限保护
+max_tokens_per_request = 4096
+```
+
+## 2. 交互快捷键组 `[keybindings]`
+
+允许用户完全自定义 Vim-like 键位，防范键位冲突。
+
+```toml
+[keybindings]
+move_up = "j"
+move_down = "k"
+enter_dir = "l"
+leave_dir = "h"
+sort_toggle = "o"         # 在体积排序与增量排序间切换
+ai_diagnose = "a"         # 手动触发 AI 诊断
+delete_item = "d"
+focus_panel = "tab"       # 在文件树与 AI 观察窗之间切换焦点
+quit = "q"
+```
+
+## 3. 色彩与主题组 `[theme]`
+
+支持完全自定义 TUI/GUI 的视觉表现。
+
+```toml
+[theme]
+# 内置方案: "nord", "dracula", "gruvbox", "system" (跟随系统暗黑模式)
+color_scheme = "system"
+
+# 以下为各项指标的精确颜色控制（十六进制 RGB）
+[theme.colors]
+growth_high = "#FF4444"     # 暴涨颜色
+growth_medium = "#FF8800"   # 中度增长
+shrink_green = "#44FF44"    # 减少颜色
+text_primary = "#FFFFFF"    # 主文本
+ai_panel_border = "#8888FF" # AI 面板边框
+```
+
+## 4. 扫描忽略规则组 `[ignore]`
+
+```toml
+[ignore]
+# 是否忽略以 "." 开头的隐藏文件/目录
+ignore_hidden = true
+
+# 用户自定义忽略路径（glob 模式）
+custom_ignore_paths = [
+    "*/.git/*",
+    "*/node_modules/*",
+    "*/target/*",
+    "*/vendor/*",
+    "*.pyc",
+]
+```
+
+## 5. 守护进程组 `[daemon]`
+
+```toml
+[daemon]
+# 监控的根目录列表
+watch_dirs = ["/home/user", "/var/log"]
+
+# 事件去抖延迟（秒）
+debounce_seconds = 10
+
+# 快照保留策略
+[daemon.snapshot_retention]
+hourly_retention_days = 7
+daily_retention_days = 30
+
+# UDS 监听地址
+uds_path = "/tmp/argusd.sock"
+```
+
+## 6. Token 消耗统计 `[token_usage]`
+
+```toml
+[token_usage]
+# 是否记录 Token 消耗历史
+track_enabled = true
+
+# 每日 Token 上限（0 表示不限制）
+daily_limit = 0
+```
+
+## 7. 配置管理需求
+
+- 配置文件使用 TOML 格式，支持 Rust 的 `serde` 直接反序列化。
+- 所有配置项均有合理默认值，用户可增量覆盖。
+- 配置文件变更后无需重启守护进程，客户端下次连接时自动检测变更。
+- 支持通过 CLI 命令快速查看和修改配置（`argus config show` / `argus config set <key> <value>`）。
