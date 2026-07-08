@@ -227,32 +227,33 @@ pub struct Snapshot {
 
 ## 4. API 设计（面向 Daemon）
 
-守护进程与客户端之间的 IPC 协议：
+守护进程与客户端之间的 IPC 协议。Delta 查询按路径范围 + 时间范围进行：
 
 ```rust
 enum ArgusRequest {
-    GetDiff {
+    GetDelta {
+        path: PathBuf,           // 查询子树根路径（如 "/home/user/Downloads"）
         from_timestamp: u64,
         to_timestamp: u64,
-        threshold_bytes: u64,
+        threshold_bytes: u64,    // 可选阈值过滤
     },
     GetAIContext {
         path: PathBuf,
     },
     TriggerDelete {
         path: PathBuf,
-        secure: bool,     // 是否启用安全模式（废纸篓优先）
+        secure: bool,
     },
-    ListSnapshots,
+    ListScans,
     GetConfig,
     SetConfig { key: String, value: String },
 }
 
 enum ArgusResponse {
-    DiffResult { root: DiffNode },
+    DeltaResult { root: DiffNode },
     AIContext { context: AiContext },
     DeleteResult { success: bool, path: PathBuf },
-    SnapshotList { timestamps: Vec<u64> },
+    ScanList { scans: Vec<ScanInfo> },
     ConfigData { content: String },
     Error { message: String },
 }
@@ -327,3 +328,55 @@ pub enum DiffError {
 **行为策略**：
 - `RootPathMismatch`：不允许对比不同根路径的快照（语义上无意义）。
 - `Internal`：panic 等价，作为兜底。正常流程不应触发。
+
+## 6. 数据库时序模型（Phase 3+）
+
+Daemon 模式下，用 SQLite 替代 JSON 快照实现灵活的时序查询。
+
+### 6.1 核心表
+
+```sql
+-- 每次扫描的记录，全局唯一标识一次扫描事件
+CREATE TABLE scan_events (
+    id          INTEGER PRIMARY KEY,
+    timestamp   TEXT NOT NULL,  -- ISO 8601
+    root_path   TEXT NOT NULL,  -- 扫描根路径
+    total_size  INTEGER NOT NULL
+);
+
+-- 每个文件/目录在每次扫描中的大小记录
+CREATE TABLE path_records (
+    scan_id     INTEGER NOT NULL REFERENCES scan_events(id),
+    path        TEXT NOT NULL,   -- 绝对路径，如 "/home/user/Downloads/big.iso"
+    size        INTEGER NOT NULL, -- 该时间点的大小（字节）
+    is_dir      INTEGER NOT NULL, -- 0/1
+    PRIMARY KEY (scan_id, path)
+);
+
+CREATE INDEX idx_path_records_path ON path_records(path);
+CREATE INDEX idx_path_records_scan_id ON path_records(scan_id);
+```
+
+### 6.2 查询模式
+
+Time-Series Query 的核心差异在于：**从"加载两份全量 JSON 做 diff"变为"SQL 聚合任意子树在任意时间范围的 delta"**。
+
+```sql
+-- 查询 /home/user/Downloads 在 scan_id=(A, B) 之间的 delta
+SELECT
+    p1.path,
+    p2.size - p1.size AS delta,
+    p2.size AS current_size
+FROM path_records p1
+JOIN path_records p2 ON p1.path = p2.path
+WHERE p1.scan_id = 1  -- from
+  AND p2.scan_id = 2  -- to
+  AND p1.path LIKE '/home/user/Downloads/%'
+```
+
+### 6.3 与快照对比的关系
+
+- **快照对比 = 一次性加载完整子树，内存中做 Tree Merge**
+- **时序查询 = 按需 SQL 查询（仅加载可见节点），无 Tree Merge**
+- 两者共享相同的 `DiffNode` 展示结构。TUI 的 diff 渲染层对数据来源无感知
+- 独立模式输出 `DiffNode`，daemon 模式也输出 `DiffNode`，TUI 统一渲染

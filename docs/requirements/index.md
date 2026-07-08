@@ -49,4 +49,4 @@ MVP+CLI   →    TUI极客版  →  Daemon自动化 → AI完全体   → GUI桌
 
 ## 进度入口
 
-如需跨会话续接实现进度，先读 [AGENT_PROGRESS.md](/Users/lex/code/github/argus/AGENT_PROGRESS.md)。
+如需跨会话续接实现进度，先读 [AGENT_PROGRESS.md](../../AGENT_PROGRESS.md)。

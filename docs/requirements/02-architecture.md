@@ -79,15 +79,14 @@ argus/
 | **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，数据写入本地快照文件 (`~/.config/argus/snapshots/`) |
 | **服务模式 (Client-Server)** | TUI/GUI 需要秒级历史 Diff | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
 
-**独立模式下的三态子模式**：TUI 在独立模式下根据快照存量自动降级/升级（详见 `03-core-features.md §5.0`）。
+**独立模式下的文件树**：TUI 始终展示一个统一的文件树，delta 是树上的可选覆盖层（受顶部筛选栏控制）。详见 `03-core-features.md §5.0`。
 
-| 快照状态 | TUI 行为 | 等效模式 |
-|----------|---------|---------|
-| 无快照（Fresh） | 提示用户扫描 | `ncdu` 单次文件树 |
-| 单快照（Single） | 加载单次扫描结果，无 delta | `ncdu` 单次文件树 |
-| 双快照（Dual） | 自动 diff 显示 delta | `ncdu` + delta 增强 |
+| 筛选栏状态 | TUI 行为 | 等效工具 |
+|-----------|---------|---------|
+| 无时间/阈值（默认） | 纯文件树浏览 | `ncdu` |
+| 选择了时间范围 | 加载对应快照，显示叠加 delta | `ncdu` + delta 增强 |
 
-所有三种子模式均通过调用 `argus-core` 实现，不依赖外部服务。
+所有行为均通过调用 `argus-core` 实现，不依赖外部服务。
 
 ### 3.2 IPC 通信协议
 
