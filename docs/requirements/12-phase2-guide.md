@@ -377,12 +377,179 @@ pub async fn run(app: &mut App) -> Result<()> {
 第 8 步：后台任务 — 扫描 + diff 异步化 + 筛选触发 diff
 第 9 步：删除交互 — DeletePrompt 模式 + 二次确认
 第 10 步：Help Popup — 帮助面板（P1）
-第 11 步：手动验收测试
+第 11 步：测试编写 — 状态逻辑 + 组件渲染 + 事件处理测试（详见 §6）
+第 12 步：手动验收测试
 ```
 
-## 6. 验收标准
+## 6. TUI 自动化测试策略
 
-### 6.1 启动与布局
+`ratatui` 提供 `TestBackend`，可在无终端环境渲染内容到内存 buffer 并断言。结合状态逻辑的纯单元测试，形成分层测试策略：
+
+### 6.1 测试分层
+
+| 层 | 测什么 | 方式 | 断言目标 |
+|----|--------|------|---------|
+| **状态逻辑** | AppState 状态迁移、筛选栏状态变化、DiffNode 展平为 TreeLine 列表、展开/收起逻辑 | 纯函数测试，无渲染 | 状态字段值、列表长度/顺序 |
+| **组件渲染** | 各组件在给定 state 下渲染出正确的字符布局 | `TestBackend` + `terminal.draw()` | buffer 内容（字符 + 样式） |
+| **事件处理** | 按键 → 状态变化 → 重绘结果 | `TestBackend` + mock 按键注入 | 状态 + buffer 内容联合断言 |
+| **端到端** | 完整链路：启动无快照 → 输入扫描路径 → 扫描完成 → 渲染树 → 筛选 → diff → 清除 | `TestBackend` + 消息通道模拟 | 多帧 states + buffer 序列 |
+
+### 6.2 状态逻辑测试（纯单元测试）
+
+```rust
+#[test]
+fn test_tree_flatten_sorts_by_delta() {
+    let mut root = DiffNode::mock_root();
+    root.children.insert("a".into(), DiffNode::mock("a", 100, 10));
+    root.children.insert("b".into(), DiffNode::mock("b", 200, 200));
+    root.children.insert("c".into(), DiffNode::mock("c", 50, -50));
+
+    let lines: Vec<TreeLine> = flatten_tree(&root, SortMode::Delta, &HashSet::new());
+    // 按 delta 绝对值降序：b(200), c(-50), a(10)
+    assert_eq!(lines[0].node.name, "b");
+    assert_eq!(lines[1].node.name, "c");
+    assert_eq!(lines[2].node.name, "a");
+}
+
+#[test]
+fn test_filter_state_from_empty_to_set() {
+    let mut app = App::new();
+    assert!(app.filter_state.is_empty());
+
+    app.filter_state.set_from(Some(0));
+    app.filter_state.set_to(Some(1));
+    assert!(!app.filter_state.is_empty());
+    assert!(app.filter_state.should_diff());
+}
+
+#[test]
+fn test_known_snapshots_only_from_same_root() {
+    let files = vec![
+        "hashA_2026-06-01T00:00:00Z.json",
+        "hashA_2026-07-01T00:00:00Z.json",
+        "hashB_2026-06-15T00:00:00Z.json",
+    ];
+    let timestamps = available_timestamps(&files, "hashA");
+    assert_eq!(timestamps.len(), 2);
+}
+```
+
+### 6.3 组件渲染测试（TestBackend）
+
+```rust
+#[test]
+fn test_file_tree_renders_with_delta() {
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = App::with_mock_data();  // 预置 DiffNode + filter 激活
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+
+    let buf = terminal.backend().buffer();
+    // 树节点可见
+    assert!(buf.content().iter().any(|c| c.symbol() == "Downloads/"));
+    // delta 列可见
+    assert!(buf.content().iter().any(|c| c.symbol() == "+1.2GB"));
+    // 筛选栏可见
+    assert!(buf.content().iter().any(|c| c.symbol() == "时间:"));
+
+    // 清除筛选后 delta 列消失
+    app.filter_state.clear();
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    assert!(!buf.content().iter().any(|c| c.symbol().contains('+')));
+}
+
+#[test]
+fn test_empty_state_shows_scan_prompt() {
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let app = App::new();  // 无快照、无树
+    terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+
+    let buf = terminal.backend().buffer();
+    let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("按 s 扫描目录"));
+}
+```
+
+### 6.4 事件处理测试（按键注入）
+
+```rust
+#[test]
+fn test_key_j_moves_cursor_down() {
+    let mut app = App::with_mock_tree();
+    let initial = app.tree_state.cursor;
+
+    handle_key(KeyEvent::from(KeyCode::Down), &mut app).unwrap();
+    assert_eq!(app.tree_state.cursor, initial + 1);
+}
+
+#[test]
+fn test_key_s_triggers_scan_prompt() {
+    let mut app = App::new();  // 无快照
+    handle_key(KeyEvent::from(KeyCode::Char('s')), &mut app).unwrap();
+    assert_eq!(app.mode, AppMode::ScanPrompt);
+}
+
+#[test]
+fn test_tab_focuses_filter_bar() {
+    let mut app = App::with_mock_data();
+    assert_eq!(app.focus, Focus::Tree);
+
+    handle_key(KeyEvent::from(KeyCode::Tab), &mut app).unwrap();
+    assert_eq!(app.focus, Focus::FilterBar);
+}
+```
+
+### 6.5 端到端测试（集成）
+
+```rust
+#[test]
+fn test_scan_then_filter_workflow() {
+    // 1. 模拟启动（无快照）
+    let mut app = App::new();
+    assert!(app.screen_text().contains("按 s 扫描目录"));
+
+    // 2. 模拟扫描完成
+    app.handle_message(AppMessage::ScanComplete(mock_snapshot()));
+    assert!(app.tree_is_visible());
+    assert!(app.delta_column_is_hidden());  // 无 delta 列
+
+    // 3. 模拟第二个快照到达 + 筛选
+    app.receive_new_snapshot(mock_snapshot_v2());
+    app.filter_state.set_from(Some(0));
+    app.filter_state.set_to(Some(1));
+    app.trigger_diff();
+    app.handle_message(AppMessage::DiffComplete(mock_diff()));
+
+    // 4. 验证 delta 出现
+    assert!(!app.delta_column_is_hidden());
+    assert!(app.screen_text().contains("+500 MB"));
+
+    // 5. 清除筛选 → 回到 ncdu
+    app.filter_state.clear();
+    assert!(app.delta_column_is_hidden());
+}
+```
+
+### 6.6 运行命令
+
+```bash
+# 状态逻辑 + 组件渲染 + 事件处理测试
+cargo test -p argus-tui
+
+# 单测只看 TUI 状态逻辑
+cargo test -p argus-tui -- state
+
+# 端到端集成测试
+cargo test -p argus-tui --test integration
+```
+
+## 7. 验收标准
+
+### 7.1 启动与布局
 
 ```bash
 cargo run -p argus-tui
@@ -394,7 +561,7 @@ cargo run -p argus-tui
   - **无快照**：显示"按 `s` 扫描目录"提示
 - 展示四栏布局：筛选栏 | 文件树（左70%）| 元数据（右30%）| 底部状态栏
 
-### 6.2 文件树浏览
+### 7.2 文件树浏览
 
 ```bash
 # 创建测试快照
@@ -408,7 +575,7 @@ cargo run -p argus-tui
 - 默认无 delta 列（纯 ncdu 模式）
 - 按 `s` 可以重新扫描
 
-### 6.3 筛选栏与 Delta 展示
+### 7.3 筛选栏与 Delta 展示
 
 ```bash
 # 创建第二个快照（在 ~/Downloads 中制造 50MB 变动后）
@@ -424,30 +591,30 @@ cargo run -p argus-tui
 - 清除按钮重置所有筛选，回到纯 ncdu 模式
 - 筛选栏为空时 delta 列隐藏
 
-### 6.4 扫描与进度
+### 7.4 扫描与进度
 
 - TUI 中手动触发扫描时，状态栏显示进度百分比
 - 扫描可被 `Esc` 取消
 - 取消后回到之前的状态
 
-### 6.5 元数据显示
+### 7.5 元数据显示
 
 - 光标移动到文件/目录时，元数据面板更新
 - 显示路径、大小、增量、文件数、修改时间
 
-### 6.6 删除交互
+### 7.6 删除交互
 
 - 在文件上按 `d` 触发删除确认弹窗
 - 确认后调用系统废纸篓（`trash` crate 或 shell 命令）
 - 取消后返回浏览状态
 
-## 7. 安全注意事项
+## 8. 安全注意事项
 
 - 受保护路径（系统黑名单，见 `07-safety.md`）即使在 TUI 中按下 `d` 也不触发删除流程，仅显示"受保护路径，无法删除"提示
 - 废纸篓操作使用 `trash` crate，不直接 `remove_dir_all`
 - 所有删除操作需要二次确认，默认光标停在"取消"上
 
-## 8. 已知边界
+## 9. 已知边界
 
 | 场景 | 行为 |
 |------|------|
