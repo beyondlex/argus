@@ -16,28 +16,23 @@ Read this after `AGENTS.md` and the relevant requirements docs, then update it w
 
 ## Current State
 
-- Documentation cleanup is in progress and the requirement docs have been normalized for Phase 1 wording, thresholds, safety rules, and scan behavior.
-- `AGENTS.md` now includes explicit Clean Code principles, including DRY, KISS, YAGNI, and single-responsibility guidance.
-- No Rust implementation work has started in this workspace yet.
+- Phase 1 MVP is complete: `argus-core` (model/scanner/diff/ai_feature) + `argus-cli` (scan/diff/explain).
+- 37 unit tests, clippy clean, fmt clean.
+- All core features (scan, diff, AI prompt gen) work without AI being required.
+- Workspace: argus-core + argus-cli, Cargo workspace with aligned deps.
 
 ## Active Work
 
-### Docs
-
-- [x] Clean up requirement document conflicts and phase boundaries.
-- [x] Add Clean Code guidance to `AGENTS.md`.
-- [ ] Decide whether to add a lightweight README pointer to this file.
-- [ ] Keep `docs/requirements/index.md` in sync if new progress docs are added.
-
 ### Phase 1
 
-- [ ] Initialize Cargo workspace.
-- [ ] Implement `argus-core` data model.
-- [ ] Implement scanner and unit tests.
-- [ ] Implement diff engine and unit tests.
-- [ ] Implement AI context generation stubs.
-- [ ] Implement `argus-cli` commands.
-- [ ] Add integration tests for `scan`, `diff`, and `explain`.
+- [x] Initialize Cargo workspace.
+- [x] Implement `argus-core` data model.
+- [x] Implement scanner and unit tests.
+- [x] Implement diff engine and unit tests.
+- [x] Implement AI context generation stubs.
+- [x] Implement `argus-cli` commands.
+- [x] Manual acceptance testing (§4.1-4.5).
+- [ ] Implement config.rs (§2.4) for ignore config loading.
 
 ### Later Phases
 
@@ -46,20 +41,12 @@ Read this after `AGENTS.md` and the relevant requirements docs, then update it w
 - [ ] AI API integration and token tracking.
 - [ ] GUI client.
 
-## Handoff Template
-
-Use this block when continuing in a new session:
-
-```text
-Read AGENTS.md, docs/requirements/index.md, and AGENT_PROGRESS.md first.
-Current focus: <one sentence>
-Completed: <bullet list>
-Next: <bullet list>
-Blocked by: <optional blocker>
-```
-
 ## Recent Completed Work
 
-- Requirement docs now have a single Phase 1 entry point and fewer conflicting definitions.
-- CLI threshold wording is aligned to `--threshold <SIZE>`.
-- Scan cancellation is now documented as a hard stop in Phase 1 rather than a partial snapshot return.
+- Phase 1 code: model.rs (FileNode/Snapshot/DiffNode/error types + parse_human_size).
+- Phase 1 code: scanner.rs (ignore::WalkBuilder, hardlink dedup, cancel via AtomicBool, progress via mpsc).
+- Phase 1 code: diff.rs (Tree Merge algorithm, threshold filter with 11 edge case tests).
+- Phase 1 code: ai_feature.rs (extract_feature, generate_prompt, find_subtree).
+- Phase 1 code: argus-cli (scan/diff/explain, --threshold/--format, exit code contract).
+- All strings localized to English (errors, prompts, CLI output).
+- .idea/ added to .gitignore.

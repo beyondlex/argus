@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "argus-core",
+    "argus-cli"
+]
+resolver = "2"

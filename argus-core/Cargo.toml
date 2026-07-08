@@ -1,0 +1,16 @@
+[package]
+name = "argus-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ignore = "=0.4.23"
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+toml = "0.8"
+chrono = { version = "=0.4.40", features = ["serde"] }
+thiserror = "=2.0"
+sha2 = "=0.10"
+
+[dev-dependencies]
+tempfile = "3"
