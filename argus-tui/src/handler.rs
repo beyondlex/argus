@@ -109,6 +109,9 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('h') | KeyCode::Left => {
             collapse_or_navigate_up(app);
         }
+        KeyCode::Char('u') => {
+            navigate_up_root(app);
+        }
         KeyCode::Enter => {
             if !app.filter_word.is_empty() {
                 app.filter_mode = FilterMode::Input;
@@ -348,14 +351,8 @@ fn collapse_or_navigate_up(app: &mut App) {
         return;
     };
 
-    // Root node at depth 0: navigate to parent directory
+    // At root (depth 0): nothing to collapse, no parent within tree
     if line.depth == 0 {
-        if let Some(parent) = app.view_root_path.parent() {
-            if parent != app.view_root_path {
-                app.view_root_path = parent.to_path_buf();
-                app.rebuild_tree();
-            }
-        }
         return;
     }
 
@@ -375,6 +372,15 @@ fn collapse_or_navigate_up(app: &mut App) {
                     return;
                 }
             }
+        }
+    }
+}
+
+fn navigate_up_root(app: &mut App) {
+    if let Some(parent) = app.view_root_path.parent() {
+        if parent != app.view_root_path {
+            app.view_root_path = parent.to_path_buf();
+            app.rebuild_tree();
         }
     }
 }
