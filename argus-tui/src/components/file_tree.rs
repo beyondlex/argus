@@ -26,19 +26,14 @@ pub fn render(
     current_match: usize,
     cursor_visible: bool,
 ) {
-    let path_str = view_root_path.display().to_string();
-    let title = format!(" {} ", path_str);
-
+    let title = format!(" {} ", view_root_path.display());
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
         .title_alignment(ratatui::layout::Alignment::Left);
-
     let inner = block.inner(area);
 
-    let is_active_current = filter_mode == FilterMode::Active;
-
-    // Status line + scroll accounting
+    let is_active_match = filter_mode == FilterMode::Active && current_match < match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
 
     let scroll_offset = if cursor >= scroll_offset + available_height {
@@ -50,178 +45,30 @@ pub fn render(
     };
 
     let mut rendered_lines: Vec<Line> = Vec::new();
+    rendered_lines.push(filter_status_line(
+        filter_mode,
+        filter_word,
+        cursor_visible,
+        match_indices,
+        lines,
+    ));
 
-    // ── Filter status line ─────────────────────────────────────────────
-    match filter_mode {
-        FilterMode::Inactive => {
-            rendered_lines.push(Line::from(vec![Span::styled(
-                "[type / to filter]",
-                Style::default().fg(Color::DarkGray),
-            )]));
-        }
-        FilterMode::Input => {
-            let mut display = filter_word.to_string();
-            if cursor_visible {
-                display.push('▎');
-            } else {
-                display.push(' ');
-            }
-            let count_str = format!(" ({}/{})", match_indices.len(), lines.len());
-            rendered_lines.push(Line::from(vec![
-                Span::styled(display, Style::default().fg(Color::Yellow)),
-                Span::styled(count_str, Style::default().fg(Color::DarkGray)),
-            ]));
-        }
-        FilterMode::Active => {
-            let count_str = format!(" ({}/{})", match_indices.len(), lines.len());
-            rendered_lines.push(Line::from(vec![
-                Span::styled(filter_word.to_string(), Style::default().fg(Color::Green)),
-                Span::styled(count_str, Style::default().fg(Color::DarkGray)),
-            ]));
-        }
-    }
-
-    // ── Tree content ───────────────────────────────────────────────────
     let end = (scroll_offset + available_height).min(lines.len());
     let visible_lines = &lines[scroll_offset..end];
 
     for (display_offset, line) in visible_lines.iter().enumerate() {
         let global_idx = scroll_offset + display_offset;
         let is_selected = global_idx == cursor;
-        let is_current_match = is_active_current
-            && current_match < match_indices.len()
-            && match_indices[current_match].tree_idx == Some(global_idx);
+        let is_current_match =
+            is_active_match && match_indices[current_match].tree_idx == Some(global_idx);
 
-        let prefix = if line.depth == 0 {
-            String::new()
-        } else {
-            let mut p = String::new();
-            for _ in 0..line.depth.saturating_sub(1) {
-                p.push_str("   ");
-            }
-            if line.depth > 0 {
-                p.push_str("    ");
-            }
-            p
-        };
-
-        let branch = if line.node.is_dir() {
-            if line.expanded {
-                "- "
-            } else {
-                "+ "
-            }
-        } else {
-            "  "
-        };
-
-        let name_prefix = format!("{}{}", prefix, branch);
-
-        let size_str = if line.node.is_dir() && !line.has_scan_data {
-            "-".to_string()
-        } else {
-            util::format_size(line.node.current_size())
-        };
-        let delta_str = if line.node.size_delta() != 0 {
-            util::format_delta(line.node.size_delta())
-        } else {
-            String::new()
-        };
-
-        // Determine background/foreground
-        let bg = if is_current_match {
-            Color::Blue
-        } else {
-            Color::Reset
-        };
-
-        let fg = if is_selected {
-            Color::Black
-        } else {
-            Color::White
-        };
-
-        let base_style = Style::default().fg(fg).bg(bg);
-
-        // Build name spans (with or without match highlighting)
-        let name_spans = if filter_mode != FilterMode::Inactive && !filter_word.is_empty() {
-            let name_text = line.node.name();
-            let mut spans: Vec<Span> = vec![Span::styled(
-                name_prefix,
-                if is_current_match {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                },
-            )];
-            if let Some(indices) = fuzzy_match_indices(filter_word, name_text) {
-                spans.extend(match_highlight_spans(
-                    name_text,
-                    &indices,
-                    is_current_match,
-                    is_selected,
-                ));
-            } else {
-                let (fg, bg) = if is_current_match {
-                    (Color::Green, bg)
-                } else if is_selected {
-                    (Color::Black, Color::Blue)
-                } else {
-                    (Color::White, bg)
-                };
-                spans.push(Span::styled(name_text, base_style.fg(fg).bg(bg)));
-            }
-            spans
-        } else {
-            let name_style = if is_current_match {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD)
-            } else if line.node.is_dir() {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            vec![
-                Span::styled(name_prefix.clone(), Style::default()),
-                Span::styled(line.node.name().to_string(), name_style),
-            ]
-        };
-
-        let size_style = if line.node.is_dir() && !line.has_scan_data {
-            base_style.fg(Color::DarkGray).bg(Color::Reset)
-        } else {
-            base_style.fg(Color::Yellow).bg(Color::Reset)
-        };
-
-        let mut spans = name_spans;
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(size_str, size_style));
-
-        if !delta_str.is_empty() {
-            let delta_color = if line.node.size_delta() > 0 {
-                Color::Red
-            } else {
-                Color::Green
-            };
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                delta_str,
-                base_style.fg(delta_color).add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        rendered_lines.push(Line::from(spans));
+        rendered_lines.push(render_tree_line(
+            line,
+            is_selected,
+            is_current_match,
+            filter_mode != FilterMode::Inactive && !filter_word.is_empty(),
+            filter_word,
+        ));
     }
 
     let total_visible = lines.len().saturating_add(1);
@@ -244,6 +91,185 @@ pub fn render(
         scrollbar_area,
         &mut scrollbar_state,
     );
+}
+
+fn filter_status_line<'a>(
+    filter_mode: FilterMode,
+    filter_word: &'a str,
+    cursor_visible: bool,
+    match_indices: &'a [SearchMatch],
+    lines: &'a [TreeLine],
+) -> Line<'a> {
+    match filter_mode {
+        FilterMode::Inactive => Line::from(vec![Span::styled(
+            "[type / to filter]",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        FilterMode::Input => {
+            let mut display = filter_word.to_string();
+            display.push(if cursor_visible { '▎' } else { ' ' });
+            let count = format!(" ({}/{})", match_indices.len(), lines.len());
+            Line::from(vec![
+                Span::styled(display, Style::default().fg(Color::Yellow)),
+                Span::styled(count, Style::default().fg(Color::DarkGray)),
+            ])
+        }
+        FilterMode::Active => {
+            let count = format!(" ({}/{})", match_indices.len(), lines.len());
+            Line::from(vec![
+                Span::styled(filter_word.to_string(), Style::default().fg(Color::Green)),
+                Span::styled(count, Style::default().fg(Color::DarkGray)),
+            ])
+        }
+    }
+}
+
+fn line_indent(depth: usize) -> String {
+    if depth == 0 {
+        return String::new();
+    }
+    let mut p = String::new();
+    for _ in 0..depth.saturating_sub(1) {
+        p.push_str("   ");
+    }
+    p.push_str("    ");
+    p
+}
+
+fn branch_marker(line: &TreeLine) -> &'static str {
+    if line.node.is_dir() {
+        if line.expanded {
+            "- "
+        } else {
+            "+ "
+        }
+    } else {
+        "  "
+    }
+}
+
+fn render_tree_line<'a>(
+    line: &'a TreeLine,
+    is_selected: bool,
+    is_current_match: bool,
+    has_filter: bool,
+    filter_word: &'a str,
+) -> Line<'a> {
+    let bg = if is_current_match {
+        Color::Blue
+    } else {
+        Color::Reset
+    };
+    let fg = if is_selected {
+        Color::Black
+    } else {
+        Color::White
+    };
+    let base = Style::default().fg(fg).bg(bg);
+
+    let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
+
+    let size_str = if line.node.is_dir() && !line.has_scan_data {
+        "-".to_string()
+    } else {
+        util::format_size(line.node.current_size())
+    };
+
+    let mut spans = name_spans(
+        line,
+        &name_prefix,
+        &base,
+        bg,
+        is_selected,
+        is_current_match,
+        has_filter,
+        filter_word,
+    );
+
+    let size_style = if line.node.is_dir() && !line.has_scan_data {
+        base.fg(Color::DarkGray).bg(Color::Reset)
+    } else {
+        base.fg(Color::Yellow).bg(Color::Reset)
+    };
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(size_str, size_style));
+
+    let delta = line.node.size_delta();
+    if delta != 0 {
+        let delta_color = if delta > 0 { Color::Red } else { Color::Green };
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            util::format_delta(delta),
+            base.fg(delta_color).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn name_spans<'a>(
+    line: &'a TreeLine,
+    name_prefix: &str,
+    base: &Style,
+    bg: Color,
+    is_selected: bool,
+    is_current_match: bool,
+    has_filter: bool,
+    filter_word: &'a str,
+) -> Vec<Span<'a>> {
+    let name_text = line.node.name();
+
+    if has_filter && !filter_word.is_empty() {
+        let prefix_style = if is_current_match {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![Span::styled(name_prefix.to_string(), prefix_style)];
+
+        if let Some(indices) = fuzzy_match_indices(filter_word, name_text) {
+            spans.extend(match_highlight_spans(
+                name_text,
+                &indices,
+                is_current_match,
+                is_selected,
+            ));
+        } else {
+            let (fg, actual_bg) = if is_current_match {
+                (Color::Green, bg)
+            } else if is_selected {
+                (Color::Black, Color::Blue)
+            } else {
+                (Color::White, bg)
+            };
+            spans.push(Span::styled(name_text, base.fg(fg).bg(actual_bg)));
+        }
+        spans
+    } else {
+        let name_style = if is_current_match {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD)
+        } else if line.node.is_dir() {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        vec![
+            Span::styled(name_prefix.to_string(), Style::default()),
+            Span::styled(name_text.to_string(), name_style),
+        ]
+    }
 }
 
 fn match_highlight_spans<'a>(
