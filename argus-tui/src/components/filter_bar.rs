@@ -51,10 +51,7 @@ pub fn render(
         String::new()
     };
 
-    let threshold_str = filter
-        .threshold
-        .map(|t| util::format_size(t))
-        .unwrap_or_default();
+    let threshold_str = filter.threshold.map(util::format_size).unwrap_or_default();
 
     let _can_diff = has_enough_snapshots && filter.from_idx.is_some() && filter.to_idx.is_some();
     let diff_hint = if !has_enough_snapshots {

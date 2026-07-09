@@ -177,13 +177,15 @@ fn render_tree_line<'a>(
 
     let mut spans = name_spans(
         line,
-        &name_prefix,
-        &base,
-        bg,
-        is_selected,
-        is_current_match,
-        has_filter,
-        filter_word,
+        NameSpanContext {
+            name_prefix,
+            base,
+            bg,
+            is_selected,
+            is_current_match,
+            has_filter,
+            filter_word,
+        },
     );
 
     let size_style = if line.node.is_dir() && !line.has_scan_data {
@@ -207,53 +209,54 @@ fn render_tree_line<'a>(
     Line::from(spans)
 }
 
-fn name_spans<'a>(
-    line: &'a TreeLine,
-    name_prefix: &str,
-    base: &Style,
+struct NameSpanContext<'a> {
+    name_prefix: String,
+    base: Style,
     bg: Color,
     is_selected: bool,
     is_current_match: bool,
     has_filter: bool,
     filter_word: &'a str,
-) -> Vec<Span<'a>> {
+}
+
+fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>> {
     let name_text = line.node.name();
 
-    if has_filter && !filter_word.is_empty() {
-        let prefix_style = if is_current_match {
+    if ctx.has_filter && !ctx.filter_word.is_empty() {
+        let prefix_style = if ctx.is_current_match {
             Style::default().add_modifier(Modifier::BOLD)
-        } else if is_selected {
+        } else if ctx.is_selected {
             Style::default()
                 .fg(Color::White)
-                .bg(bg)
+                .bg(ctx.bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        let mut spans = vec![Span::styled(name_prefix.to_string(), prefix_style)];
+        let mut spans = vec![Span::styled(ctx.name_prefix, prefix_style)];
 
-        if let Some(indices) = fuzzy_match_indices(filter_word, name_text) {
+        if let Some(indices) = fuzzy_match_indices(ctx.filter_word, name_text) {
             spans.extend(match_highlight_spans(
                 name_text,
                 &indices,
-                is_current_match,
-                is_selected,
+                ctx.is_current_match,
+                ctx.is_selected,
             ));
         } else {
-            let (fg, actual_bg) = if is_current_match {
-                (Color::Green, bg)
-            } else if is_selected {
+            let (fg, actual_bg) = if ctx.is_current_match {
+                (Color::Green, ctx.bg)
+            } else if ctx.is_selected {
                 (Color::Black, Color::Blue)
             } else {
-                (Color::White, bg)
+                (Color::White, ctx.bg)
             };
-            spans.push(Span::styled(name_text, base.fg(fg).bg(actual_bg)));
+            spans.push(Span::styled(name_text, ctx.base.fg(fg).bg(actual_bg)));
         }
         spans
     } else {
-        let name_style = if is_current_match {
+        let name_style = if ctx.is_current_match {
             Style::default().add_modifier(Modifier::BOLD)
-        } else if is_selected {
+        } else if ctx.is_selected {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::LightGreen)
@@ -266,7 +269,7 @@ fn name_spans<'a>(
             Style::default().fg(Color::White)
         };
         vec![
-            Span::styled(name_prefix.to_string(), Style::default()),
+            Span::styled(ctx.name_prefix, Style::default()),
             Span::styled(name_text.to_string(), name_style),
         ]
     }

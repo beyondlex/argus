@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 /// TUI configuration loaded from config.toml
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TuiConfig {
     pub keybindings: Keybindings,
     pub theme: Theme,
@@ -34,16 +34,6 @@ pub struct Keybindings {
 pub struct Theme {
     pub color_scheme: String,
     pub colors: HashMap<String, String>,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            keybindings: Keybindings::default(),
-            theme: Theme::default(),
-            browsing: BrowsingConfig::default(),
-        }
-    }
 }
 
 impl Default for Keybindings {

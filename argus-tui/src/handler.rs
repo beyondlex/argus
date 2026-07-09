@@ -112,10 +112,8 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('u') => {
             navigate_up_root(app);
         }
-        KeyCode::Enter => {
-            if !app.filter_word.is_empty() {
-                app.filter_mode = FilterMode::Input;
-            }
+        KeyCode::Enter if !app.filter_word.is_empty() => {
+            app.filter_mode = FilterMode::Input;
         }
         KeyCode::Char('s') => {
             start_scan(app);
@@ -168,17 +166,17 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Esc => {
             // Esc is used by filter/delete/help modes, not for quit
         }
-        KeyCode::Char('1') => {
-            if !app.available_snapshots.is_empty() && app.focus == Focus::FilterBar {
-                app.filter_state.from_idx = Some(0);
-                trigger_diff_if_ready(app);
-            }
+        KeyCode::Char('1')
+            if !app.available_snapshots.is_empty() && app.focus == Focus::FilterBar =>
+        {
+            app.filter_state.from_idx = Some(0);
+            trigger_diff_if_ready(app);
         }
-        KeyCode::Char('2') => {
-            if app.available_snapshots.len() > 1 && app.focus == Focus::FilterBar {
-                app.filter_state.to_idx = Some(app.available_snapshots.len() - 1);
-                trigger_diff_if_ready(app);
-            }
+        KeyCode::Char('2')
+            if app.available_snapshots.len() > 1 && app.focus == Focus::FilterBar =>
+        {
+            app.filter_state.to_idx = Some(app.available_snapshots.len() - 1);
+            trigger_diff_if_ready(app);
         }
         _ => {}
     }
@@ -249,9 +247,12 @@ fn expand_node(app: &mut App) {
         return;
     }
 
-    let path_key = line.node.name().to_string();
+    let path_key = match app.tree_line_relative_path(app.cursor) {
+        Some(path) => path,
+        None => return,
+    };
 
-    if app.expanded.contains(&path_key) {
+    if line.expanded {
         // Already expanded, move to first child
         if app.cursor + 1 < app.tree_lines.len() {
             app.cursor += 1;
@@ -285,19 +286,18 @@ fn expand_node(app: &mut App) {
 
 fn find_node_mut<'a>(
     node: &'a mut argus_core::FileNode,
-    target_name: &str,
+    target_path: &[String],
 ) -> Option<&'a mut argus_core::FileNode> {
-    if node.name == target_name {
+    let (head, tail) = target_path.split_first()?;
+    if node.name != *head {
+        return None;
+    }
+    if tail.is_empty() {
         return Some(node);
     }
-    for child in node.children.values_mut() {
-        if child.is_dir {
-            if let Some(found) = find_node_mut(child, target_name) {
-                return Some(found);
-            }
-        }
-    }
-    None
+
+    let child = node.children.get_mut(&tail[0])?;
+    find_node_mut(child, tail)
 }
 
 fn jump_to_next_match(app: &mut App, delta: isize) {
@@ -308,39 +308,21 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
     let new_idx = (app.current_match as isize + delta).rem_euclid(len as isize) as usize;
     app.current_match = new_idx;
     let sm = app.match_indices[new_idx].clone();
+    let target_path = sm.path.clone();
 
-    // Expand ancestors from ancestor_path (for collapsed matches)
-    for name in &sm.ancestor_path {
-        app.expanded.insert(name.clone());
-    }
-
-    // Expand ancestors from tree_lines (for visible matches)
-    if let Some(ti) = sm.tree_idx {
-        if let Some(line) = app.tree_lines.get(ti).cloned() {
-            let mut ancestors: Vec<String> = Vec::new();
-            let mut target_depth = line.depth;
-            for i in (0..ti).rev() {
-                if let Some(l) = app.tree_lines.get(i) {
-                    if l.depth < target_depth && l.depth > 0 {
-                        ancestors.push(l.node.name().to_string());
-                        target_depth = l.depth;
-                    }
-                }
-            }
-            for name in &ancestors {
-                app.expanded.insert(name.clone());
-            }
-        }
+    if target_path.len() > 1 {
+        expand_ancestor_prefixes(&mut app.expanded, &target_path[..target_path.len() - 1]);
     }
 
     app.update_tree_lines();
 
-    // Find the match by name in rebuilt tree_lines (immune to stale indices)
-    let target_name = sm.name;
+    // Find the exact match by relative path, not just name.
     if let Some(pos) = app
         .tree_lines
         .iter()
-        .position(|l| l.node.name() == target_name)
+        .enumerate()
+        .find(|(idx, _)| app.tree_line_relative_path(*idx) == Some(target_path.clone()))
+        .map(|(idx, _)| idx)
     {
         app.cursor = pos;
     }
@@ -356,7 +338,10 @@ fn collapse_or_navigate_up(app: &mut App) {
         return;
     }
 
-    let path_key = line.node.name().to_string();
+    let path_key = match app.tree_line_relative_path(app.cursor) {
+        Some(path) => path,
+        None => return,
+    };
 
     if line.node.is_dir() && line.expanded {
         // Collapse this node
@@ -516,4 +501,148 @@ fn trigger_diff_if_ready(app: &mut App) {
             }
         }
     });
+}
+
+fn expand_ancestor_prefixes(
+    expanded: &mut std::collections::HashSet<Vec<String>>,
+    path: &[String],
+) {
+    if path.len() <= 1 {
+        return;
+    }
+
+    for len in 2..=path.len() {
+        expanded.insert(path[..len].to_vec());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TreeNode;
+    use argus_core::{FileNode, FileType, Snapshot};
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    fn make_file(name: &str) -> FileNode {
+        FileNode {
+            name: name.to_string(),
+            is_dir: false,
+            file_type: FileType::File,
+            size: 1,
+            modified: None,
+            inode: None,
+            device: None,
+            children: HashMap::new(),
+        }
+    }
+
+    fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
+        let mut map = HashMap::new();
+        for child in children {
+            map.insert(child.name.clone(), child);
+        }
+
+        FileNode {
+            name: name.to_string(),
+            is_dir: true,
+            file_type: FileType::Directory,
+            size: map.values().map(|child| child.size).sum(),
+            modified: None,
+            inode: None,
+            device: None,
+            children: map,
+        }
+    }
+
+    fn make_app(root: FileNode) -> App {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = std::path::PathBuf::from("/tmp/test");
+        let snapshot = Snapshot::new(std::path::PathBuf::from("/tmp/test"), root, 1);
+        app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node));
+        app.update_tree_lines();
+        app
+    }
+
+    #[test]
+    fn test_jump_to_next_match_uses_full_path() {
+        let root = make_dir(
+            "root",
+            vec![
+                make_dir("a", vec![make_file("target")]),
+                make_dir("b", vec![make_file("target")]),
+            ],
+        );
+
+        let mut app = make_app(root);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded
+            .insert(vec!["root".to_string(), "a".to_string()]);
+        app.expanded
+            .insert(vec!["root".to_string(), "b".to_string()]);
+        app.update_tree_lines();
+        app.filter_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 2);
+
+        jump_to_next_match(&mut app, 1);
+
+        let selected = app.selected_line().expect("cursor should point to a line");
+        assert_eq!(selected.node.name(), "target");
+        assert_eq!(app.cursor, 4);
+        assert_eq!(
+            app.match_indices[0].path,
+            vec!["root".to_string(), "a".to_string(), "target".to_string()]
+        );
+        assert_eq!(
+            app.match_indices[1].path,
+            vec!["root".to_string(), "b".to_string(), "target".to_string()]
+        );
+        assert_eq!(
+            app.selected_node_full_path().expect("selected path"),
+            std::path::PathBuf::from("/tmp/test/root/b/target")
+        );
+    }
+
+    #[test]
+    fn test_expanded_is_path_scoped() {
+        let root = make_dir(
+            "root",
+            vec![
+                make_dir("left", vec![make_dir("common", vec![make_file("l.txt")])]),
+                make_dir("right", vec![make_dir("common", vec![make_file("r.txt")])]),
+            ],
+        );
+
+        let mut app = make_app(root);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded
+            .insert(vec!["root".to_string(), "left".to_string()]);
+        app.expanded.insert(vec![
+            "root".to_string(),
+            "left".to_string(),
+            "common".to_string(),
+        ]);
+        app.update_tree_lines();
+
+        let visible_paths: Vec<Vec<String>> = app
+            .tree_lines
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, _)| app.tree_line_relative_path(idx))
+            .collect();
+
+        assert!(visible_paths.contains(&vec![
+            "root".to_string(),
+            "left".to_string(),
+            "common".to_string()
+        ]));
+        assert!(!visible_paths.contains(&vec![
+            "root".to_string(),
+            "right".to_string(),
+            "common".to_string()
+        ]));
+    }
 }

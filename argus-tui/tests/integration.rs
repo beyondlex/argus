@@ -128,7 +128,7 @@ fn test_compare_trees_added_removed() {
 
 #[test]
 fn test_known_snapshots_only_from_same_root() {
-    let files = vec![
+    let files = [
         "hashA_2026-06-01T00:00:00Z.json",
         "hashA_2026-07-01T00:00:00Z.json",
         "hashB_2026-06-15T00:00:00Z.json",

@@ -61,12 +61,11 @@ pub enum FilterMode {
     Active,
 }
 
-/// A match found by the tree filter — visible (in tree_lines) or in a collapsed subtree
+/// A match found by the tree filter — `path` is the full relative path from the view root.
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
-    pub name: String,
+    pub path: Vec<String>,
     pub tree_idx: Option<usize>,
-    pub ancestor_path: Vec<String>,
 }
 
 /// Sort mode for tree children
@@ -213,7 +212,7 @@ pub struct App {
     pub tree_lines: Vec<TreeLine>,
     pub cursor: usize,
     pub scroll_offset: usize,
-    pub expanded: HashSet<String>,
+    pub expanded: HashSet<Vec<String>>,
 
     // Scan cache: path → full scanned snapshot
     pub scan_cache: HashMap<PathBuf, Snapshot>,
@@ -365,7 +364,7 @@ impl App {
 
         // Sort each snapshot_index entry by timestamp
         for snapshots in self.snapshot_index.values_mut() {
-            snapshots.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            snapshots.sort_by_key(|a| a.timestamp);
         }
     }
 
@@ -378,8 +377,7 @@ impl App {
             .get(&path_hash)
             .cloned()
             .unwrap_or_default();
-        self.available_snapshots
-            .sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        self.available_snapshots.sort_by_key(|a| a.timestamp);
 
         // Check scan cache first
         if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
@@ -414,12 +412,28 @@ impl App {
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(root)) => {
                 let mut lines = Vec::new();
-                flatten_snapshot_tree(root, 0, expanded, sort_mode, &mut lines, has_scan_data);
+                flatten_snapshot_tree(
+                    root,
+                    0,
+                    expanded,
+                    sort_mode,
+                    &mut lines,
+                    has_scan_data,
+                    &mut Vec::new(),
+                );
                 lines
             }
             Some(TreeNode::Diff(root)) => {
                 let mut lines = Vec::new();
-                flatten_diff_tree(root, 0, expanded, sort_mode, &mut lines, has_scan_data);
+                flatten_diff_tree(
+                    root,
+                    0,
+                    expanded,
+                    sort_mode,
+                    &mut lines,
+                    has_scan_data,
+                    &mut Vec::new(),
+                );
                 lines
             }
             None => Vec::new(),
@@ -465,7 +479,7 @@ impl App {
                     .snapshot_index
                     .get_mut(&argus_core::hash_root_path(&snapshot.root_path))
                 {
-                    snapshots.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                    snapshots.sort_by_key(|a| a.timestamp);
                 }
 
                 // Rebuild tree if scanned path matches current view
@@ -514,13 +528,13 @@ impl App {
 
         let mut matches = Vec::new();
         let mut visible_count = 0usize;
+        let mut current_path = vec![root.name.clone()];
         collect_matches_in_order(
             root,
-            0,
             query,
             expanded,
             sort_mode,
-            &mut vec![],
+            &mut current_path,
             &mut visible_count,
             &mut matches,
         );
@@ -541,28 +555,36 @@ impl App {
         matches!(&self.tree_root, Some(TreeNode::Diff(_)))
     }
 
-    /// Get the full path of the selected node
-    pub fn selected_node_full_path(&self) -> Option<PathBuf> {
-        let line = self.selected_line()?;
-        let mut path = self.view_root_path.clone();
+    /// Return the relative path of the tree line at `idx`, rooted at `view_root_path`.
+    pub fn tree_line_relative_path(&self, idx: usize) -> Option<Vec<String>> {
+        let line = self.tree_lines.get(idx)?;
         if line.depth == 0 {
-            return Some(path);
+            return Some(vec![line.node.name().to_string()]);
         }
-        // Walk up tree_lines to collect ancestor nodes (skip depth 0, which is view_root_path itself)
-        let cursor = self.cursor;
-        let mut ancestors: Vec<&str> = Vec::new();
+
+        let mut ancestors = Vec::new();
         let mut target_depth = line.depth;
-        for i in (0..cursor).rev() {
+
+        for i in (0..idx).rev() {
             let l = &self.tree_lines[i];
-            if l.depth < target_depth && l.depth > 0 {
-                ancestors.push(l.node.name());
+            if l.depth < target_depth {
+                ancestors.push(l.node.name().to_string());
                 target_depth = l.depth;
             }
         }
-        for ancestor in ancestors.iter().rev() {
-            path.push(ancestor);
+
+        ancestors.reverse();
+        ancestors.push(line.node.name().to_string());
+        Some(ancestors)
+    }
+
+    /// Get the full path of the selected node
+    pub fn selected_node_full_path(&self) -> Option<PathBuf> {
+        let mut path = self.view_root_path.clone();
+        let relative = self.tree_line_relative_path(self.cursor)?;
+        for part in relative {
+            path.push(part);
         }
-        path.push(line.node.name());
         Some(path)
     }
 }
@@ -572,13 +594,15 @@ impl App {
 fn flatten_snapshot_tree(
     node: &FileNode,
     depth: usize,
-    expanded: &HashSet<String>,
+    expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
     has_scan_data: bool,
+    path: &mut Vec<String>,
 ) {
-    let path_key = node.name.clone();
-    let is_expanded = expanded.contains(&path_key) || depth == 0;
+    path.push(node.name.clone());
+    let path_key = path.clone();
+    let is_expanded = depth == 0 || expanded.contains(&path_key);
 
     lines.push(TreeLine {
         depth,
@@ -591,21 +615,33 @@ fn flatten_snapshot_tree(
         let mut children: Vec<&FileNode> = node.children.values().collect();
         sort_children_snapshot(&mut children, sort_mode);
         for child in children {
-            flatten_snapshot_tree(child, depth + 1, expanded, sort_mode, lines, has_scan_data);
+            flatten_snapshot_tree(
+                child,
+                depth + 1,
+                expanded,
+                sort_mode,
+                lines,
+                has_scan_data,
+                path,
+            );
         }
     }
+
+    path.pop();
 }
 
 fn flatten_diff_tree(
     node: &DiffNode,
     depth: usize,
-    expanded: &HashSet<String>,
+    expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
     _has_scan_data: bool,
+    path: &mut Vec<String>,
 ) {
-    let path_key = node.name.clone();
-    let is_expanded = expanded.contains(&path_key) || depth == 0;
+    path.push(node.name.clone());
+    let path_key = path.clone();
+    let is_expanded = depth == 0 || expanded.contains(&path_key);
 
     lines.push(TreeLine {
         depth,
@@ -618,27 +654,34 @@ fn flatten_diff_tree(
         let mut children: Vec<&DiffNode> = node.children.values().collect();
         sort_children_diff(&mut children, sort_mode);
         for child in children {
-            flatten_diff_tree(child, depth + 1, expanded, sort_mode, lines, _has_scan_data);
+            flatten_diff_tree(
+                child,
+                depth + 1,
+                expanded,
+                sort_mode,
+                lines,
+                _has_scan_data,
+                path,
+            );
         }
     }
+
+    path.pop();
 }
 
 fn sort_children_snapshot(children: &mut Vec<&FileNode>, mode: SortMode) {
     match mode {
         SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
-        SortMode::Size => children.sort_by(|a, b| b.size.cmp(&a.size)),
-        SortMode::Delta => {
-            // When no delta, sort by size descending
-            children.sort_by(|a, b| b.size.cmp(&a.size));
-        }
+        SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
+        SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
     }
 }
 
 fn sort_children_diff(children: &mut Vec<&DiffNode>, mode: SortMode) {
     match mode {
         SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
-        SortMode::Delta => children.sort_by(|a, b| b.size_delta.abs().cmp(&a.size_delta.abs())),
-        SortMode::Size => children.sort_by(|a, b| b.current_size.cmp(&a.current_size)),
+        SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size_delta.abs())),
+        SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.current_size)),
     }
 }
 
@@ -661,25 +704,23 @@ pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
 #[allow(clippy::too_many_arguments)]
 fn collect_matches_in_order(
     node: &FileNode,
-    depth: usize,
     query: &str,
-    expanded: &HashSet<String>,
+    expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
-    ancestors: &mut Vec<String>,
+    path: &mut Vec<String>,
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
 ) {
-    let is_visible = depth <= 1 || ancestors[1..].iter().all(|a| expanded.contains(a.as_str()));
+    let is_visible = path_is_visible(path, expanded);
 
     if fuzzy_match_indices(query, &node.name).is_some() {
         result.push(SearchMatch {
-            name: node.name.clone(),
+            path: path.clone(),
             tree_idx: if is_visible {
                 Some(*visible_count)
             } else {
                 None
             },
-            ancestor_path: ancestors.clone(),
         });
     }
 
@@ -691,18 +732,25 @@ fn collect_matches_in_order(
         let mut children: Vec<&FileNode> = node.children.values().collect();
         sort_children_snapshot(&mut children, sort_mode);
         for child in children {
-            ancestors.push(node.name.clone());
+            path.push(child.name.clone());
             collect_matches_in_order(
                 child,
-                depth + 1,
                 query,
                 expanded,
                 sort_mode,
-                ancestors,
+                path,
                 visible_count,
                 result,
             );
-            ancestors.pop();
+            path.pop();
         }
     }
+}
+
+fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
+    if path.len() <= 1 {
+        return true;
+    }
+
+    (1..path.len()).all(|len| expanded.contains(&path[..len].to_vec()))
 }

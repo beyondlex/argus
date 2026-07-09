@@ -41,7 +41,7 @@ pub fn default_config_path() -> std::path::PathBuf {
 fn dirs_config_path() -> std::path::PathBuf {
     if let Ok(val) = std::env::var("XDG_CONFIG_HOME") {
         std::path::PathBuf::from(val)
-    } else if let Some(home) = std::env::var("HOME").ok() {
+    } else if let Ok(home) = std::env::var("HOME") {
         std::path::PathBuf::from(home).join(".config")
     } else {
         std::path::PathBuf::from(".")

@@ -49,16 +49,12 @@ pub fn scan_path(
 
         let entry_path = entry.path().to_path_buf();
 
-        let meta = match entry.metadata() {
+        let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
-            Err(err) => {
-                if let Some(io_err) = err.io_error() {
-                    if io_err.kind() == std::io::ErrorKind::PermissionDenied {
-                        return Err(ScanError::PermissionDenied(entry_path));
-                    }
-                }
-                continue;
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(ScanError::PermissionDenied(entry_path));
             }
+            Err(_) => continue,
         };
 
         if meta.is_file() || meta.is_symlink() {
@@ -176,7 +172,7 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
 }
 
 fn detect_file_type(path: &Path) -> FileType {
-    let Some(meta) = path.metadata().ok() else {
+    let Some(meta) = path.symlink_metadata().ok() else {
         return FileType::File;
     };
     #[cfg(unix)]
@@ -499,6 +495,26 @@ mod tests {
         assert!(sub.is_dir);
         assert_eq!(sub.size, 0); // Not recursively summed
         assert!(sub.children.is_empty()); // Not populated
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_preserves_symlink_type() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("linked.txt");
+        fs::write(&target, "content").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+        let node = snapshot.root_node.children.get("linked.txt").unwrap();
+
+        assert_eq!(node.file_type, FileType::Symlink);
+        assert_eq!(node.size, 0);
+        assert!(node.children.is_empty());
     }
 
     #[test]

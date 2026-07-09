@@ -23,11 +23,13 @@ fn compare_nodes(old: &FileNode, new: &FileNode) -> DiffNode {
 
     let is_dir = new.is_dir || old.is_dir;
 
-    let (current_size, size_delta) = if old.size == 0 && new.size == 0 {
-        (0, 0)
+    let size_delta = if old.size == 0 && new.size == 0 {
+        0
     } else {
-        (new.size, new.size as i64 - old.size as i64)
+        let delta = new.size as i128 - old.size as i128;
+        delta.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     };
+    let current_size = new.size;
 
     let mut children: HashMap<String, DiffNode> = HashMap::new();
 
@@ -146,18 +148,18 @@ fn add_subtree_children(node: &FileNode) -> HashMap<String, DiffNode> {
 }
 
 pub fn filter_by_threshold(node: &DiffNode, threshold: u64) -> Option<DiffNode> {
-    let threshold = threshold as i64;
+    let threshold_i64 = threshold as i64;
 
     let mut filtered_children: HashMap<String, DiffNode> = HashMap::new();
     for (name, child) in &node.children {
-        if let Some(filtered) = filter_by_threshold(child, threshold as u64) {
+        if let Some(filtered) = filter_by_threshold(child, threshold) {
             filtered_children.insert(name.clone(), filtered);
         }
     }
 
     let has_visible_children = !filtered_children.is_empty();
     let has_real_change = node.size_delta != 0;
-    let above_threshold = threshold == 0 || node.size_delta.abs() >= threshold;
+    let above_threshold = threshold == 0 || node.size_delta.abs() >= threshold_i64;
 
     if has_visible_children || (has_real_change && above_threshold) {
         Some(DiffNode {
@@ -208,10 +210,9 @@ mod tests {
     fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
         let mut map = HashMap::new();
         for child in children {
-            let total_size = compute_total_size(&child);
             map.insert(child.name.clone(), child);
         }
-        let total = map.values().map(|c| compute_total_size(c)).sum();
+        let total = map.values().map(compute_total_size).sum();
         FileNode {
             name: name.to_string(),
             is_dir: true,
@@ -228,7 +229,7 @@ mod tests {
         if node.children.is_empty() {
             node.size
         } else {
-            node.children.values().map(|c| compute_total_size(c)).sum()
+            node.children.values().map(compute_total_size).sum()
         }
     }
 
@@ -368,9 +369,9 @@ mod tests {
         let diff = compare_trees(&old, &new).unwrap();
 
         let filtered = filter_by_threshold(&diff, 100).unwrap();
-        assert!(filtered.children.get("small").is_none());
-        assert!(filtered.children.get("medium").is_some());
-        assert!(filtered.children.get("large").is_some());
+        assert!(!filtered.children.contains_key("small"));
+        assert!(filtered.children.contains_key("medium"));
+        assert!(filtered.children.contains_key("large"));
     }
 
     #[test]
@@ -402,8 +403,8 @@ mod tests {
         let new = make_snapshot("/test", tree2);
         let diff = compare_trees(&old, &new).unwrap();
         let filtered = filter_by_threshold(&diff, 0).unwrap();
-        assert!(filtered.children.get("unchanged.txt").is_none());
-        assert!(filtered.children.get("changed.txt").is_some());
+        assert!(!filtered.children.contains_key("unchanged.txt"));
+        assert!(filtered.children.contains_key("changed.txt"));
         assert_eq!(
             filtered.children.get("changed.txt").unwrap().size_delta,
             100
