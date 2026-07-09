@@ -3,3 +3,4 @@ ignore/
 target/
 tmp/
 .idea/
+reasonix.toml
