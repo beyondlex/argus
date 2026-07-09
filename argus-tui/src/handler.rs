@@ -109,6 +109,9 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('h') | KeyCode::Left => {
             collapse_or_navigate_up(app);
         }
+        KeyCode::Char('H') => {
+            collapse_all_children(app);
+        }
         KeyCode::Char('u') => {
             navigate_up_root(app);
         }
@@ -432,6 +435,18 @@ fn collapse_or_navigate_up(app: &mut App) {
                 }
             }
         }
+    }
+}
+
+fn collapse_all_children(app: &mut App) {
+    // Remove all expanded paths deeper than root (length > 1).
+    // Root (depth 0) is always expanded by the flatten logic.
+    app.expanded.retain(|p| p.len() <= 1);
+    app.update_tree_lines();
+
+    // Snap cursor to root if it was on a now-hidden child
+    if app.cursor >= app.tree_lines.len() {
+        app.cursor = 0;
     }
 }
 

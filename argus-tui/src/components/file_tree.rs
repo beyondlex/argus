@@ -130,9 +130,9 @@ fn line_indent(depth: usize) -> String {
     }
     let mut p = String::new();
     for _ in 0..depth.saturating_sub(1) {
-        p.push_str("   ");
+        p.push_str("  ");
     }
-    p.push_str("    ");
+    p.push_str("  ");
     p
 }
 
