@@ -11,9 +11,31 @@ pub struct TuiConfig {
     pub browsing: BrowsingConfig,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BrowsingConfig {
     pub auto_scan_on_start: bool,
+    pub skip_dirs: Vec<String>,
+}
+
+impl Default for BrowsingConfig {
+    fn default() -> Self {
+        Self {
+            auto_scan_on_start: false,
+            skip_dirs: vec![
+                "node_modules".into(),
+                "target".into(),
+                ".git".into(),
+                "__pycache__".into(),
+                ".venv".into(),
+                "vendor".into(),
+                "dist".into(),
+                "build".into(),
+                ".cache".into(),
+                ".next".into(),
+                ".nuxt".into(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +101,7 @@ struct RawConfig {
 #[derive(Debug, Deserialize)]
 struct RawBrowsing {
     auto_scan_on_start: Option<bool>,
+    skip_dirs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +179,9 @@ pub fn load_config(path: &Path) -> TuiConfig {
     if let Some(b) = raw.browsing {
         if let Some(v) = b.auto_scan_on_start {
             config.browsing.auto_scan_on_start = v;
+        }
+        if let Some(v) = b.skip_dirs {
+            config.browsing.skip_dirs = v;
         }
     }
 

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use chrono::DateTime;
 use ignore::WalkBuilder;
@@ -18,6 +18,7 @@ pub fn scan_path(
     path: &Path,
     cancel: &AtomicBool,
     progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
+    skip_dirs: &[String],
 ) -> Result<Snapshot, ScanError> {
     if !path.exists() {
         return Err(ScanError::PathNotFound(path.to_path_buf()));
@@ -28,7 +29,28 @@ pub fn scan_path(
     let mut file_count = 0u64;
     let mut total_bytes = 0u64;
 
-    let walker = WalkBuilder::new(path).follow_links(false).build();
+    // Collect paths of directories matching skip patterns so we can
+    // shallow-scan them after the walk (record one level of children only).
+    let skipped = Arc::new(Mutex::new(Vec::new()));
+    let skipped_clone = skipped.clone();
+    let skip_patterns: Vec<String> = skip_dirs.to_vec();
+
+    let walker = WalkBuilder::new(path)
+        .follow_links(false)
+        .filter_entry(move |entry| {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let name = entry.file_name().to_string_lossy();
+                if skip_patterns.iter().any(|s| name.as_ref() == s.as_str()) {
+                    skipped_clone
+                        .lock()
+                        .unwrap()
+                        .push(entry.path().to_path_buf());
+                    return false;
+                }
+            }
+            true
+        })
+        .build();
 
     for result in walker {
         if cancel.load(Ordering::Relaxed) {
@@ -116,6 +138,24 @@ pub fn scan_path(
 
         let node = create_file_node(entry_path, meta);
         insert_node(&mut root_node, &components, node);
+    }
+
+    // Shallow-scan skipped directories (one level of children only)
+    for skip_path in skipped.lock().unwrap().drain(..) {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ScanError::Cancelled);
+        }
+        if let Ok(dir_node) = list_dir(&skip_path) {
+            let shallow_size: u64 = dir_node.children.values().map(|c| c.size).sum();
+            total_bytes = total_bytes.saturating_add(shallow_size);
+            file_count += dir_node.children.len() as u64;
+
+            let rel_path = skip_path.strip_prefix(path).unwrap_or(&skip_path);
+            let components: Vec<std::path::Component> = rel_path.components().collect();
+            if !components.is_empty() {
+                insert_node(&mut root_node, &components, dir_node);
+            }
+        }
     }
 
     compute_size(&mut root_node);
@@ -326,7 +366,7 @@ mod tests {
     fn test_scan_empty_directory() {
         let dir = TempDir::new().unwrap();
         let cancel = AtomicBool::new(false);
-        let result = scan_path(dir.path(), &cancel, None);
+        let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(result.is_ok());
         let snapshot = result.unwrap();
         assert!(snapshot.root_node.is_dir);
@@ -341,7 +381,7 @@ mod tests {
         fs::write(&file_path, "hello world").unwrap();
 
         let cancel = AtomicBool::new(false);
-        let result = scan_path(dir.path(), &cancel, None);
+        let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(result.is_ok());
         let snapshot = result.unwrap();
         assert_eq!(snapshot.root_node.children.len(), 1);
@@ -357,7 +397,7 @@ mod tests {
         fs::write(dir.path().join("a/b/c/file.txt"), "content").unwrap();
 
         let cancel = AtomicBool::new(false);
-        let result = scan_path(dir.path(), &cancel, None);
+        let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(result.is_ok());
         let snapshot = result.unwrap();
 
@@ -374,7 +414,7 @@ mod tests {
     #[test]
     fn test_scan_path_not_found() {
         let cancel = AtomicBool::new(false);
-        let result = scan_path(Path::new("/nonexistent/path"), &cancel, None);
+        let result = scan_path(Path::new("/nonexistent/path"), &cancel, None, &[]);
         assert!(matches!(result, Err(ScanError::PathNotFound(_))));
     }
 
@@ -386,7 +426,7 @@ mod tests {
         }
 
         let cancel = AtomicBool::new(true);
-        let result = scan_path(dir.path(), &cancel, None);
+        let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(matches!(result, Err(ScanError::Cancelled)));
     }
 
@@ -509,7 +549,7 @@ mod tests {
         symlink(&target, &link).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+        let snapshot = scan_path(dir.path(), &cancel, None, &[]).unwrap();
         let node = snapshot.root_node.children.get("linked.txt").unwrap();
 
         assert_eq!(node.file_type, FileType::Symlink);

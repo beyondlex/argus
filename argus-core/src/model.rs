@@ -1,7 +1,11 @@
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -28,6 +32,7 @@ pub struct FileNode {
     pub inode: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub children: HashMap<String, FileNode>,
 }
 
@@ -52,6 +57,29 @@ impl Snapshot {
             total_size,
             root_node,
         }
+    }
+
+    /// Serialize to compact JSON and gzip-compress the result.
+    pub fn to_compact_bytes(&self) -> Result<Vec<u8>, SnapshotError> {
+        let json = serde_json::to_string(self)?;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json.as_bytes())?;
+        encoder
+            .finish()
+            .map_err(|e| SnapshotError::Corrupted(format!("compression failed: {e}")))
+    }
+
+    /// Deserialize from bytes, auto-detecting gzip compression by magic bytes (0x1f, 0x8b).
+    pub fn from_bytes(data: &[u8]) -> Result<Self, SnapshotError> {
+        let json = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+            let mut decoder = GzDecoder::new(data);
+            let mut s = String::new();
+            decoder.read_to_string(&mut s)?;
+            s
+        } else {
+            String::from_utf8_lossy(data).to_string()
+        };
+        Ok(serde_json::from_str(&json)?)
     }
 }
 
@@ -122,6 +150,9 @@ pub enum SnapshotError {
 
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -142,7 +173,7 @@ pub enum ParseSizeError {
     Overflow,
 }
 
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 pub fn hash_root_path(path: &Path) -> String {
     let mut hasher = Sha256::new();

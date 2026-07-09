@@ -482,6 +482,7 @@ pub fn start_scan(app: &mut App) {
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();
     let path = app.view_root_path.clone();
+    let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
 
     tokio::spawn(async move {
         let (progress_tx, progress_rx) =
@@ -499,18 +500,18 @@ pub fn start_scan(app: &mut App) {
             }
         });
 
-        match argus_core::scan_path(&path, &cancel, Some(progress_tx)) {
+        match argus_core::scan_path(&path, &cancel, Some(progress_tx), &scan_skip_dirs) {
             Ok(snapshot) => {
                 let snapshots_dir = crate::util::default_snapshots_dir();
                 let _ = std::fs::create_dir_all(&snapshots_dir);
                 let filename = format!(
-                    "{}_{}.json",
+                    "{}_{}.json.gz",
                     argus_core::hash_root_path(&path),
                     snapshot.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
                 );
                 let filepath = snapshots_dir.join(&filename);
-                if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
-                    let _ = std::fs::write(&filepath, &json);
+                if let Ok(bytes) = snapshot.to_compact_bytes() {
+                    let _ = std::fs::write(&filepath, &bytes);
                 }
 
                 let _ = tx
@@ -547,14 +548,14 @@ fn trigger_diff_if_ready(app: &mut App) {
     let from_info = &app.available_snapshots[from_idx];
     let to_info = &app.available_snapshots[to_idx];
 
-    let from_content = match std::fs::read_to_string(&from_info.path) {
+    let from_content = match std::fs::read(&from_info.path) {
         Ok(c) => c,
         Err(e) => {
             app.last_error = Some(format!("failed to read snapshot: {}", e));
             return;
         }
     };
-    let to_content = match std::fs::read_to_string(&to_info.path) {
+    let to_content = match std::fs::read(&to_info.path) {
         Ok(c) => c,
         Err(e) => {
             app.last_error = Some(format!("failed to read snapshot: {}", e));
@@ -562,14 +563,14 @@ fn trigger_diff_if_ready(app: &mut App) {
         }
     };
 
-    let old_snap: argus_core::Snapshot = match serde_json::from_str(&from_content) {
+    let old_snap: argus_core::Snapshot = match argus_core::Snapshot::from_bytes(&from_content) {
         Ok(s) => s,
         Err(e) => {
             app.last_error = Some(format!("failed to parse snapshot: {}", e));
             return;
         }
     };
-    let new_snap: argus_core::Snapshot = match serde_json::from_str(&to_content) {
+    let new_snap: argus_core::Snapshot = match argus_core::Snapshot::from_bytes(&to_content) {
         Ok(s) => s,
         Err(e) => {
             app.last_error = Some(format!("failed to parse snapshot: {}", e));

@@ -322,16 +322,21 @@ impl App {
             };
 
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-
-            let filename = match path.file_stem().and_then(|s| s.to_str()) {
+            let filename = match path.file_name().and_then(|s| s.to_str()) {
                 Some(f) => f.to_string(),
                 None => continue,
             };
 
-            let Some((path_hash, ts_str)) = filename.split_once('_') else {
+            // Accept both .json (old format) and .json.gz (compact format)
+            let stem = if filename.ends_with(".json.gz") {
+                &filename[..filename.len() - 8]
+            } else if filename.ends_with(".json") {
+                &filename[..filename.len() - 5]
+            } else {
+                continue;
+            };
+
+            let Some((path_hash, ts_str)) = stem.split_once('_') else {
                 continue;
             };
             let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
@@ -339,11 +344,11 @@ impl App {
             };
             let ts = ts.with_timezone(&Utc);
 
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
+            let data = match std::fs::read(&path) {
+                Ok(d) => d,
                 Err(_) => continue,
             };
-            let snapshot: Snapshot = match serde_json::from_str(&content) {
+            let snapshot: Snapshot = match Snapshot::from_bytes(&data) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -469,7 +474,7 @@ impl App {
                     path_hash: hash.clone(),
                     timestamp: snapshot.timestamp,
                     path: self.snapshots_dir.join(format!(
-                        "{}_{}.json",
+                        "{}_{}.json.gz",
                         hash,
                         snapshot.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
                     )),

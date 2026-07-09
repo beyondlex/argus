@@ -93,14 +93,16 @@ fn cmd_scan(path: &Path, output: &Path) -> Result<i32> {
 
     let (tx, rx) = mpsc::channel();
 
-    let snapshot =
-        scan_path(path, &cancel, Some(tx)).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
+    let snapshot = scan_path(path, &cancel, Some(tx), &[])
+        .map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
 
     while rx.try_recv().is_ok() {}
 
-    let json = serde_json::to_string_pretty(&snapshot).context("failed to serialize snapshot")?;
+    let bytes = snapshot
+        .to_compact_bytes()
+        .context("failed to serialize snapshot")?;
 
-    std::fs::write(output, &json)
+    std::fs::write(output, &bytes)
         .with_context(|| format!("failed to write snapshot file: {}", output.display()))?;
 
     println!("snapshot saved to: {}", output.display());
@@ -124,15 +126,13 @@ fn cmd_diff(
             .map_err(|e| anyhow::anyhow!("failed to parse threshold '{}': {}", threshold_str, e))?
     };
 
-    let old_json = std::fs::read_to_string(old_path)
+    let old_data = std::fs::read(old_path)
         .with_context(|| format!("failed to read old snapshot: {}", old_path.display()))?;
-    let new_json = std::fs::read_to_string(new_path)
+    let new_data = std::fs::read(new_path)
         .with_context(|| format!("failed to read new snapshot: {}", new_path.display()))?;
 
-    let old_snap: Snapshot =
-        serde_json::from_str(&old_json).context("failed to parse old snapshot")?;
-    let new_snap: Snapshot =
-        serde_json::from_str(&new_json).context("failed to parse new snapshot")?;
+    let old_snap = Snapshot::from_bytes(&old_data).context("failed to parse old snapshot")?;
+    let new_snap = Snapshot::from_bytes(&new_data).context("failed to parse new snapshot")?;
 
     let diff =
         compare_trees(&old_snap, &new_snap).map_err(|e| anyhow::anyhow!("diff failed: {}", e))?;
@@ -160,15 +160,13 @@ fn cmd_diff(
 }
 
 fn cmd_explain(old_path: &Path, new_path: &Path, target_path: &Path) -> Result<i32> {
-    let old_json = std::fs::read_to_string(old_path)
+    let old_data = std::fs::read(old_path)
         .with_context(|| format!("failed to read old snapshot: {}", old_path.display()))?;
-    let new_json = std::fs::read_to_string(new_path)
+    let new_data = std::fs::read(new_path)
         .with_context(|| format!("failed to read new snapshot: {}", new_path.display()))?;
 
-    let old_snap: Snapshot =
-        serde_json::from_str(&old_json).context("failed to parse old snapshot")?;
-    let new_snap: Snapshot =
-        serde_json::from_str(&new_json).context("failed to parse new snapshot")?;
+    let old_snap = Snapshot::from_bytes(&old_data).context("failed to parse old snapshot")?;
+    let new_snap = Snapshot::from_bytes(&new_data).context("failed to parse new snapshot")?;
 
     let diff =
         compare_trees(&old_snap, &new_snap).map_err(|e| anyhow::anyhow!("diff failed: {}", e))?;
