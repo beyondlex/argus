@@ -53,6 +53,22 @@ pub enum Focus {
     FilterBar,
 }
 
+/// Tree filter mode
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterMode {
+    Inactive,
+    Input,
+    Active,
+}
+
+/// A match found by the tree filter — visible (in tree_lines) or in a collapsed subtree
+#[derive(Debug, Clone)]
+pub struct SearchMatch {
+    pub name: String,
+    pub tree_idx: Option<usize>,
+    pub ancestor_path: Vec<String>,
+}
+
 /// Sort mode for tree children
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortMode {
@@ -210,8 +226,14 @@ pub struct App {
 
     pub snapshots_dir: PathBuf,
 
-    // Filter state
+    // Diff filter state
     pub filter_state: FilterState,
+
+    // Tree filter (fuzzy search)
+    pub filter_word: String,
+    pub filter_mode: FilterMode,
+    pub match_indices: Vec<SearchMatch>,
+    pub current_match: usize,
 
     // Scan state
     pub scanning: bool,
@@ -265,6 +287,10 @@ impl App {
                 threshold: None,
                 dirty: false,
             },
+            filter_word: String::new(),
+            filter_mode: FilterMode::Inactive,
+            match_indices: Vec::new(),
+            current_match: 0,
             scanning: false,
             scan_progress: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
@@ -464,6 +490,43 @@ impl App {
         }
     }
 
+    /// Recompute match_indices for current filter_word.
+    /// Walks the full tree in display order (depth-first, sorted by sort_mode)
+    /// so n/N jumps follow the natural top-to-bottom order.
+    pub fn recompute_matches(&mut self) {
+        self.match_indices.clear();
+        self.current_match = 0;
+        if self.filter_word.is_empty() {
+            return;
+        }
+
+        let Some(TreeNode::Snapshot(ref root)) = self.tree_root else {
+            return;
+        };
+
+        let query = &self.filter_word;
+        let expanded = &self.expanded;
+        let sort_mode = self.sort_mode;
+
+        let mut matches = Vec::new();
+        let mut visible_count = 0usize;
+        collect_matches_in_order(
+            root,
+            0,
+            query,
+            expanded,
+            sort_mode,
+            &mut vec![],
+            &mut visible_count,
+            &mut matches,
+        );
+
+        self.match_indices = matches;
+        if self.current_match >= self.match_indices.len() && !self.match_indices.is_empty() {
+            self.current_match = self.match_indices.len() - 1;
+        }
+    }
+
     /// Get the currently selected tree line
     pub fn selected_line(&self) -> Option<&TreeLine> {
         self.tree_lines.get(self.cursor)
@@ -572,5 +635,80 @@ fn sort_children_diff(children: &mut Vec<&DiffNode>, mode: SortMode) {
         SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
         SortMode::Delta => children.sort_by(|a, b| b.size_delta.abs().cmp(&a.size_delta.abs())),
         SortMode::Size => children.sort_by(|a, b| b.current_size.cmp(&a.current_size)),
+    }
+}
+
+pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let query_lc: Vec<char> = query.to_lowercase().chars().collect();
+    let target_lc: Vec<char> = target.to_lowercase().chars().collect();
+
+    let mut matches = Vec::new();
+    let mut qi = 0;
+    for (ti, tc) in target_lc.iter().enumerate() {
+        if qi < query_lc.len() && *tc == query_lc[qi] {
+            matches.push(ti);
+            qi += 1;
+        }
+    }
+    if qi == query_lc.len() {
+        Some(matches)
+    } else {
+        None
+    }
+}
+
+/// Walk the full tree in depth-first display order (children sorted by sort_mode).
+/// - `visible_count`: tracks position in tree_lines for visible nodes
+/// - Matches are pushed in walk order so n/N follows natural top-to-bottom flow
+/// - Visible matches get `tree_idx = Some(pos)`, collapsed matches get `None`
+#[allow(clippy::too_many_arguments)]
+fn collect_matches_in_order(
+    node: &FileNode,
+    depth: usize,
+    query: &str,
+    expanded: &HashSet<String>,
+    sort_mode: SortMode,
+    ancestors: &mut Vec<String>,
+    visible_count: &mut usize,
+    result: &mut Vec<SearchMatch>,
+) {
+    let is_visible = depth == 0 || expanded.contains(ancestors.last().unwrap());
+
+    if fuzzy_match_indices(query, &node.name).is_some() {
+        result.push(SearchMatch {
+            name: node.name.clone(),
+            tree_idx: if is_visible {
+                Some(*visible_count)
+            } else {
+                None
+            },
+            ancestor_path: ancestors.clone(),
+        });
+    }
+
+    if is_visible {
+        *visible_count += 1;
+    }
+
+    if node.is_dir {
+        let mut children: Vec<&FileNode> = node.children.values().collect();
+        sort_children_snapshot(&mut children, sort_mode);
+        for child in children {
+            ancestors.push(node.name.clone());
+            collect_matches_in_order(
+                child,
+                depth + 1,
+                query,
+                expanded,
+                sort_mode,
+                ancestors,
+                visible_count,
+                result,
+            );
+            ancestors.pop();
+        }
     }
 }

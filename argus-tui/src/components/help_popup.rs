@@ -61,6 +61,14 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::raw("Focus next panel"),
         ]),
         Line::from(vec![
+            Span::styled("/            ", Style::default().fg(Color::Yellow)),
+            Span::raw("Filter items in tree"),
+        ]),
+        Line::from(vec![
+            Span::styled("n/N          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Next/prev match (with filter)"),
+        ]),
+        Line::from(vec![
             Span::styled("?            ", Style::default().fg(Color::Yellow)),
             Span::raw("Toggle this help"),
         ]),

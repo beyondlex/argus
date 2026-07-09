@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::atomic::Ordering;
 
-use crate::app::{App, AppMode, Focus};
+use crate::app::{App, AppMode, FilterMode, Focus};
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
@@ -18,6 +18,68 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.cancel_scan.store(true, Ordering::Relaxed);
         }
         return;
+    }
+
+    match app.filter_mode {
+        FilterMode::Input => {
+            match key.code {
+                KeyCode::Char(c) => {
+                    app.filter_word.push(c);
+                    app.recompute_matches();
+                }
+                KeyCode::Backspace => {
+                    app.filter_word.pop();
+                    app.recompute_matches();
+                }
+                KeyCode::Enter => {
+                    if app.filter_word.is_empty() {
+                        app.filter_mode = FilterMode::Inactive;
+                    } else {
+                        app.filter_mode = FilterMode::Active;
+                    }
+                }
+                KeyCode::Esc => {
+                    app.filter_word.clear();
+                    app.match_indices.clear();
+                    app.current_match = 0;
+                    app.filter_mode = FilterMode::Inactive;
+                }
+                _ => {}
+            }
+            return;
+        }
+        FilterMode::Active => {
+            match key.code {
+                KeyCode::Char('n') => {
+                    jump_to_next_match(app, 1);
+                }
+                KeyCode::Char('N') => {
+                    jump_to_next_match(app, -1);
+                }
+                KeyCode::Char('/') => {
+                    app.filter_word.clear();
+                    app.filter_mode = FilterMode::Input;
+                }
+                KeyCode::Esc => {
+                    app.filter_word.clear();
+                    app.match_indices.clear();
+                    app.current_match = 0;
+                    app.filter_mode = FilterMode::Inactive;
+                    return;
+                }
+                _ => {}
+            }
+            // Don't return for other keys — let navigation keys pass through
+        }
+        FilterMode::Inactive => {}
+    }
+
+    // Only '/' triggers filter from Inactive; other keys ignored if already handled above
+    if app.filter_mode == FilterMode::Inactive {
+        if let KeyCode::Char('/') = key.code {
+            app.filter_mode = FilterMode::Input;
+            return;
+        }
     }
 
     match key.code {
@@ -204,6 +266,49 @@ fn find_node_mut<'a>(
         }
     }
     None
+}
+
+fn jump_to_next_match(app: &mut App, delta: isize) {
+    if app.match_indices.is_empty() {
+        return;
+    }
+    let len = app.match_indices.len();
+    let new_idx = (app.current_match as isize + delta).rem_euclid(len as isize) as usize;
+    app.current_match = new_idx;
+    let sm = app.match_indices[new_idx].clone();
+
+    if let Some(ti) = sm.tree_idx {
+        app.cursor = ti;
+        if let Some(line) = app.tree_lines.get(ti).cloned() {
+            let mut ancestors: Vec<String> = Vec::new();
+            let mut target_depth = line.depth;
+            for i in (0..ti).rev() {
+                if let Some(l) = app.tree_lines.get(i) {
+                    if l.depth < target_depth && l.depth > 0 {
+                        ancestors.push(l.node.name().to_string());
+                        target_depth = l.depth;
+                    }
+                }
+            }
+            for name in &ancestors {
+                app.expanded.insert(name.clone());
+            }
+            app.update_tree_lines();
+        }
+    } else {
+        for name in &sm.ancestor_path {
+            app.expanded.insert(name.clone());
+        }
+        app.update_tree_lines();
+        let target_name = sm.name.clone();
+        if let Some(pos) = app
+            .tree_lines
+            .iter()
+            .position(|l| l.node.name() == target_name)
+        {
+            app.cursor = pos;
+        }
+    }
 }
 
 fn collapse_or_navigate_up(app: &mut App) {

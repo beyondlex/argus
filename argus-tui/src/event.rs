@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event};
 use ratatui::Frame;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, FilterMode};
 use crate::components::{file_tree, filter_bar, help_popup, metadata, status_bar};
 use crate::handler;
 
@@ -12,9 +12,12 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(16); // ~60fps
+    let mut cursor_visible = true;
+    let mut last_cursor_tick = Instant::now();
+    let cursor_blink_rate = Duration::from_millis(500);
 
     loop {
-        terminal.draw(|f| render(f, app))?;
+        terminal.draw(|f| render(f, app, cursor_visible))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -41,6 +44,15 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             }
         }
 
+        // Cursor blink for filter input
+        if app.filter_mode == FilterMode::Input && last_cursor_tick.elapsed() >= cursor_blink_rate {
+            cursor_visible = !cursor_visible;
+            last_cursor_tick = Instant::now();
+        }
+        if app.filter_mode != FilterMode::Input {
+            cursor_visible = true;
+        }
+
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
         }
@@ -55,7 +67,7 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
 }
 
 /// Render the entire TUI
-fn render(f: &mut Frame, app: &mut App) {
+fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     use ratatui::layout::{Constraint, Direction, Layout};
 
     let area = f.area();
@@ -100,6 +112,12 @@ fn render(f: &mut Frame, app: &mut App) {
         app.cursor,
         app.scroll_offset,
         app.sort_mode,
+        &app.view_root_path,
+        &app.filter_word,
+        app.filter_mode,
+        &app.match_indices,
+        app.current_match,
+        cursor_visible,
     );
 
     // Metadata panel
