@@ -89,6 +89,20 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('k') | KeyCode::Up => {
             move_cursor(app, -1);
         }
+        KeyCode::Char('g') => {
+            if app.pending_gg {
+                app.cursor = 0;
+                app.pending_gg = false;
+            } else {
+                app.pending_gg = true;
+            }
+        }
+        KeyCode::Char('G') => {
+            if !app.tree_lines.is_empty() {
+                app.cursor = app.tree_lines.len() - 1;
+            }
+            app.pending_gg = false;
+        }
         KeyCode::Char('l') | KeyCode::Right => {
             expand_node(app);
         }
@@ -164,6 +178,10 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
         }
         _ => {}
+    }
+    // Reset gg double-tap on any key other than g
+    if key.code != KeyCode::Char('g') {
+        app.pending_gg = false;
     }
 }
 
@@ -316,7 +334,11 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
 
     // Find the match by name in rebuilt tree_lines (immune to stale indices)
     let target_name = sm.name;
-    if let Some(pos) = app.tree_lines.iter().position(|l| l.node.name() == target_name) {
+    if let Some(pos) = app
+        .tree_lines
+        .iter()
+        .position(|l| l.node.name() == target_name)
+    {
         app.cursor = pos;
     }
 }

@@ -235,6 +235,9 @@ pub struct App {
     pub match_indices: Vec<SearchMatch>,
     pub current_match: usize,
 
+    // gg double-tap tracking
+    pub pending_gg: bool,
+
     // Scan state
     pub scanning: bool,
     pub scan_progress: Option<(u64, u64)>,
@@ -291,6 +294,7 @@ impl App {
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
             current_match: 0,
+            pending_gg: false,
             scanning: false,
             scan_progress: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
