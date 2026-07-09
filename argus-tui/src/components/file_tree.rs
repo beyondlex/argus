@@ -130,11 +130,11 @@ pub fn render(
 
         // Determine background
         let bg = if is_current_match {
-            Color::Magenta
+            Color::Blue
         } else if is_selected {
-            Color::White
+            Color::Reset
         } else {
-            Color::Black
+            Color::Reset
         };
 
         let fg = if is_current_match {
@@ -154,13 +154,11 @@ pub fn render(
                 name_prefix,
                 if is_current_match {
                     Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Magenta)
                         .add_modifier(Modifier::BOLD)
                 } else if is_selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::White)
+                        .fg(Color::White)
+                        .bg(bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -174,26 +172,24 @@ pub fn render(
                     is_selected,
                 ));
             } else {
-                let fg = if is_current_match {
-                    Color::White
+                let (fg, bg) = if is_current_match {
+                    (Color::Green, bg)
                 } else if is_selected {
-                    Color::Black
+                    (Color::Black, Color::Blue)
                 } else {
-                    Color::White
+                    (Color::White, bg)
                 };
-                spans.push(Span::styled(name_text, base_style.fg(fg)));
+                spans.push(Span::styled(name_text, base_style.fg(fg).bg(bg)));
             }
             spans
         } else {
             let name_style = if is_current_match {
                 Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Magenta)
                     .add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::White)
+                    .bg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD)
             } else if line.node.is_dir() {
                 Style::default()
@@ -202,10 +198,10 @@ pub fn render(
             } else {
                 Style::default().fg(Color::White)
             };
-            vec![Span::styled(
-                format!("{}{}", name_prefix, line.node.name()),
-                name_style,
-            )]
+            vec![
+                Span::styled(format!("{}", name_prefix), Style::default()),
+                Span::styled(format!("{}", line.node.name()), name_style)
+            ]
         };
 
         let size_style = if line.node.is_dir() && !line.has_scan_data {
@@ -268,9 +264,9 @@ fn match_highlight_spans<'a>(
     let match_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
 
     let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match {
-        (Color::Green, Color::Magenta, Color::White, Color::Magenta)
+        (Color::Black, Color::Green, Color::Black, Color::Blue)
     } else if is_selected {
-        (Color::Green, Color::Black, Color::Black, Color::White)
+        (Color::Black, Color::Green, Color::Black, Color::Blue)
     } else {
         (Color::Green, Color::Black, Color::White, Color::Black)
     };
