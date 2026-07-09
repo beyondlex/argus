@@ -100,16 +100,16 @@ pub fn render(
                 p.push_str("   ");
             }
             if line.depth > 0 {
-                p.push_str("├── ");
+                p.push_str("    ");
             }
             p
         };
 
         let branch = if line.node.is_dir() {
             if line.expanded {
-                "▼ "
+                "- "
             } else {
-                "▶ "
+                "+ "
             }
         } else {
             "  "
@@ -128,18 +128,14 @@ pub fn render(
             String::new()
         };
 
-        // Determine background
+        // Determine background/foreground
         let bg = if is_current_match {
             Color::Blue
-        } else if is_selected {
-            Color::Reset
         } else {
             Color::Reset
         };
 
-        let fg = if is_current_match {
-            Color::White
-        } else if is_selected {
+        let fg = if is_selected {
             Color::Black
         } else {
             Color::White
@@ -153,8 +149,7 @@ pub fn render(
             let mut spans: Vec<Span> = vec![Span::styled(
                 name_prefix,
                 if is_current_match {
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().add_modifier(Modifier::BOLD)
                 } else if is_selected {
                     Style::default()
                         .fg(Color::White)
@@ -184,8 +179,7 @@ pub fn render(
             spans
         } else {
             let name_style = if is_current_match {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
+                Style::default().add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default()
                     .fg(Color::Black)
@@ -199,15 +193,15 @@ pub fn render(
                 Style::default().fg(Color::White)
             };
             vec![
-                Span::styled(format!("{}", name_prefix), Style::default()),
-                Span::styled(format!("{}", line.node.name()), name_style)
+                Span::styled(name_prefix.clone(), Style::default()),
+                Span::styled(line.node.name().to_string(), name_style),
             ]
         };
 
         let size_style = if line.node.is_dir() && !line.has_scan_data {
-            base_style.fg(Color::DarkGray)
+            base_style.fg(Color::DarkGray).bg(Color::Reset)
         } else {
-            base_style.fg(Color::Yellow)
+            base_style.fg(Color::Yellow).bg(Color::Reset)
         };
 
         let mut spans = name_spans;
@@ -263,9 +257,7 @@ fn match_highlight_spans<'a>(
     let mut prev_end = 0;
     let match_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
 
-    let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match {
-        (Color::Black, Color::Green, Color::Black, Color::Blue)
-    } else if is_selected {
+    let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
         (Color::Black, Color::Green, Color::Black, Color::Blue)
     } else {
         (Color::Green, Color::Black, Color::White, Color::Black)

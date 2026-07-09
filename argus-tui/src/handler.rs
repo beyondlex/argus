@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::atomic::Ordering;
 
 use crate::app::{App, AppMode, FilterMode, Focus};
@@ -33,6 +33,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
                 KeyCode::Enter => {
                     if app.filter_word.is_empty() {
+                        app.recompute_matches();
                         app.filter_mode = FilterMode::Inactive;
                     } else {
                         app.filter_mode = FilterMode::Active;
@@ -40,8 +41,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
                 KeyCode::Esc => {
                     app.filter_word.clear();
-                    app.match_indices.clear();
-                    app.current_match = 0;
+                    app.recompute_matches();
                     app.filter_mode = FilterMode::Inactive;
                 }
                 _ => {}
@@ -58,12 +58,12 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
                 KeyCode::Char('/') => {
                     app.filter_word.clear();
+                    app.recompute_matches();
                     app.filter_mode = FilterMode::Input;
                 }
                 KeyCode::Esc => {
                     app.filter_word.clear();
-                    app.match_indices.clear();
-                    app.current_match = 0;
+                    app.recompute_matches();
                     app.filter_mode = FilterMode::Inactive;
                     return;
                 }
@@ -89,11 +89,16 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('k') | KeyCode::Up => {
             move_cursor(app, -1);
         }
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+        KeyCode::Char('l') | KeyCode::Right => {
             expand_node(app);
         }
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+        KeyCode::Char('h') | KeyCode::Left => {
             collapse_or_navigate_up(app);
+        }
+        KeyCode::Enter => {
+            if !app.filter_word.is_empty() {
+                app.filter_mode = FilterMode::Input;
+            }
         }
         KeyCode::Char('s') => {
             start_scan(app);
@@ -137,8 +142,14 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             app.should_quit = true;
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+            app.should_quit = true;
+        }
+        KeyCode::Esc => {
+            // Esc is used by filter/delete/help modes, not for quit
         }
         KeyCode::Char('1') => {
             if !app.available_snapshots.is_empty() && app.focus == Focus::FilterBar {
@@ -277,8 +288,13 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
     app.current_match = new_idx;
     let sm = app.match_indices[new_idx].clone();
 
+    // Expand ancestors from ancestor_path (for collapsed matches)
+    for name in &sm.ancestor_path {
+        app.expanded.insert(name.clone());
+    }
+
+    // Expand ancestors from tree_lines (for visible matches)
     if let Some(ti) = sm.tree_idx {
-        app.cursor = ti;
         if let Some(line) = app.tree_lines.get(ti).cloned() {
             let mut ancestors: Vec<String> = Vec::new();
             let mut target_depth = line.depth;
@@ -293,21 +309,15 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
             for name in &ancestors {
                 app.expanded.insert(name.clone());
             }
-            app.update_tree_lines();
         }
-    } else {
-        for name in &sm.ancestor_path {
-            app.expanded.insert(name.clone());
-        }
-        app.update_tree_lines();
-        let target_name = sm.name.clone();
-        if let Some(pos) = app
-            .tree_lines
-            .iter()
-            .position(|l| l.node.name() == target_name)
-        {
-            app.cursor = pos;
-        }
+    }
+
+    app.update_tree_lines();
+
+    // Find the match by name in rebuilt tree_lines (immune to stale indices)
+    let target_name = sm.name;
+    if let Some(pos) = app.tree_lines.iter().position(|l| l.node.name() == target_name) {
+        app.cursor = pos;
     }
 }
 

@@ -642,22 +642,12 @@ pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
     if query.is_empty() {
         return None;
     }
-    let query_lc: Vec<char> = query.to_lowercase().chars().collect();
-    let target_lc: Vec<char> = target.to_lowercase().chars().collect();
-
-    let mut matches = Vec::new();
-    let mut qi = 0;
-    for (ti, tc) in target_lc.iter().enumerate() {
-        if qi < query_lc.len() && *tc == query_lc[qi] {
-            matches.push(ti);
-            qi += 1;
-        }
-    }
-    if qi == query_lc.len() {
-        Some(matches)
-    } else {
-        None
-    }
+    let target_lc = target.to_lowercase();
+    let query_lc = query.to_lowercase();
+    let byte_pos = target_lc.find(&query_lc)?;
+    let start = target_lc[..byte_pos].chars().count();
+    let end = start + query_lc.chars().count();
+    Some((start..end).collect())
 }
 
 /// Walk the full tree in depth-first display order (children sorted by sort_mode).
@@ -675,7 +665,7 @@ fn collect_matches_in_order(
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
 ) {
-    let is_visible = depth == 0 || expanded.contains(ancestors.last().unwrap());
+    let is_visible = depth <= 1 || ancestors[1..].iter().all(|a| expanded.contains(a.as_str()));
 
     if fuzzy_match_indices(query, &node.name).is_some() {
         result.push(SearchMatch {

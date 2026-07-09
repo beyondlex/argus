@@ -37,8 +37,12 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::raw("Collapse directory / go to parent"),
         ]),
         Line::from(vec![
-            Span::styled("l            ", Style::default().fg(Color::Yellow)),
+            Span::styled("l / Right   ", Style::default().fg(Color::Yellow)),
             Span::raw("Expand directory / enter child"),
+        ]),
+        Line::from(vec![
+            Span::styled("Enter       ", Style::default().fg(Color::Yellow)),
+            Span::raw("Edit filter word"),
         ]),
         Line::from(vec![
             Span::styled(".            ", Style::default().fg(Color::Yellow)),
@@ -73,8 +77,8 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::raw("Toggle this help"),
         ]),
         Line::from(vec![
-            Span::styled("q / Esc      ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit / cancel"),
+            Span::styled("q / Ctrl+C  ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quit"),
         ]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
