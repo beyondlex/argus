@@ -585,7 +585,9 @@ impl App {
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();
         let relative = self.tree_line_relative_path(self.cursor)?;
-        for part in relative {
+        // relative includes the root dir name as the first component;
+        // skip it because view_root_path already contains the full root path.
+        for part in relative.iter().skip(1) {
             path.push(part);
         }
         Some(path)

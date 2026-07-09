@@ -641,8 +641,9 @@ mod tests {
 
     #[test]
     fn test_jump_to_next_match_uses_full_path() {
+        // Root node name must match the last component of view_root_path (/tmp/test)
         let root = make_dir(
-            "root",
+            "test",
             vec![
                 make_dir("a", vec![make_file("target")]),
                 make_dir("b", vec![make_file("target")]),
@@ -652,9 +653,9 @@ mod tests {
         let mut app = make_app(root);
         app.sort_mode = crate::app::SortMode::Name;
         app.expanded
-            .insert(vec!["root".to_string(), "a".to_string()]);
+            .insert(vec!["test".to_string(), "a".to_string()]);
         app.expanded
-            .insert(vec!["root".to_string(), "b".to_string()]);
+            .insert(vec!["test".to_string(), "b".to_string()]);
         app.update_tree_lines();
         app.filter_word = "target".to_string();
         app.recompute_matches();
@@ -670,15 +671,15 @@ mod tests {
         assert_eq!(app.cursor, 4);
         assert_eq!(
             app.match_indices[0].path,
-            vec!["root".to_string(), "a".to_string(), "target".to_string()]
+            vec!["test".to_string(), "a".to_string(), "target".to_string()]
         );
         assert_eq!(
             app.match_indices[1].path,
-            vec!["root".to_string(), "b".to_string(), "target".to_string()]
+            vec!["test".to_string(), "b".to_string(), "target".to_string()]
         );
         assert_eq!(
             app.selected_node_full_path().expect("selected path"),
-            std::path::PathBuf::from("/tmp/test/root/b/target")
+            std::path::PathBuf::from("/tmp/test/b/target")
         );
     }
 
