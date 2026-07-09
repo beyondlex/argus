@@ -259,6 +259,53 @@ fn insert_node(parent: &mut FileNode, components: &[std::path::Component], node:
     }
 }
 
+pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
+    if !path.exists() {
+        return Err(ScanError::PathNotFound(path.to_path_buf()));
+    }
+    if !path.is_dir() {
+        return Err(ScanError::PathNotFound(path.to_path_buf()));
+    }
+
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    let read_dir = match std::fs::read_dir(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(ScanError::PermissionDenied(path.to_path_buf()));
+        }
+        Err(e) => return Err(ScanError::Io(e)),
+    };
+
+    let mut children = HashMap::new();
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let node = create_file_node(&entry.path(), &meta);
+        children.insert(node.name.clone(), node);
+    }
+
+    Ok(FileNode {
+        name,
+        is_dir: true,
+        file_type: FileType::Directory,
+        size: 0,
+        modified: None,
+        inode: None,
+        device: None,
+        children,
+    })
+}
+
 fn compute_size(node: &mut FileNode) -> u64 {
     if node.children.is_empty() {
         return node.size;
@@ -405,6 +452,68 @@ mod tests {
         let total = compute_size(&mut parent);
         assert_eq!(total, 300);
         assert_eq!(parent.size, 300);
+    }
+
+    #[test]
+    fn test_list_dir_empty_directory() {
+        let dir = TempDir::new().unwrap();
+        let result = list_dir(dir.path());
+        assert!(result.is_ok());
+        let node = result.unwrap();
+        assert!(node.is_dir);
+        assert!(node.children.is_empty());
+    }
+
+    #[test]
+    fn test_list_dir_with_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        fs::write(dir.path().join("b.txt"), "world").unwrap();
+
+        let result = list_dir(dir.path());
+        assert!(result.is_ok());
+        let node = result.unwrap();
+        assert_eq!(node.children.len(), 2);
+
+        let a = node.children.get("a.txt").unwrap();
+        assert!(!a.is_dir);
+        assert_eq!(a.size, 5);
+
+        let b = node.children.get("b.txt").unwrap();
+        assert!(!b.is_dir);
+        assert_eq!(b.size, 5);
+    }
+
+    #[test]
+    fn test_list_dir_with_subdirectory() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub").join("file.txt"), "data").unwrap();
+
+        let result = list_dir(dir.path());
+        assert!(result.is_ok());
+        let node = result.unwrap();
+        assert_eq!(node.children.len(), 1);
+
+        let sub = node.children.get("sub").unwrap();
+        assert!(sub.is_dir);
+        assert_eq!(sub.size, 0); // Not recursively summed
+        assert!(sub.children.is_empty()); // Not populated
+    }
+
+    #[test]
+    fn test_list_dir_path_not_found() {
+        let result = list_dir(Path::new("/nonexistent/path"));
+        assert!(matches!(result, Err(ScanError::PathNotFound(_))));
+    }
+
+    #[test]
+    fn test_list_dir_file_not_dir() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "content").unwrap();
+        let result = list_dir(&file_path);
+        assert!(matches!(result, Err(ScanError::PathNotFound(_))));
     }
 
     #[test]

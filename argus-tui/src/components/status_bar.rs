@@ -22,13 +22,25 @@ pub fn render(
 
     match mode {
         AppMode::Browsing => {
-            left_spans.push(Span::styled(" Browsing ", Style::default().fg(Color::Green).bg(Color::Black)));
+            left_spans.push(Span::styled(
+                " Browsing ",
+                Style::default().fg(Color::Green).bg(Color::Black),
+            ));
         }
         AppMode::DeletePrompt => {
-            left_spans.push(Span::styled(" DELETE CONFIRM ", Style::default().fg(Color::Red).bg(Color::Black).add_modifier(ratatui::style::Modifier::BOLD)));
+            left_spans.push(Span::styled(
+                " DELETE CONFIRM ",
+                Style::default()
+                    .fg(Color::Red)
+                    .bg(Color::Black)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
         }
         AppMode::Help => {
-            left_spans.push(Span::styled(" HELP ", Style::default().fg(Color::Cyan).bg(Color::Black)));
+            left_spans.push(Span::styled(
+                " HELP ",
+                Style::default().fg(Color::Cyan).bg(Color::Black),
+            ));
         }
     }
 
@@ -47,7 +59,10 @@ pub fn render(
 
     if let Some(err) = has_error {
         left_spans.push(Span::raw(" | "));
-        left_spans.push(Span::styled(err, Style::default().fg(Color::Red).bg(Color::Black)));
+        left_spans.push(Span::styled(
+            err,
+            Style::default().fg(Color::Red).bg(Color::Black),
+        ));
     }
 
     // Focus indicator
@@ -73,12 +88,24 @@ pub fn render(
     // Render left part
     f.render_widget(
         Paragraph::new(left_line).block(Block::default()),
-        Rect { x: inner.x, y: inner.y, width: inner.width.saturating_sub(20), height: inner.height },
+        Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width.saturating_sub(20),
+            height: inner.height,
+        },
     );
 
     // Render right part
     f.render_widget(
-        Paragraph::new(right_line).block(Block::default()).right_aligned(),
-        Rect { x: inner.x.saturating_add(inner.width.saturating_sub(20)), y: inner.y, width: 20, height: inner.height },
+        Paragraph::new(right_line)
+            .block(Block::default())
+            .right_aligned(),
+        Rect {
+            x: inner.x.saturating_add(inner.width.saturating_sub(20)),
+            y: inner.y,
+            width: 20,
+            height: inner.height,
+        },
     );
 }

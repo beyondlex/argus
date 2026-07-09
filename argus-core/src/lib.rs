@@ -9,4 +9,4 @@ pub use model::{
     hash_root_path, parse_human_size, AiCache, AiContext, AiResult, DiffError, DiffNode, FileNode,
     FileType, ParseSizeError, RiskLevel, ScanError, Snapshot, SnapshotError, SNAPSHOT_VERSION,
 };
-pub use scanner::scan_path;
+pub use scanner::{list_dir, scan_path};

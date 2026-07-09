@@ -57,10 +57,10 @@ fn test_scan_cancelled() {
 
 #[test]
 fn test_snapshot_serialization_roundtrip() {
-    let root = make_dir("test", vec![
-        make_file("a.txt", 100),
-        make_file("b.txt", 200),
-    ]);
+    let root = make_dir(
+        "test",
+        vec![make_file("a.txt", 100), make_file("b.txt", 200)],
+    );
     let snap = make_snapshot("/tmp/test", root);
 
     let json = serde_json::to_string_pretty(&snap).unwrap();
@@ -68,21 +68,30 @@ fn test_snapshot_serialization_roundtrip() {
 
     assert_eq!(snap.root_path, deserialized.root_path);
     assert_eq!(snap.total_size, deserialized.total_size);
-    assert_eq!(snap.root_node.children.len(), deserialized.root_node.children.len());
+    assert_eq!(
+        snap.root_node.children.len(),
+        deserialized.root_node.children.len()
+    );
 }
 
 #[test]
 fn test_diff_with_threshold() {
-    let old_root = make_dir("test", vec![
-        make_file("small", 10),
-        make_file("medium", 100),
-        make_file("large", 1000),
-    ]);
-    let new_root = make_dir("test", vec![
-        make_file("small", 20),
-        make_file("medium", 100),
-        make_file("large", 1000),
-    ]);
+    let old_root = make_dir(
+        "test",
+        vec![
+            make_file("small", 10),
+            make_file("medium", 100),
+            make_file("large", 1000),
+        ],
+    );
+    let new_root = make_dir(
+        "test",
+        vec![
+            make_file("small", 20),
+            make_file("medium", 100),
+            make_file("large", 1000),
+        ],
+    );
 
     let old_snap = make_snapshot("/test", old_root);
     let new_snap = make_snapshot("/test", new_root);
@@ -175,15 +184,25 @@ fn test_format_delta() {
 fn test_is_protected_path() {
     // These should be protected on any Unix system.
     // Use canonical paths to handle macOS /private symlinks.
-    assert!(argus_tui::util::is_protected_path(std::path::Path::new("/usr/bin")));
-    assert!(argus_tui::util::is_protected_path(std::path::Path::new("/usr/lib")));
+    assert!(argus_tui::util::is_protected_path(std::path::Path::new(
+        "/usr/bin"
+    )));
+    assert!(argus_tui::util::is_protected_path(std::path::Path::new(
+        "/usr/lib"
+    )));
 
     // Subpaths under protected dirs should also be protected
-    assert!(argus_tui::util::is_protected_path(std::path::Path::new("/usr/bin/ls")));
+    assert!(argus_tui::util::is_protected_path(std::path::Path::new(
+        "/usr/bin/ls"
+    )));
 
     // Regular user paths should not be protected
-    assert!(!argus_tui::util::is_protected_path(std::path::Path::new("/home/user")));
-    assert!(!argus_tui::util::is_protected_path(std::path::Path::new("/tmp")));
+    assert!(!argus_tui::util::is_protected_path(std::path::Path::new(
+        "/home/user"
+    )));
+    assert!(!argus_tui::util::is_protected_path(std::path::Path::new(
+        "/tmp"
+    )));
 }
 
 // ── Config loading tests ────────────────────────────────────────────────────

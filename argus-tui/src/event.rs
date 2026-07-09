@@ -64,10 +64,10 @@ fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),   // Header
-            Constraint::Length(3),   // Filter bar
-            Constraint::Min(1),      // Main content
-            Constraint::Length(1),   // Status bar
+            Constraint::Length(1), // Header
+            Constraint::Length(3), // Filter bar
+            Constraint::Min(1),    // Main content
+            Constraint::Length(1), // Status bar
         ])
         .split(area);
 
@@ -103,11 +103,15 @@ fn render(f: &mut Frame, app: &mut App) {
     );
 
     // Metadata panel
+    let has_scan = app.scan_cache.contains_key(&app.view_root_path);
+    let last_scan = app.scan_cache.get(&app.view_root_path).map(|s| s.timestamp);
     metadata::render(
         f,
         main_chunks[1],
         app.selected_line(),
         app.has_delta_column(),
+        has_scan,
+        last_scan,
     );
 
     // Status bar
@@ -127,13 +131,7 @@ fn render(f: &mut Frame, app: &mut App) {
     match app.mode {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app),
         AppMode::Help => help_popup::render(f, area),
-        AppMode::Browsing => {
-            if app.scan_prompt_open {
-                render_scan_prompt(f, area, app);
-            } else if app.tree_root.is_none() && app.available_snapshots.is_empty() && !app.scanning {
-                render_empty_prompt(f, area);
-            }
-        }
+        AppMode::Browsing => {}
     }
 }
 
@@ -146,85 +144,18 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
     };
 
     let line = Line::from(vec![
-        Span::styled(" Argus v0.1.0 ", Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
+        Span::styled(
+            " Argus v0.1.0 ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled("[?] Help", Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
         Span::styled("[Q] Quit", Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(line), area);
-}
-
-/// Render empty state prompt
-fn render_empty_prompt(f: &mut Frame, area: ratatui::layout::Rect) {
-    use ratatui::{
-        layout::Alignment,
-        style::{Color, Style},
-        text::{Line, Span},
-        widgets::{Block, Borders, Clear, Paragraph},
-    };
-
-    let popup = crate::components::help_popup::centered_rect(50, 30, area);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Welcome to Argus ")
-        .style(Style::default().fg(Color::White).bg(Color::Black));
-
-    let text = Paragraph::new(vec![
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled("  No snapshots found.", Style::default().fg(Color::White))]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled("  Press ", Style::default().fg(Color::White)), Span::styled("s", Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD)), Span::styled(" to scan a directory", Style::default().fg(Color::White))]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled("  Or press ", Style::default().fg(Color::White)), Span::styled("q", Style::default().fg(Color::Yellow)), Span::styled(" to quit", Style::default().fg(Color::White))]),
-    ])
-    .block(block)
-    .alignment(Alignment::Center);
-    f.render_widget(text, popup);
-}
-
-/// Render scan path input prompt
-fn render_scan_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    use ratatui::{
-        layout::Alignment,
-        style::{Color, Style},
-        text::{Line, Span},
-        widgets::{Block, Borders, Clear, Paragraph},
-    };
-
-    let popup = crate::components::help_popup::centered_rect(60, 20, area);
-    f.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Scan Path ")
-        .style(Style::default().fg(Color::White).bg(Color::Black));
-
-    let text = Paragraph::new(vec![
-        Line::from(vec![Span::raw("Enter path to scan (default: current directory):")]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Green)),
-            Span::styled(&app.scan_path_input, Style::default().fg(Color::Yellow)),
-            if app.scan_path_input.is_empty() {
-                Span::styled("(current dir)", Style::default().fg(Color::DarkGray))
-            } else {
-                Span::raw("")
-            },
-        ]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(" to scan  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(" to cancel", Style::default().fg(Color::DarkGray)),
-        ]),
-    ])
-    .block(block)
-    .alignment(Alignment::Left);
-    f.render_widget(text, popup);
 }
 
 /// Render delete confirmation prompt
@@ -251,19 +182,33 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .unwrap_or_default();
 
     let text = Paragraph::new(vec![
-        Line::from(vec![Span::styled("WARNING:", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled(
+            "WARNING:",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![
             Span::styled("Path: ", Style::default().fg(Color::Gray)),
             Span::styled(&path_display, Style::default().fg(Color::White)),
         ]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled("This will move the item to trash.", Style::default().fg(Color::White))]),
+        Line::from(vec![Span::styled(
+            "This will move the item to trash.",
+            Style::default().fg(Color::White),
+        )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![
-            Span::styled("y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" - Confirm delete  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("n", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" - Cancel", Style::default().fg(Color::DarkGray)),
         ]),
     ])

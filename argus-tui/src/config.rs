@@ -8,6 +8,12 @@ use serde::Deserialize;
 pub struct TuiConfig {
     pub keybindings: Keybindings,
     pub theme: Theme,
+    pub browsing: BrowsingConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BrowsingConfig {
+    pub auto_scan_on_start: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +41,7 @@ impl Default for TuiConfig {
         Self {
             keybindings: Keybindings::default(),
             theme: Theme::default(),
+            browsing: BrowsingConfig::default(),
         }
     }
 }
@@ -76,6 +83,12 @@ impl Default for Theme {
 struct RawConfig {
     keybindings: Option<RawKeybindings>,
     theme: Option<RawTheme>,
+    browsing: Option<RawBrowsing>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBrowsing {
+    auto_scan_on_start: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,19 +128,45 @@ pub fn load_config(path: &Path) -> TuiConfig {
     let mut config = TuiConfig::default();
 
     if let Some(kb) = raw.keybindings {
-        if let Some(v) = kb.move_up { config.keybindings.move_up = v; }
-        if let Some(v) = kb.move_down { config.keybindings.move_down = v; }
-        if let Some(v) = kb.enter_dir { config.keybindings.enter_dir = v; }
-        if let Some(v) = kb.leave_dir { config.keybindings.leave_dir = v; }
-        if let Some(v) = kb.sort_toggle { config.keybindings.sort_toggle = v; }
-        if let Some(v) = kb.delete_item { config.keybindings.delete_item = v; }
-        if let Some(v) = kb.focus_panel { config.keybindings.focus_panel = v; }
-        if let Some(v) = kb.quit { config.keybindings.quit = v; }
+        if let Some(v) = kb.move_up {
+            config.keybindings.move_up = v;
+        }
+        if let Some(v) = kb.move_down {
+            config.keybindings.move_down = v;
+        }
+        if let Some(v) = kb.enter_dir {
+            config.keybindings.enter_dir = v;
+        }
+        if let Some(v) = kb.leave_dir {
+            config.keybindings.leave_dir = v;
+        }
+        if let Some(v) = kb.sort_toggle {
+            config.keybindings.sort_toggle = v;
+        }
+        if let Some(v) = kb.delete_item {
+            config.keybindings.delete_item = v;
+        }
+        if let Some(v) = kb.focus_panel {
+            config.keybindings.focus_panel = v;
+        }
+        if let Some(v) = kb.quit {
+            config.keybindings.quit = v;
+        }
     }
 
     if let Some(th) = raw.theme {
-        if let Some(v) = th.color_scheme { config.theme.color_scheme = v; }
-        if let Some(colors) = th.colors { config.theme.colors.extend(colors); }
+        if let Some(v) = th.color_scheme {
+            config.theme.color_scheme = v;
+        }
+        if let Some(colors) = th.colors {
+            config.theme.colors.extend(colors);
+        }
+    }
+
+    if let Some(b) = raw.browsing {
+        if let Some(v) = b.auto_scan_on_start {
+            config.browsing.auto_scan_on_start = v;
+        }
     }
 
     config

@@ -63,27 +63,24 @@ pub fn is_protected_path(path: &Path) -> bool {
         ]
     } else {
         &[
-            "/boot",
-            "/etc",
-            "/dev",
-            "/proc",
-            "/sys",
-            "/usr/bin",
-            "/usr/lib",
-            "/bin",
-            "/sbin",
-            "/lib",
-            "/lib64",
+            "/boot", "/etc", "/dev", "/proc", "/sys", "/usr/bin", "/usr/lib", "/bin", "/sbin",
+            "/lib", "/lib64",
         ]
     };
 
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let canonical_str = canonical.to_string_lossy();
-    protected.iter().any(|p| canonical_str == *p || canonical_str.starts_with(&format!("{}/", p)))
+    protected
+        .iter()
+        .any(|p| canonical_str == *p || canonical_str.starts_with(&format!("{}/", p)))
 }
 
 /// Count total files in a directory tree
-pub fn count_files<F>(node: &F, is_dir_fn: fn(&F) -> bool, children_fn: fn(&F) -> &std::collections::HashMap<String, F>) -> u64 {
+pub fn count_files<F>(
+    node: &F,
+    is_dir_fn: fn(&F) -> bool,
+    children_fn: fn(&F) -> &std::collections::HashMap<String, F>,
+) -> u64 {
     let mut count = 0u64;
     if !is_dir_fn(node) {
         count += 1;
@@ -96,18 +93,10 @@ pub fn count_files<F>(node: &F, is_dir_fn: fn(&F) -> bool, children_fn: fn(&F) -
 
 /// Count files in a FileNode tree
 pub fn count_file_nodes(node: &argus_core::FileNode) -> u64 {
-    count_files(
-        node,
-        |n| n.is_dir,
-        |n| &n.children,
-    )
+    count_files(node, |n| n.is_dir, |n| &n.children)
 }
 
 /// Count files in a DiffNode tree
 pub fn count_diff_nodes(node: &argus_core::DiffNode) -> u64 {
-    count_files(
-        node,
-        |n| n.is_dir,
-        |n| &n.children,
-    )
+    count_files(node, |n| n.is_dir, |n| &n.children)
 }

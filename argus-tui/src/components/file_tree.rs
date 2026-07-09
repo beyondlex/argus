@@ -10,7 +10,14 @@ use crate::app::{SortMode, TreeLine};
 use crate::util;
 
 /// Render the file tree panel
-pub fn render(f: &mut Frame, area: Rect, lines: &[TreeLine], cursor: usize, scroll_offset: usize, sort_mode: SortMode) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    lines: &[TreeLine],
+    cursor: usize,
+    scroll_offset: usize,
+    sort_mode: SortMode,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" File Tree ({}) ", sort_mode.label()))
@@ -70,14 +77,13 @@ pub fn render(f: &mut Frame, area: Rect, lines: &[TreeLine], cursor: usize, scro
             "  "
         };
 
-        let name_str = format!(
-            "{}{}{}",
-            prefix,
-            branch,
-            line.node.name()
-        );
+        let name_str = format!("{}{}{}", prefix, branch, line.node.name());
 
-        let size_str = util::format_size(line.node.current_size());
+        let size_str = if line.node.is_dir() && !line.has_scan_data {
+            "-".to_string()
+        } else {
+            util::format_size(line.node.current_size())
+        };
         let delta_str = if line.node.size_delta() != 0 {
             util::format_delta(line.node.size_delta())
         } else {
@@ -85,17 +91,27 @@ pub fn render(f: &mut Frame, area: Rect, lines: &[TreeLine], cursor: usize, scro
         };
 
         let name_style = if is_selected {
-            Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else if line.node.is_dir() {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
 
+        let size_style = if line.node.is_dir() && !line.has_scan_data {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
         let mut spans = vec![
             Span::styled(name_str, name_style),
             Span::raw("  "),
-            Span::styled(size_str, Style::default().fg(Color::Yellow)),
+            Span::styled(size_str, size_style),
         ];
 
         if !delta_str.is_empty() {
@@ -105,7 +121,12 @@ pub fn render(f: &mut Frame, area: Rect, lines: &[TreeLine], cursor: usize, scro
                 Color::Green
             };
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(delta_str, Style::default().fg(delta_color).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(
+                delta_str,
+                Style::default()
+                    .fg(delta_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
         }
 
         rendered_lines.push(Line::from(spans));

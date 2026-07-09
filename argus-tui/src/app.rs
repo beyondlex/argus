@@ -144,7 +144,7 @@ pub struct TreeLine {
     pub depth: usize,
     pub node: TreeNode,
     pub expanded: bool,
-    pub selected: bool,
+    pub has_scan_data: bool,
 }
 
 /// Snapshot metadata parsed from filename
@@ -189,6 +189,9 @@ pub struct App {
     pub focus: Focus,
     pub sort_mode: SortMode,
 
+    // View root (always set, initialized to cwd)
+    pub view_root_path: PathBuf,
+
     // Tree state
     pub tree_root: Option<TreeNode>,
     pub tree_lines: Vec<TreeLine>,
@@ -196,18 +199,21 @@ pub struct App {
     pub scroll_offset: usize,
     pub expanded: HashSet<String>,
 
-    // Snapshot management
-    pub snapshots_dir: PathBuf,
+    // Scan cache: path → full scanned snapshot
+    pub scan_cache: HashMap<PathBuf, Snapshot>,
+
+    // Snapshot index: path_hash → all available snapshots for that path
+    pub snapshot_index: HashMap<String, Vec<SnapshotInfo>>,
+
+    // Snapshots scoped to current view_root_path's hash
     pub available_snapshots: Vec<SnapshotInfo>,
-    pub current_root_path: Option<PathBuf>,
-    pub current_snapshot: Option<Snapshot>,
+
+    pub snapshots_dir: PathBuf,
 
     // Filter state
     pub filter_state: FilterState,
 
     // Scan state
-    pub scan_prompt_open: bool,
-    pub scan_path_input: String,
     pub scanning: bool,
     pub scan_progress: Option<(u64, u64)>,
     pub cancel_scan: Arc<AtomicBool>,
@@ -228,8 +234,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: crate::config::TuiConfig, tx: mpsc::Sender<AppMessage>, rx: mpsc::Receiver<AppMessage>) -> Self {
+    pub fn new(
+        config: crate::config::TuiConfig,
+        tx: mpsc::Sender<AppMessage>,
+        rx: mpsc::Receiver<AppMessage>,
+    ) -> Self {
         let snapshots_dir = util::default_snapshots_dir();
+        let view_root_path =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
         Self {
             config,
@@ -237,23 +249,22 @@ impl App {
             mode: AppMode::Browsing,
             focus: Focus::Tree,
             sort_mode: SortMode::Delta,
+            view_root_path,
             tree_root: None,
             tree_lines: Vec::new(),
             cursor: 0,
             scroll_offset: 0,
             expanded: HashSet::new(),
-            snapshots_dir,
+            scan_cache: HashMap::new(),
+            snapshot_index: HashMap::new(),
             available_snapshots: Vec::new(),
-            current_root_path: None,
-            current_snapshot: None,
+            snapshots_dir,
             filter_state: FilterState {
                 from_idx: None,
                 to_idx: None,
                 threshold: None,
                 dirty: false,
             },
-            scan_prompt_open: false,
-            scan_path_input: String::new(),
             scanning: false,
             scan_progress: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
@@ -265,45 +276,13 @@ impl App {
         }
     }
 
-    /// Load snapshots from disk and initialize the tree
-    pub fn initialize_from_snapshots(&mut self) {
+    /// Load all snapshots from disk into scan_cache and snapshot_index
+    pub fn load_all_snapshots(&mut self) {
         let _ = std::fs::create_dir_all(&self.snapshots_dir);
-
-        let snapshots = match self.load_available_snapshots() {
-            Ok(s) => s,
-            Err(e) => {
-                self.last_error = Some(format!("failed to load snapshots: {}", e));
-                return;
-            }
-        };
-
-        if snapshots.is_empty() {
-            return; // No snapshots — prompt will show
-        }
-
-        // Take the latest snapshot (any root path) as current root
-        let latest = snapshots.iter().max_by_key(|s| s.timestamp).unwrap().clone();
-        self.available_snapshots = snapshots
-            .into_iter()
-            .filter(|s| s.path_hash == latest.path_hash)
-            .collect();
-        self.available_snapshots.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-        self.current_root_path = Some(self.snapshots_dir.join(format!(
-            "{}_{}.json",
-            latest.path_hash,
-            latest.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
-        )));
-
-        self.load_snapshot_tree(&latest);
-    }
-
-    fn load_available_snapshots(&self) -> Result<Vec<SnapshotInfo>, String> {
-        let mut snapshots = Vec::new();
 
         let entries = match std::fs::read_dir(&self.snapshots_dir) {
             Ok(e) => e,
-            Err(_) => return Ok(snapshots),
+            Err(_) => return,
         };
 
         for entry in entries {
@@ -322,42 +301,77 @@ impl App {
                 None => continue,
             };
 
-            // Parse filename: {hash}_{timestamp}
-            if let Some((path_hash, ts_str)) = filename.split_once('_') {
-                if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
-                    snapshots.push(SnapshotInfo {
-                        path_hash: path_hash.to_string(),
-                        timestamp: ts.with_timezone(&Utc),
-                        path,
-                    });
+            let Some((path_hash, ts_str)) = filename.split_once('_') else {
+                continue;
+            };
+            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                continue;
+            };
+            let ts = ts.with_timezone(&Utc);
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let snapshot: Snapshot = match serde_json::from_str(&content) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Index by root path for direct lookup
+            self.scan_cache
+                .insert(snapshot.root_path.clone(), snapshot.clone());
+
+            // Index by hash for filter bar
+            self.snapshot_index
+                .entry(path_hash.to_string())
+                .or_default()
+                .push(SnapshotInfo {
+                    path_hash: path_hash.to_string(),
+                    timestamp: ts,
+                    path,
+                });
+        }
+
+        // Sort each snapshot_index entry by timestamp
+        for snapshots in self.snapshot_index.values_mut() {
+            snapshots.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        }
+    }
+
+    /// Build tree for current view_root_path from scan_cache or filesystem
+    pub fn rebuild_tree(&mut self) {
+        // Scope available_snapshots to current view_root_path's hash
+        let path_hash = argus_core::hash_root_path(&self.view_root_path);
+        self.available_snapshots = self
+            .snapshot_index
+            .get(&path_hash)
+            .cloned()
+            .unwrap_or_default();
+        self.available_snapshots
+            .sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        // Check scan cache first
+        if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
+            self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
+        } else {
+            // Fall back to FS listing
+            match argus_core::list_dir(&self.view_root_path) {
+                Ok(node) => {
+                    self.tree_root = Some(TreeNode::Snapshot(node));
+                }
+                Err(e) => {
+                    self.last_error = Some(format!("failed to list directory: {}", e));
+                    self.error_clear_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                    self.tree_root = None;
                 }
             }
         }
 
-        Ok(snapshots)
-    }
-
-    fn load_snapshot_tree(&mut self, info: &SnapshotInfo) {
-        let content = match std::fs::read_to_string(&info.path) {
-            Ok(c) => c,
-            Err(e) => {
-                self.last_error = Some(format!("failed to read snapshot: {}", e));
-                return;
-            }
-        };
-
-        let snapshot: Snapshot = match serde_json::from_str(&content) {
-            Ok(s) => s,
-            Err(e) => {
-                self.last_error = Some(format!("failed to parse snapshot: {}", e));
-                return;
-            }
-        };
-
-        let root_path = snapshot.root_path.clone();
-        self.current_root_path = Some(root_path);
-        self.current_snapshot = Some(snapshot.clone());
-        self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
+        self.cursor = 0;
+        self.expanded.clear();
+        self.filter_state.clear();
         self.update_tree_lines();
     }
 
@@ -365,16 +379,17 @@ impl App {
     pub fn update_tree_lines(&mut self) {
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
+        let has_scan_data = self.scan_cache.contains_key(&self.view_root_path);
 
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(root)) => {
                 let mut lines = Vec::new();
-                flatten_snapshot_tree(root, 0, expanded, sort_mode, &mut lines);
+                flatten_snapshot_tree(root, 0, expanded, sort_mode, &mut lines, has_scan_data);
                 lines
             }
             Some(TreeNode::Diff(root)) => {
                 let mut lines = Vec::new();
-                flatten_diff_tree(root, 0, expanded, sort_mode, &mut lines);
+                flatten_diff_tree(root, 0, expanded, sort_mode, &mut lines, has_scan_data);
                 lines
             }
             None => Vec::new(),
@@ -389,19 +404,44 @@ impl App {
     /// Handle a message from background tasks
     pub fn handle_message(&mut self, msg: AppMessage) {
         match msg {
-            AppMessage::ScanProgress { file_count, total_bytes } => {
+            AppMessage::ScanProgress {
+                file_count,
+                total_bytes,
+            } => {
                 self.scan_progress = Some((file_count, total_bytes));
             }
             AppMessage::ScanComplete(snapshot) => {
                 self.scanning = false;
                 self.scan_progress = None;
-                self.current_snapshot = Some(snapshot.clone());
-                self.current_root_path = Some(snapshot.root_path.clone());
-                self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
-                self.cursor = 0;
-                self.expanded.clear();
-                self.filter_state.clear();
-                self.update_tree_lines();
+
+                // Update scan cache
+                self.scan_cache
+                    .insert(snapshot.root_path.clone(), snapshot.clone());
+
+                // Update snapshot index
+                let hash = argus_core::hash_root_path(&snapshot.root_path);
+                let info = SnapshotInfo {
+                    path_hash: hash.clone(),
+                    timestamp: snapshot.timestamp,
+                    path: self.snapshots_dir.join(format!(
+                        "{}_{}.json",
+                        hash,
+                        snapshot.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
+                    )),
+                };
+                self.snapshot_index.entry(hash).or_default().push(info);
+                // Re-sort after insertion
+                if let Some(snapshots) = self
+                    .snapshot_index
+                    .get_mut(&argus_core::hash_root_path(&snapshot.root_path))
+                {
+                    snapshots.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                }
+
+                // Rebuild tree if scanned path matches current view
+                if snapshot.root_path == self.view_root_path {
+                    self.rebuild_tree();
+                }
             }
             AppMessage::DiffComplete(diff) => {
                 // Apply threshold filter if set
@@ -418,7 +458,8 @@ impl App {
             AppMessage::Error(e) => {
                 self.scanning = false;
                 self.last_error = Some(e);
-                self.error_clear_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                self.error_clear_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
             }
         }
     }
@@ -433,16 +474,29 @@ impl App {
         matches!(&self.tree_root, Some(TreeNode::Diff(_)))
     }
 
-    /// Get the full path of the selected node for deletion
+    /// Get the full path of the selected node
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let line = self.selected_line()?;
-        let root = self.current_root_path.as_ref()?;
-        let node_name = line.node.name();
-        if node_name == root.file_name()?.to_string_lossy() {
-            return Some(root.clone());
+        let mut path = self.view_root_path.clone();
+        if line.depth == 0 {
+            return Some(path);
         }
-        // Compute relative path by traversing up from root
-        Some(root.join(node_name))
+        // Walk up tree_lines to collect ancestor nodes (skip depth 0, which is view_root_path itself)
+        let cursor = self.cursor;
+        let mut ancestors: Vec<&str> = Vec::new();
+        let mut target_depth = line.depth;
+        for i in (0..cursor).rev() {
+            let l = &self.tree_lines[i];
+            if l.depth < target_depth && l.depth > 0 {
+                ancestors.push(l.node.name());
+                target_depth = l.depth;
+            }
+        }
+        for ancestor in ancestors.iter().rev() {
+            path.push(ancestor);
+        }
+        path.push(line.node.name());
+        Some(path)
     }
 }
 
@@ -454,6 +508,7 @@ fn flatten_snapshot_tree(
     expanded: &HashSet<String>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
+    has_scan_data: bool,
 ) {
     let path_key = node.name.clone();
     let is_expanded = expanded.contains(&path_key) || depth == 0;
@@ -462,14 +517,14 @@ fn flatten_snapshot_tree(
         depth,
         node: TreeNode::Snapshot(node.clone()),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
-        selected: false,
+        has_scan_data: has_scan_data || !node.is_dir,
     });
 
     if is_expanded && node.is_dir {
         let mut children: Vec<&FileNode> = node.children.values().collect();
         sort_children_snapshot(&mut children, sort_mode);
         for child in children {
-            flatten_snapshot_tree(child, depth + 1, expanded, sort_mode, lines);
+            flatten_snapshot_tree(child, depth + 1, expanded, sort_mode, lines, has_scan_data);
         }
     }
 }
@@ -480,6 +535,7 @@ fn flatten_diff_tree(
     expanded: &HashSet<String>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
+    _has_scan_data: bool,
 ) {
     let path_key = node.name.clone();
     let is_expanded = expanded.contains(&path_key) || depth == 0;
@@ -488,14 +544,14 @@ fn flatten_diff_tree(
         depth,
         node: TreeNode::Diff(node.clone()),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
-        selected: false,
+        has_scan_data: true,
     });
 
     if is_expanded && node.is_dir {
         let mut children: Vec<&DiffNode> = node.children.values().collect();
         sort_children_diff(&mut children, sort_mode);
         for child in children {
-            flatten_diff_tree(child, depth + 1, expanded, sort_mode, lines);
+            flatten_diff_tree(child, depth + 1, expanded, sort_mode, lines, _has_scan_data);
         }
     }
 }

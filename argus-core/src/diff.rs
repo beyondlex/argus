@@ -384,21 +384,30 @@ mod tests {
 
     #[test]
     fn test_threshold_zero_filters_unchanged() {
-        let tree = make_dir("test", vec![
-            make_file("unchanged.txt", 100),
-            make_file("changed.txt", 200),
-        ]);
+        let tree = make_dir(
+            "test",
+            vec![
+                make_file("unchanged.txt", 100),
+                make_file("changed.txt", 200),
+            ],
+        );
         let old = make_snapshot("/test", tree);
-        let tree2 = make_dir("test", vec![
-            make_file("unchanged.txt", 100),
-            make_file("changed.txt", 300),
-        ]);
+        let tree2 = make_dir(
+            "test",
+            vec![
+                make_file("unchanged.txt", 100),
+                make_file("changed.txt", 300),
+            ],
+        );
         let new = make_snapshot("/test", tree2);
         let diff = compare_trees(&old, &new).unwrap();
         let filtered = filter_by_threshold(&diff, 0).unwrap();
         assert!(filtered.children.get("unchanged.txt").is_none());
         assert!(filtered.children.get("changed.txt").is_some());
-        assert_eq!(filtered.children.get("changed.txt").unwrap().size_delta, 100);
+        assert_eq!(
+            filtered.children.get("changed.txt").unwrap().size_delta,
+            100
+        );
     }
 
     #[test]
