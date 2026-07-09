@@ -38,6 +38,8 @@ pub fn scan_path(
 
     let walker = WalkBuilder::new(path)
         .follow_links(false)
+        .git_ignore(false) // Don't silently skip gitignored dirs; our
+        // filter_entry handles which to skip
         .filter_entry(move |entry| {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = entry.file_name().to_string_lossy();
@@ -680,5 +682,31 @@ mod tests {
         assert!(nm_node.is_dir);
         assert!(nm_node.children.is_empty()); // No tree inside skipped dir
         assert_eq!(nm_node.size, 18 + 15); // Full recursive size, not just one level
+    }
+
+    #[test]
+    fn test_scan_skip_gitignored_dirs() {
+        // Simulate a Rust project: "target" dir with files + .gitignore that
+        // ignores it.  Without git_ignore(false) the walker would silently skip
+        // "target" before filter_entry ever sees it.
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap(); // 12 bytes
+
+        let tg = dir.path().join("target");
+        fs::create_dir_all(tg.join("debug")).unwrap();
+        fs::write(tg.join("debug").join("a.o"), "AAAA").unwrap(); // 4 bytes
+        fs::write(tg.join("b.o"), "BBBBBB").unwrap(); // 6 bytes
+
+        let cancel = AtomicBool::new(false);
+        let skip = vec!["target".to_string()];
+        let snapshot = scan_path(dir.path(), &cancel, None, &skip).unwrap();
+
+        // Total should include both: main.rs + inside target
+        assert_eq!(snapshot.total_size, 12 + 4 + 6);
+
+        let tg_node = snapshot.root_node.children.get("target").unwrap();
+        assert!(tg_node.is_dir);
+        assert_eq!(tg_node.size, 4 + 6); // Full recursive size
     }
 }
