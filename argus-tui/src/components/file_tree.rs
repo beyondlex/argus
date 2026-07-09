@@ -241,12 +241,15 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
                 &indices,
                 ctx.is_current_match,
                 ctx.is_selected,
+                line.node.is_dir(),
             ));
         } else {
             let (fg, actual_bg) = if ctx.is_current_match {
                 (Color::Green, ctx.bg)
             } else if ctx.is_selected {
                 (Color::Black, Color::Blue)
+            } else if line.node.is_dir() {
+                (Color::Cyan, ctx.bg)
             } else {
                 (Color::White, ctx.bg)
             };
@@ -280,6 +283,7 @@ fn match_highlight_spans<'a>(
     match_indices: &[usize],
     is_current_match: bool,
     is_selected: bool,
+    is_dir: bool,
 ) -> Vec<Span<'a>> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
@@ -289,7 +293,8 @@ fn match_highlight_spans<'a>(
     let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
         (Color::Black, Color::Green, Color::Black, Color::Blue)
     } else {
-        (Color::Green, Color::Black, Color::White, Color::Black)
+        let normal_fg = if is_dir { Color::Cyan } else { Color::White };
+        (Color::Green, Color::Black, normal_fg, Color::Black)
     };
 
     for (ci, ch) in chars.iter().enumerate() {
