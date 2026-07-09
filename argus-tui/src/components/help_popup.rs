@@ -37,6 +37,10 @@ pub fn render(f: &mut Frame, area: Rect) {
             Span::raw("Collapse directory"),
         ]),
         Line::from(vec![
+            Span::styled("H            ", Style::default().fg(Color::Yellow)),
+            Span::raw("Collapse all directories"),
+        ]),
+        Line::from(vec![
             Span::styled("u            ", Style::default().fg(Color::Yellow)),
             Span::raw("Go to parent directory"),
         ]),
