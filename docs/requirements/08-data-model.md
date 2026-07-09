@@ -156,7 +156,31 @@ pub type AiCache = HashMap<PathBuf, AiResult>;
 2. 统计子树下变动最大的 Top 5 文件。
 3. 计算主要后缀名分布（如 `.log` 占 90%）。
 
-### 2.4 批量分析与反馈映射
+### 2.4 惰性目录列举（list_dir）
+
+独立模式下，TUI 通过 `list_dir` 实现惰性文件树导航，避免全量扫描前无数据可用。
+
+```rust
+/// 惰性读取目录一级内容。返回文件/目录的 FileNode，其中：
+/// - 文件：size = metadata().len()（真实文件大小）
+/// - 目录：size = 0（未递归求和）
+/// - 子目录的 children = 空（惰性加载，展开时再读取）
+///
+/// 错误：PathNotFound, PermissionDenied, Io
+pub fn list_dir(path: &Path) -> Result<FileNode, ScanError>
+```
+
+`list_dir` 与递归 `scan_path` 的关系：
+
+| 维度 | list_dir | scan_path |
+|------|----------|-----------|
+| 递归 | 否，只读一级 | 是，全量递归 |
+| 目录 size | 0（不求和） | 自底向上汇总 |
+| children | 仅文件有，子目录为空 | 完整子树 |
+| 用途 | TUI 惰性导航 | 保存快照、计算 diff |
+| 性能 | O(n) 一级条目 | O(N) 全量遍历 |
+
+### 2.5 批量分析与反馈映射
 
 当用户在 TUI 中触发 AI 分析（按 `a` 键或光标停顿），系统可发送一批路径给 AI 以提高效率。
 
@@ -194,10 +218,12 @@ fn parse_indexed_response(raw: &str) -> Result<HashMap<PathBuf, AiResult>>;
 
 ## 3. 快照持久化
 
-### 3.1 MVP 阶段（JSON）
+### 3.1 JSON 快照
 
 - 使用 `serde_json` 序列化/反序列化。
 - 存储路径：`~/.config/argus/snapshots/{root_path_hash}_{timestamp}.json`（`root_path_hash` 防止多盘扫描冲突，取 SHA256 前 8 字符）。
+- TUI 启动时会**加载所有** JSON 快照到内存 `scan_cache`（`HashMap<PathBuf, Snapshot>`），键为 `root_path`。
+- 同一路径有多个快照时，最新快照用于 size 展示，历史快照用于 diff。
 - 快照文件头部包含 `version` 字段（当前为 `1`），用于格式演进：
 
 ```rust

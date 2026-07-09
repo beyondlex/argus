@@ -113,6 +113,16 @@ track_enabled = true
 daily_limit = 0
 ```
 
+## 8. 浏览配置组 `[browsing]`
+
+```toml
+[browsing]
+# 启动时是否自动扫描当前工作目录
+# false: 仅展示 FS 文件树（目录 size 显示 "-"），按 s 手动扫描
+# true:  启动后立即在后台扫描 cwd，完成后展示完整数据
+auto_scan_on_start = false
+```
+
 ## 7. 配置管理需求
 
 - 配置文件使用 TOML 格式，支持 Rust 的 `serde` 直接反序列化。

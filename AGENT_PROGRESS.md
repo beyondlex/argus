@@ -12,14 +12,14 @@ Read this after `AGENTS.md` and the relevant requirements docs, then update it w
 
 ## Last Updated
 
-- 2026-07-08
+- 2026-07-09
 
 ## Current State
 
 - Phase 1 MVP is complete: `argus-core` (model/scanner/diff/ai_feature) + `argus-cli` (scan/diff/explain).
 - 37 unit tests, clippy clean, fmt clean.
-- All core features (scan, diff, AI prompt gen) work without AI being required.
-- Workspace: argus-core + argus-cli, Cargo workspace with aligned deps.
+- Phase 2 TUI structural refactoring in progress: standalone mode file tree redesign.
+- Design approved in `docs/plans/standalone-fs-navigation-refactor.md`.
 
 ## Active Work
 
@@ -34,9 +34,24 @@ Read this after `AGENTS.md` and the relevant requirements docs, then update it w
 - [x] Manual acceptance testing (§4.1-4.5).
 - [ ] Implement config.rs (§2.4) for ignore config loading.
 
+### Phase 2 — Standalone FS Navigation Refactor
+
+- [x] Design doc: `docs/plans/standalone-fs-navigation-refactor.md`
+- [x] Updated: `02-architecture.md`, `03-core-features.md`, `04-configuration.md`
+- [x] Updated: `05-ux-interaction.md`, `08-data-model.md`, `12-phase2-guide.md`
+- [ ] `argus-core`: implement `list_dir()` + tests
+- [ ] `argus-tui/app.rs`: new fields, scan_cache, rebuild_tree
+- [ ] `argus-tui/handler.rs`: new navigation, s = scan tree root, no prompt
+- [ ] `argus-tui/event.rs`: remove empty/scan prompts
+- [ ] `argus-tui/file_tree.rs`: `"- "` rendering for unscanned dirs
+- [ ] `argus-tui/filter_bar.rs`: scoped to current path hash
+- [ ] `argus-tui/metadata.rs`: scan status display
+- [ ] `argus-tui/config.rs`: BrowsingConfig
+- [ ] `argus-tui/main.rs`: auto_scan_on_start
+- [ ] Integration tests, manual acceptance
+
 ### Later Phases
 
-- [ ] TUI shell and keybinding layer.
 - [ ] Daemon and IPC protocol.
 - [ ] AI API integration and token tracking.
 - [ ] GUI client.

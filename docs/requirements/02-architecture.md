@@ -79,14 +79,20 @@ argus/
 | **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，数据写入本地快照文件 (`~/.config/argus/snapshots/`) |
 | **服务模式 (Client-Server)** | TUI/GUI 需要秒级历史 Diff | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
 
-**独立模式下的文件树**：TUI 始终展示一个统一的文件树，delta 是树上的可选覆盖层（受顶部筛选栏控制）。详见 `03-core-features.md §5.0`。
-
-| 筛选栏状态 | TUI 行为 | 等效工具 |
-|-----------|---------|---------|
-| 无时间/阈值（默认） | 纯文件树浏览 | `ncdu` |
-| 选择了时间范围 | 加载对应快照，显示叠加 delta | `ncdu` + delta 增强 |
-
+**独立模式下的文件树**：TUI 始终以用户当前工作目录 (cwd) 为根展示可自由游走的文件树。
 所有行为均通过调用 `argus-core` 实现，不依赖外部服务。
+
+**两层数据驱动文件树**：
+
+| 层 | 来源 | 始终可用 |
+|----|------|---------|
+| **FS 层** | `list_dir()` 惰性读取磁盘目录内容 | 是 |
+| **Scan 层** | `scan_cache` 缓存磁盘上的 JSON 快照 | 仅扫描后 |
+
+- 文件始终展示真实大小（单次 `stat` 低成本）
+- 目录有扫描数据时展示汇总大小，否则展示 `"-"`
+- Delta 是 scan 层上的可选覆盖层（受顶部筛选栏控制）
+- 详见 `docs/plans/standalone-fs-navigation-refactor.md`
 
 #### 模式切换时序
 

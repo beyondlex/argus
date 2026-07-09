@@ -181,28 +181,37 @@ fn scan(path: &Path, cancel: &AtomicBool) -> Result<Snapshot, ScanError> {
 TUI 展示一个统一的文件树，delta 是树上的可选的筛选覆盖层，不是独立模式：
 
 ```
-TUI 启动 → 确定树根路径 → 渲染文件树
+TUI 启动 → 加载所有快照到 scan_cache → 确定 cwd 作为树根
                 │
-                ├── 从未扫描 → 树为空，提示"按 s 扫描当前目录"
-                │              用户按 s → 选择扫描根路径 → 扫描 → 渲染树
+                ├── scan_cache 有 cwd 的数据 → 渲染完整数据树（size + children）
                 │
-                ├── 有该路径的快照 → 加载该路径最新快照，渲染树（仅 size，无 delta）
-                │                     顶部筛选栏显示可用时间范围
-                │                     用户选择时间 → 加载对应快照 → 显示 delta
+                ├── scan_cache 无 cwd 的数据
+                │       └── 配置 auto_scan_on_start = true
+                │               → 后台扫描 cwd → 完成后渲染完整数据树
+                │       └── 配置 auto_scan_on_start = false
+                │               → list_dir(cwd) → 渲染 FS 树（目录 size="-"，文件有真实 size）
+                │               → 用户按 s → scan_path(cwd) → 保存 + 更新缓存 → 渲染完整数据树
                 │
-                └── 连接 daemon → 树根为 /（或配置的根）
-                                   筛选栏始终可用，查询数据库获取 delta
+                └── 用户导航到其他目录（l/h 切换树根）
+                        ├── scan_cache 有该目录 → 渲染完整数据树
+                        └── scan_cache 无该目录 → list_dir 惰性读取 → 渲染 FS 树
 ```
 
 **关键设计决策**：
 
-1. **没有"路径选择器"**：TUI 显示的树始终是某个扫描根的子树。首次使用时提示用户扫描一个目录。之后树根默认为最近一次扫描结果的 `root_path`，可通过重新扫描切换。
+1. **文件树永远存在**：以 cwd 为根，始终可自由游走。扫描是增强，不是前提。
 
-2. **Delta 是筛选条件，不是模式**：时间选择器为空 = 纯 ncdu 模式（无 delta 列）。选择了时间范围 = 显示 delta。用户丝滑切换，零心智负担。
+2. **两层数据驱动**：
+   - FS 层（`list_dir`）：懒加载目录结构，文件展示真实 size
+   - Scan 层（`scan_cache`）：全量扫描后才有汇总 size / children / delta
 
-3. **统一数据模型（Phase 3+）**：数据库以 `(path, size, timestamp)` 三元组存储。TUI 可以查询任意子树在任意时间范围的 delta，无需"两个快照"的概念。Phase 2 通过 JSON 快照对比近似实现这一体验。
+3. **没有"路径选择器"**：按 `s` 不再弹输入框，直接扫描当前树根（cwd）。要切换扫描目标，先导航到目标目录再按 s。
 
-4. **独立模式 vs 服务模式**：两种模式都使用相同的 tree + delta filter 界面，只是 delta 数据的来源不同（JSON diff vs 数据库聚合）。
+4. **Delta 是筛选条件，不是模式**：时间选择器为空 = 无 delta 列。选择了时间范围 = 显示 delta。仅对当前树根路径的历史快照生效。
+
+5. **统一数据模型（Phase 3+）**：数据库以 `(path, size, timestamp)` 三元组存储。TUI 可以查询任意子树在任意时间范围的 delta，无需"两个快照"的概念。Phase 2 通过 JSON 快照对比近似实现这一体验。
+
+6. **独立模式 vs 服务模式**：两种模式都使用相同的 tree + delta filter 界面，只是 delta 数据的来源不同（JSON diff vs 数据库聚合）。
 
 ### 5.1 百万级文件目录
 
