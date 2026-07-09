@@ -30,7 +30,8 @@ pub fn scan_path(
     let mut total_bytes = 0u64;
 
     // Collect paths of directories matching skip patterns so we can
-    // shallow-scan them after the walk (record one level of children only).
+    // walk them fully for size counting after the main walk (no tree
+    // expansion inside skipped directories — keeps memory low).
     let skipped = Arc::new(Mutex::new(Vec::new()));
     let skipped_clone = skipped.clone();
     let skip_patterns: Vec<String> = skip_dirs.to_vec();
@@ -140,21 +141,38 @@ pub fn scan_path(
         insert_node(&mut root_node, &components, node);
     }
 
-    // Shallow-scan skipped directories (one level of children only)
+    // Walk skipped directories fully for accurate size counting, but don't
+    // build the tree inside them (keeps memory usage low).
     for skip_path in skipped.lock().unwrap().drain(..) {
         if cancel.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
         }
-        if let Ok(dir_node) = list_dir(&skip_path) {
-            let shallow_size: u64 = dir_node.children.values().map(|c| c.size).sum();
-            total_bytes = total_bytes.saturating_add(shallow_size);
-            file_count += dir_node.children.len() as u64;
 
-            let rel_path = skip_path.strip_prefix(path).unwrap_or(&skip_path);
-            let components: Vec<std::path::Component> = rel_path.components().collect();
-            if !components.is_empty() {
-                insert_node(&mut root_node, &components, dir_node);
-            }
+        let (size, count) = walk_dir_size(&skip_path, cancel, &mut seen_inodes);
+        total_bytes = total_bytes.saturating_add(size);
+        file_count += count;
+
+        // Lightweight directory node: accurate size, empty children (no tree
+        // expansion inside the skipped directory).
+        let dir_name = skip_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let dir_node = FileNode {
+            name: dir_name,
+            is_dir: true,
+            file_type: FileType::Directory,
+            size,
+            modified: None,
+            inode: None,
+            device: None,
+            children: HashMap::new(),
+        };
+
+        let rel_path = skip_path.strip_prefix(path).unwrap_or(&skip_path);
+        let components: Vec<std::path::Component> = rel_path.components().collect();
+        if !components.is_empty() {
+            insert_node(&mut root_node, &components, dir_node);
         }
     }
 
@@ -353,6 +371,49 @@ fn compute_size(node: &mut FileNode) -> u64 {
     }
     node.size = total;
     total
+}
+
+/// Walk a directory tree fully counting file sizes, without building a tree.
+/// Returns (total_bytes, file_count).  Inode dedup uses the same
+/// `seen_inodes` set as the parent scan to avoid double-counting across
+/// hard links shared between skipped and non-skipped parts of the tree.
+fn walk_dir_size(
+    path: &Path,
+    cancel: &AtomicBool,
+    seen_inodes: &mut HashSet<(u64, u64)>,
+) -> (u64, u64) {
+    let mut total = 0u64;
+    let mut count = 0u64;
+
+    let walker = WalkBuilder::new(path).follow_links(false).build();
+
+    for result in walker {
+        if cancel.load(Ordering::Relaxed) {
+            return (total, count);
+        }
+
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let meta = match std::fs::symlink_metadata(entry.path()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if meta.is_file() {
+            if let (Ok(device), Ok(inode)) = (get_device(&meta), get_inode(&meta)) {
+                if !seen_inodes.insert((device, inode)) {
+                    continue;
+                }
+            }
+            total = total.saturating_add(meta.len());
+            count += 1;
+        }
+    }
+
+    (total, count)
 }
 
 #[cfg(test)]
@@ -578,5 +639,46 @@ mod tests {
         let hash1 = crate::model::hash_root_path(&path);
         let hash2 = crate::model::hash_root_path(&path);
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_walk_dir_size_counts_nested_files() {
+        let dir = TempDir::new().unwrap();
+        // Create nested structure inside a subdirectory
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(sub.join("deep")).unwrap();
+        fs::write(sub.join("a.txt"), "hello").unwrap();
+        fs::write(sub.join("deep").join("b.txt"), "world!").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let mut seen = HashSet::new();
+        let (size, count) = walk_dir_size(&sub, &cancel, &mut seen);
+        // "hello" = 5 bytes, "world!" = 6 bytes
+        assert_eq!(size, 11);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_scan_with_skip_dir_includes_full_size() {
+        let dir = TempDir::new().unwrap();
+        // Normal file outside skip directory
+        fs::write(dir.path().join("readme.md"), "project").unwrap();
+        // Create a "node_modules" dir with deeply nested content
+        let nm = dir.path().join("node_modules");
+        fs::create_dir_all(nm.join("pkg/src")).unwrap();
+        fs::write(nm.join("pkg").join("index.js"), "module.exports = 1").unwrap();
+        fs::write(nm.join("pkg/src").join("lib.js"), "function f() {}").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let skip = vec!["node_modules".to_string()];
+        let snapshot = scan_path(dir.path(), &cancel, None, &skip).unwrap();
+
+        // "project" = 7 bytes, "module.exports = 1" = 18, "function f() {}" = 15
+        assert_eq!(snapshot.total_size, 7 + 18 + 15);
+
+        let nm_node = snapshot.root_node.children.get("node_modules").unwrap();
+        assert!(nm_node.is_dir);
+        assert!(nm_node.children.is_empty()); // No tree inside skipped dir
+        assert_eq!(nm_node.size, 18 + 15); // Full recursive size, not just one level
     }
 }

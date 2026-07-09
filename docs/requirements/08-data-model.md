@@ -22,6 +22,7 @@ pub struct FileNode {
     pub inode: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub children: HashMap<String, FileNode>,
 }
 
@@ -221,15 +222,16 @@ fn parse_indexed_response(raw: &str) -> Result<HashMap<PathBuf, AiResult>>;
 ### 3.1 JSON 快照
 
 - 使用 `serde_json` 序列化/反序列化。
-- 存储路径：`~/.config/argus/snapshots/{root_path_hash}_{timestamp}.json`（`root_path_hash` 防止多盘扫描冲突，取 SHA256 前 8 字符）。
+- 存储路径：`~/.config/argus/snapshots/{root_path_hash}_{timestamp}.json.gz`（`root_path_hash` 防止多盘扫描冲突，取 SHA256 前 8 字符）。
+- 格式：compact JSON + gzip（扩展名 `.json.gz`），相比 pretty-print JSON 减少约 95% 体积。旧格式 `.json` 文件通过 gzip 魔数自动检测，向后兼容。
 - TUI 启动时会**加载所有** JSON 快照到内存 `scan_cache`（`HashMap<PathBuf, Snapshot>`），键为 `root_path`。
 - 同一路径有多个快照时，最新快照用于 size 展示，历史快照用于 diff。
-- 快照文件头部包含 `version` 字段（当前为 `1`），用于格式演进：
+- 快照文件头部包含 `version` 字段（当前为 `2`），用于格式演进：
 
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
-    pub version: u32,          // 快照格式版本号，当前 = 1
+    pub version: u32,          // 快照格式版本号，当前 = 2
     pub timestamp: DateTime<Utc>,
     pub root_path: PathBuf,
     pub root_path_hash: String, // SHA256(root_path) 前 8 字符
@@ -239,7 +241,7 @@ pub struct Snapshot {
 ```
 
 - `root_path_hash` 用于：
-  - 快照文件名去重：`{root_path_hash}_{timestamp}.json`
+  - 快照文件名去重：`{root_path_hash}_{timestamp}.json.gz`
   - 加载时校验路径一致性（防止 `--old snap_a.json --new snap_b.json` 时错用不同根路径的快照）
 - 依赖：`sha2 = "0.10"`（见 Phase 1 实施指南）
 
@@ -331,6 +333,9 @@ pub enum SnapshotError {
 
     #[error("序列化错误: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("IO 错误: {0}")]
+    Io(#[from] std::io::Error),
 }
 ```
 
