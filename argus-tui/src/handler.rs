@@ -304,8 +304,19 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
     if app.match_indices.is_empty() {
         return;
     }
-    let len = app.match_indices.len();
-    let new_idx = (app.current_match as isize + delta).rem_euclid(len as isize) as usize;
+    let Some(current_path) = app.tree_line_relative_path(app.cursor) else {
+        return;
+    };
+    let Some(anchor_walk_idx) = current_cursor_walk_index(app, &current_path) else {
+        return;
+    };
+
+    let new_idx = if delta >= 0 {
+        next_match_index(&app.match_indices, anchor_walk_idx).unwrap_or(0)
+    } else {
+        prev_match_index(&app.match_indices, anchor_walk_idx).unwrap_or(app.match_indices.len() - 1)
+    };
+
     app.current_match = new_idx;
     let sm = app.match_indices[new_idx].clone();
     let target_path = sm.path.clone();
@@ -326,6 +337,69 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
     {
         app.cursor = pos;
     }
+}
+
+fn next_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
+    matches
+        .iter()
+        .position(|m| m.walk_idx > anchor_walk_idx)
+        .or_else(|| (!matches.is_empty()).then_some(0))
+}
+
+fn prev_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
+    matches
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, m)| m.walk_idx < anchor_walk_idx)
+        .map(|(idx, _)| idx)
+        .or_else(|| (!matches.is_empty()).then_some(matches.len() - 1))
+}
+
+fn current_cursor_walk_index(app: &App, target_path: &[String]) -> Option<usize> {
+    let root = match app.tree_root.as_ref()? {
+        crate::app::TreeNode::Snapshot(root) => root,
+        crate::app::TreeNode::Diff(_) => return None,
+    };
+
+    let mut path = vec![root.name.clone()];
+    let mut walk_idx = 0usize;
+    walk_index_for_path(root, &mut path, target_path, app.sort_mode, &mut walk_idx)
+}
+
+fn walk_index_for_path(
+    node: &argus_core::FileNode,
+    path: &mut Vec<String>,
+    target_path: &[String],
+    sort_mode: crate::app::SortMode,
+    walk_idx: &mut usize,
+) -> Option<usize> {
+    if path.as_slice() == target_path {
+        return Some(*walk_idx);
+    }
+
+    *walk_idx += 1;
+
+    if !node.is_dir {
+        return None;
+    }
+
+    let mut children: Vec<&argus_core::FileNode> = node.children.values().collect();
+    match sort_mode {
+        crate::app::SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
+        crate::app::SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
+        crate::app::SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
+    }
+
+    for child in children {
+        path.push(child.name.clone());
+        if let Some(idx) = walk_index_for_path(child, path, target_path, sort_mode, walk_idx) {
+            return Some(idx);
+        }
+        path.pop();
+    }
+
+    None
 }
 
 fn collapse_or_navigate_up(app: &mut App) {
@@ -586,6 +660,8 @@ mod tests {
         app.recompute_matches();
 
         assert_eq!(app.match_indices.len(), 2);
+        app.cursor = 2;
+        app.current_match = 1;
 
         jump_to_next_match(&mut app, 1);
 

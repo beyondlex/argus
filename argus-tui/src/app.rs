@@ -66,6 +66,7 @@ pub enum FilterMode {
 pub struct SearchMatch {
     pub path: Vec<String>,
     pub tree_idx: Option<usize>,
+    pub walk_idx: usize,
 }
 
 /// Sort mode for tree children
@@ -527,6 +528,7 @@ impl App {
         let sort_mode = self.sort_mode;
 
         let mut matches = Vec::new();
+        let mut walk_index = 0usize;
         let mut visible_count = 0usize;
         let mut current_path = vec![root.name.clone()];
         collect_matches_in_order(
@@ -535,6 +537,7 @@ impl App {
             expanded,
             sort_mode,
             &mut current_path,
+            &mut walk_index,
             &mut visible_count,
             &mut matches,
         );
@@ -708,6 +711,7 @@ fn collect_matches_in_order(
     expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     path: &mut Vec<String>,
+    walk_index: &mut usize,
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
 ) {
@@ -721,12 +725,14 @@ fn collect_matches_in_order(
             } else {
                 None
             },
+            walk_idx: *walk_index,
         });
     }
 
     if is_visible {
         *visible_count += 1;
     }
+    *walk_index += 1;
 
     if node.is_dir {
         let mut children: Vec<&FileNode> = node.children.values().collect();
@@ -739,6 +745,7 @@ fn collect_matches_in_order(
                 expanded,
                 sort_mode,
                 path,
+                walk_index,
                 visible_count,
                 result,
             );
