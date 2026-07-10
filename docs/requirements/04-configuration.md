@@ -118,8 +118,8 @@ daily_limit = 0
 ```toml
 [browsing]
 # 启动时是否自动扫描当前工作目录
-# false: 仅展示 FS 文件树（目录 size 显示 "-"），按 s 手动扫描
-# true:  启动后立即在后台扫描 cwd，完成后展示完整数据
+# false: 仅展示 FS 文件树（普通目录 size 显示 "-"，结构占位节点显示 "..."），按 s 手动扫描
+# true:  启动后立即在后台扫描 cwd，完成后刷新 size overlay
 auto_scan_on_start = false
 # 扫描时跳过以下目录（仅记录直接子级的大小，不递归深入）
 # 匹配规则：目录名完全匹配即跳过

@@ -22,6 +22,8 @@ pub struct FileNode {
     pub inode: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<u64>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub has_metadata: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub children: HashMap<String, FileNode>,
 }
@@ -48,6 +50,7 @@ pub enum FileType {
 | `modified` | `Option<DateTime<Utc>>` | 最后修改时间（部分文件系统不可用，故为 Option） |
 | `inode` | `Option<u64>` | 文件 inode 号，用于硬链接去重（macOS/Linux）。扫描器内部维护 `HashSet<(device, inode)>`，已见过的 inode 不再累加 size。非序列化关键字段，`skip_serializing_if` 减少快照体积 |
 | `device` | `Option<u64>` | 文件所在设备 ID，与 inode 组合唯一标识一个文件 |
+| `has_metadata` | `bool` | 该节点是否持有可展示的扫描元数据。`true` 表示普通文件/目录节点可显示 size；`false` 仅用于结构占位节点（例如浅扫目录的深层子孙），UI 应显示 `"..."` |
 | `children` | `HashMap<String, FileNode>` | 子节点（目录专用）。**Phase 1 使用 `HashMap`，输出时临时排序**。`// FUTURE: 迁移至 IndexMap 以保持插入序，或 BTreeMap 保持字典序` |
 
 ### 1.2 Snapshot（快照）
@@ -165,6 +168,7 @@ pub type AiCache = HashMap<PathBuf, AiResult>;
 /// 惰性读取目录一级内容。返回文件/目录的 FileNode，其中：
 /// - 文件：size = metadata().len()（真实文件大小）
 /// - 目录：size = 0（未递归求和）
+/// - 目录节点的 has_metadata = true（普通未扫描目录）
 /// - 子目录的 children = 空（惰性加载，展开时再读取）
 ///
 /// 错误：PathNotFound, PermissionDenied, Io
@@ -224,6 +228,7 @@ fn parse_indexed_response(raw: &str) -> Result<HashMap<PathBuf, AiResult>>;
 - 单次扫描结果写入 SQLite 数据库 `~/.config/argus/argus.db`。
 - 数据库中保存扫描事件、路径记录、根路径哈希和必要的文件系统元数据。
 - TUI 启动时从 SQLite 加载当前工作目录对应的最新扫描结果；若无扫描数据，则降级为 `list_dir` 的文件系统视图。
+- 结构占位节点来自浅扫缓存，`has_metadata = false`，UI 用 `"..."` 表示。
 
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]

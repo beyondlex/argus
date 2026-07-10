@@ -8,9 +8,7 @@ use ratatui::{
 
 use crate::app::{AppMode, Focus};
 
-const SPINNER_FRAMES: &[char] = &[
-    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-];
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Render the status bar
 pub fn render(

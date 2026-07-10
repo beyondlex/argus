@@ -27,6 +27,27 @@ pub fn format_delta(delta: i64) -> String {
     }
 }
 
+/// Decide which size label a tree node should display.
+///
+/// Rules:
+/// - Files always show real size.
+/// - Ordinary directories without scan data show `-`.
+/// - Structural placeholders show `...`.
+pub fn display_size_label(
+    has_metadata: bool,
+    is_dir: bool,
+    has_scan_data: bool,
+    current_size: u64,
+) -> String {
+    if !has_metadata {
+        "...".to_string()
+    } else if is_dir && !has_scan_data {
+        "-".to_string()
+    } else {
+        format_size(current_size)
+    }
+}
+
 /// Get the default snapshot directory
 pub fn default_snapshots_dir() -> std::path::PathBuf {
     dirs_config_path().join("argus").join("snapshots")
@@ -99,4 +120,24 @@ pub fn count_file_nodes(node: &argus_core::FileNode) -> u64 {
 /// Count files in a DiffNode tree
 pub fn count_diff_nodes(node: &argus_core::DiffNode) -> u64 {
     count_files(node, |n| n.is_dir, |n| &n.children)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_size_label_file_shows_real_size() {
+        assert_eq!(display_size_label(true, false, false, 1024), "1.00 KB");
+    }
+
+    #[test]
+    fn test_display_size_label_unscanned_dir_shows_dash() {
+        assert_eq!(display_size_label(true, true, false, 0), "-");
+    }
+
+    #[test]
+    fn test_display_size_label_placeholder_shows_ellipsis() {
+        assert_eq!(display_size_label(false, true, false, 0), "...");
+    }
 }

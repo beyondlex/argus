@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, Focus, TreeNode};
@@ -223,10 +224,7 @@ fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
                 match trash::delete(&path) {
                     Ok(_) => {
                         app.set_error(format!("deleted: {}", path.display()), 3);
-                        app.scan_cache.remove(&path);
-                        // Remove the node from the tree in-place to preserve
-                        // expand/collapse state of other nodes.
-                        remove_tree_node(app, &path);
+                        apply_deletion_to_state(app, &path);
                         app.update_tree_lines();
                     }
                     Err(e) => {
@@ -292,11 +290,11 @@ fn expand_node(app: &mut App) {
     }
 
     // Lazy-load children from disk when the tree node has none, or when
-    // all existing children have size 0 (structural holdovers from a
-    // snapshot stored before grandchildren were correctly excluded).
+    // all existing children are structural placeholders from a shallow
+    // scan (they are the only nodes with has_metadata == false).
     let needs_listing = match &app.tree_root {
         Some(TreeNode::Snapshot(root)) => find_node(root, &path_key)
-            .map(|n| n.children.is_empty() || n.children.values().all(|c| c.size == 0))
+            .map(|n| n.children.is_empty() || n.children.values().all(|c| !c.has_metadata))
             .unwrap_or(false),
         _ => false,
     };
@@ -321,25 +319,17 @@ fn expand_node(app: &mut App) {
                                 let from_cache = app
                                     .scan_cache
                                     .get(&scan_full_path)
-                                    .map(|s| {
-                                        (s.root_node.size, s.root_node.has_metadata)
-                                    });
+                                    .map(|s| (s.root_node.size, s.root_node.has_metadata));
                                 if let Some(val) = from_cache {
                                     enrich.insert(name.clone(), val);
-                                } else if let Some(scanned) = root_scan_tree
-                                    .and_then(|tree| find_node(tree, &child_path))
-                                {
-                                    enrich.insert(
-                                        name.clone(),
-                                        (scanned.size, scanned.has_metadata),
-                                    );
                                 } else if let Some(scanned) =
-                                    find_node(root, &child_path)
+                                    root_scan_tree.and_then(|tree| find_node(tree, &child_path))
                                 {
-                                    enrich.insert(
-                                        name.clone(),
-                                        (scanned.size, scanned.has_metadata),
-                                    );
+                                    enrich
+                                        .insert(name.clone(), (scanned.size, scanned.has_metadata));
+                                } else if let Some(scanned) = find_node(root, &child_path) {
+                                    enrich
+                                        .insert(name.clone(), (scanned.size, scanned.has_metadata));
                                 }
                             }
                         }
@@ -348,12 +338,11 @@ fn expand_node(app: &mut App) {
                     if let Some(TreeNode::Snapshot(ref mut file_node)) = app.tree_root {
                         if let Some(target) = find_node_mut(file_node, &path_key) {
                             target.children = listed.children;
+                            target.has_metadata = true;
                             for child in target.children.values_mut() {
                                 if let Some(&(size, meta)) = enrich.get(&child.name) {
                                     child.size = size;
                                     child.has_metadata = meta;
-                                } else if child.is_dir {
-                                    child.has_metadata = false;
                                 }
                             }
                         }
@@ -401,30 +390,108 @@ fn find_node_mut<'a>(
     find_node_mut(child, tail)
 }
 
-/// Remove a node from the in-memory tree by its full filesystem path.
-/// Preserves expand/collapse state of all other nodes.
-fn remove_tree_node(app: &mut App, full_path: &std::path::Path) {
-    let Ok(relative) = full_path.strip_prefix(&app.view_root_path) else {
-        return;
+fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
+    let mut keys_to_remove = Vec::new();
+
+    for key in app.scan_cache.keys() {
+        if deleted_path.starts_with(key) || key.starts_with(deleted_path) {
+            keys_to_remove.push(key.clone());
+        }
+    }
+
+    for key in keys_to_remove {
+        if key == app.view_root_path {
+            if let Some(snapshot) = app.scan_cache.get_mut(&key) {
+                remove_path_from_snapshot(snapshot, deleted_path);
+            }
+        } else {
+            app.scan_cache.remove(&key);
+        }
+    }
+
+    if let Some(crate::app::TreeNode::Snapshot(ref mut root)) = app.tree_root {
+        let _ = remove_path_from_tree(root, &app.view_root_path, deleted_path);
+    }
+}
+
+fn remove_path_from_snapshot(snapshot: &mut argus_core::Snapshot, deleted_path: &Path) -> bool {
+    let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
+        return false;
     };
-    let mut components: Vec<String> = relative
+    let components: Vec<String> = relative
         .components()
         .filter_map(|c| c.as_os_str().to_str().map(String::from))
         .collect();
     if components.is_empty() {
-        return;
+        return false;
     }
-    let root_name = match app.tree_root {
-        Some(crate::app::TreeNode::Snapshot(ref n)) => n.name.clone(),
-        _ => return,
+    let removed = prune_file_node(&mut snapshot.root_node, &components, 0);
+    if removed {
+        snapshot.total_size = snapshot.root_node.size;
+    }
+    removed
+}
+
+fn remove_path_from_tree(
+    root: &mut argus_core::FileNode,
+    root_path: &Path,
+    deleted_path: &Path,
+) -> bool {
+    let Ok(relative) = deleted_path.strip_prefix(root_path) else {
+        return false;
     };
-    components.insert(0, root_name);
-    let name = components.pop().unwrap();
-    if let Some(crate::app::TreeNode::Snapshot(ref mut root)) = app.tree_root {
-        if let Some(parent) = find_node_mut(root, &components) {
-            parent.children.remove(&name);
-        }
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(String::from))
+        .collect();
+    if components.is_empty() {
+        return false;
     }
+    prune_file_node(root, &components, 0)
+}
+
+fn prune_file_node(
+    current: &mut argus_core::FileNode,
+    components: &[String],
+    index: usize,
+) -> bool {
+    if index >= components.len() {
+        return false;
+    }
+
+    let removed = if index + 1 == components.len() {
+        current.children.remove(&components[index]).is_some()
+    } else if let Some(child) = current.children.get_mut(&components[index]) {
+        let removed = prune_file_node(child, components, index + 1);
+        if removed {
+            recompute_file_node_size(child);
+        }
+        removed
+    } else {
+        false
+    };
+
+    if removed {
+        recompute_file_node_size(current);
+    }
+    removed
+}
+
+fn recompute_file_node_size(node: &mut argus_core::FileNode) -> u64 {
+    if node.children.is_empty() {
+        return node.size;
+    }
+
+    if node.children.values().all(|c| !c.has_metadata) {
+        return node.size;
+    }
+
+    let mut total = 0u64;
+    for child in node.children.values_mut() {
+        total = total.saturating_add(recompute_file_node_size(child));
+    }
+    node.size = total;
+    total
 }
 
 fn jump_to_next_match(app: &mut App, delta: isize) {
@@ -759,7 +826,9 @@ mod tests {
     use crate::app::TreeNode;
     use argus_core::{FileNode, FileType, Snapshot};
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
+    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     fn make_file(name: &str) -> FileNode {
@@ -894,5 +963,106 @@ mod tests {
             "right".to_string(),
             "common".to_string()
         ]));
+    }
+
+    #[test]
+    fn test_expand_node_keeps_regular_dirs_marked_with_metadata() {
+        let temp = TempDir::new().unwrap();
+        let root_path = temp.path().join("root");
+        fs::create_dir_all(root_path.join("sub")).unwrap();
+        fs::write(root_path.join("sub").join("file.txt"), "data").unwrap();
+
+        let mut children = HashMap::new();
+        children.insert(
+            "sub".to_string(),
+            FileNode {
+                name: "sub".to_string(),
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                modified: None,
+                created: None,
+                inode: None,
+                device: None,
+                has_metadata: false,
+                children: HashMap::new(),
+            },
+        );
+
+        let root = FileNode {
+            name: "root".to_string(),
+            is_dir: true,
+            file_type: FileType::Directory,
+            size: 0,
+            modified: None,
+            created: None,
+            inode: None,
+            device: None,
+            has_metadata: true,
+            children,
+        };
+
+        let mut app = make_app(root);
+        app.view_root_path = root_path;
+        app.update_tree_lines();
+        app.cursor = 1;
+
+        expand_node(&mut app);
+
+        let root_node = match app.tree_root.as_ref().unwrap() {
+            TreeNode::Snapshot(node) => node,
+            _ => panic!("expected snapshot tree"),
+        };
+        let sub = root_node.children.get("sub").unwrap();
+        assert!(sub.has_metadata);
+        assert!(sub.is_dir);
+    }
+
+    #[test]
+    fn test_delete_updates_parent_sizes_and_scan_cache() {
+        fn sized_file(name: &str, size: u64) -> FileNode {
+            FileNode {
+                name: name.to_string(),
+                is_dir: false,
+                file_type: FileType::File,
+                size,
+                modified: None,
+                created: None,
+                inode: None,
+                device: None,
+                has_metadata: true,
+                children: HashMap::new(),
+            }
+        }
+
+        let ignore_dir = make_dir(
+            "ignore",
+            vec![sized_file("keep.bin", 12), sized_file("delete.bin", 10)],
+        );
+        let root = make_dir("test", vec![ignore_dir]);
+        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), root.clone(), 22);
+
+        let mut app = make_app(root);
+        app.tree_root = Some(TreeNode::Snapshot(root_snapshot.root_node.clone()));
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), root_snapshot);
+        app.update_tree_lines();
+
+        apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
+        app.update_tree_lines();
+
+        let root_node = match app.tree_root.as_ref().unwrap() {
+            TreeNode::Snapshot(node) => node,
+            _ => panic!("expected snapshot tree"),
+        };
+        let ignore = root_node.children.get("ignore").unwrap();
+        assert_eq!(ignore.size, 12);
+        assert_eq!(root_node.size, 12);
+
+        let cached = app.scan_cache.get(&PathBuf::from("/tmp/test")).unwrap();
+        assert_eq!(cached.root_node.size, 12);
+        let cached_ignore = cached.root_node.children.get("ignore").unwrap();
+        assert_eq!(cached_ignore.size, 12);
+        assert!(!cached_ignore.children.contains_key("delete.bin"));
     }
 }

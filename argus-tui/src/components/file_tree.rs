@@ -181,13 +181,12 @@ fn render_tree_line<'a>(
 
     let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
 
-    let size_str = if !line.node.has_metadata() {
-        "...".to_string()
-    } else if line.node.is_dir() && !line.has_scan_data && line.node.current_size() == 0 {
-        "-".to_string()
-    } else {
-        util::format_size(line.node.current_size())
-    };
+    let size_str = util::display_size_label(
+        line.node.has_metadata(),
+        line.node.is_dir(),
+        line.has_scan_data,
+        line.node.current_size(),
+    );
 
     let mut spans = name_spans(
         line,
@@ -202,9 +201,7 @@ fn render_tree_line<'a>(
         },
     );
 
-    let size_style = if !line.node.has_metadata()
-        || (line.node.is_dir() && !line.has_scan_data && line.node.current_size() == 0)
-    {
+    let size_style = if !line.node.has_metadata() || (line.node.is_dir() && !line.has_scan_data) {
         base.fg(Color::DarkGray).bg(Color::Reset)
     } else {
         base.fg(Color::Yellow).bg(Color::Reset)

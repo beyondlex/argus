@@ -4,6 +4,8 @@
 
 This document supersedes the Phase 2 standalone mode design in `12-phase2-guide.md`.
 See that doc for implementation checklist updates.
+The newer `file-tree-size-design.md` is the source of truth for size / placeholder / delta
+semantics. Treat this plan as historical for navigation flow only.
 
 ## 1. Motivation
 
@@ -14,15 +16,16 @@ they could see or navigate anything.
 **New model**: The file tree is always present. Its root is the user's current working directory (cwd)
 when `argus-tui` is launched. Size and delta data are **optional metadata** attached to tree nodes.
 A node that has been scanned shows its size/delta; a node not yet scanned shows `"-"` for directory
-size and the real file size for files (since single-file `stat` is cheap).
+size and the real file size for files (since single-file `stat` is cheap). Structural placeholder
+nodes from shallow scans show `"..."`.
 
 ## 2. Core Principle — HARD RULE
 
 The TUI always shows a browsable filesystem tree. Scanning is an enhancement, not a prerequisite.
 
-**The tree always reflects the current filesystem state.** Scan records (historical snapshots) and
-diff data ONLY affect the delta values displayed on tree nodes. They NEVER change the tree structure
-— no node appears or disappears based on filter state. Expanding/collapsing directories works
+**The tree always reflects the current filesystem state.** Scan records (historical snapshots)
+overlay size data, and diff data overlays delta values. They NEVER change the tree structure —
+no node appears or disappears based on filter state. Expanding/collapsing directories works
 identically regardless of whether a time filter is active.
 
 ```
@@ -38,15 +41,15 @@ identically regardless of whether a time filter is active.
 
 - Read directory entries from disk on demand (one level at a time)
 - Files: real size from `metadata().len()`
-- Directories: size = 0 (not yet recursively summed)
-- No `children` populated for directories (lazy load on expand)
+- Directories: size starts at `0` and is later overlaid from scan history when available
+- Directories remain expandable in the live filesystem tree
 
 ### Layer 2: Scan Data (optional, cached)
 
-- Stored as JSON snapshots in `~/.config/argus/snapshots/`
-- On startup, all snapshots are loaded into `scan_cache: HashMap<PathBuf, Snapshot>`
+- Stored as SQLite-backed snapshots materialized into `scan_cache`
+- On startup, scan history is loaded into `scan_cache: HashMap<PathBuf, Snapshot>`
 - When viewing a directory, check cache first:
-  - **Cache hit**: render the full scanned tree (with aggregated sizes, children, etc.)
+  - **Cache hit**: keep the current FS tree and overlay cached sizes onto matching nodes
   - **Cache miss**: render FS listing (files have real size, dirs show `"-"`)
 - Same path with ≥2 snapshots enables filter bar diff
 - Scan cache is keyed by **absolute path** of the scanned root
@@ -55,10 +58,10 @@ identically regardless of whether a time filter is active.
 
 ```
 open TUI
-  ├── load all snapshots into scan_cache
+  ├── load scan history into scan_cache
   ├── determine cwd (std::env::current_dir())
   ├── check scan_cache for cwd
-  │     ├── hit → render full scanned tree for cwd
+  │     ├── hit → render FS tree for cwd + size overlay
   │     └── miss → list_dir(cwd) → render shallow FS tree
   │
   └── if config.browsing.auto_scan_on_start:
@@ -86,7 +89,7 @@ open TUI
 When user presses `l` on a directory:
 
 1. Check `scan_cache` for the directory's absolute path
-2. **Cache hit**: replace the tree root with the full scanned tree from cache, with all children/sizes
+2. **Cache hit**: keep the FS tree and fill size data from cache
 3. **Cache miss**: call `list_dir(path)` to get one level of FS entries, inline them into the current tree
 
 ### Navigate Up Semantics
@@ -96,7 +99,7 @@ When user presses `h` on the root node:
 1. Change `view_root_path` to parent directory
 2. Rebuild tree from `view_root_path`:
    - Check scan cache for new path
-   - If hit: full scanned tree
+   - If hit: FS tree + size overlay
    - If miss: list_dir
 
 ### Key Change: `s` No Longer Opens a Prompt
@@ -122,15 +125,16 @@ pub struct App {
     // NEW: scan cache (path → snapshot, for scanned dirs)
     pub scan_cache: HashMap<PathBuf, Snapshot>,
 
-    // NEW: snapshot index (path_hash → all snapshots)
-    pub snapshot_index: HashMap<String, Vec<SnapshotInfo>>,
+    // NEW: available_snapshots scoped to view_root_path's hash
+    pub available_snapshots: Vec<SnapshotInfo>,
 
-    // CHANGED: available_snapshots → scoped to view_root_path's hash
-    // (was global; now only snapshots for current view_root_path)
+    // NEW: diff_lookup overlays delta onto the FS tree
+    pub diff_lookup: HashMap<Vec<String>, (u64, i64)>,
 
-    // REMOVED: tree_root (replaced by scan_cache + list_dir)
-    // REMOVED: current_root_path (replaced by view_root_path)
-    // REMOVED: current_snapshot (replaced by scan_cache)
+    // The tree itself is still kept in memory as the current FS view.
+    pub tree_root: Option<TreeNode>,
+    pub tree_lines: Vec<TreeLine>,
+
     // REMOVED: scan_prompt_open / scan_path_input (s now scans tree root)
 }
 ```
@@ -142,7 +146,8 @@ pub struct TreeLine {
     pub depth: usize,
     pub node: TreeNode,
     pub expanded: bool,
-    pub has_scan_data: bool,  // NEW: whether this dir has scanned size data
+    pub has_scan_data: bool,  // whether this dir has scanned size data
+    pub delta: i64,           // overlay delta from the current diff query
 }
 ```
 
@@ -153,6 +158,7 @@ pub struct TreeLine {
 | File | — | Real file size (always) | If in diff mode |
 | Directory | Yes | Aggregated scanned size | If in diff mode |
 | Directory | No | `"-"` (gray) | N/A |
+| Structural placeholder | No | `"..."` (gray) | N/A |
 
 ## 7. Scan Cache
 
@@ -195,8 +201,8 @@ auto_scan_on_start = false
 /// from the directory's immediate entries.
 ///
 /// - Files: size = metadata().len() (real file size)
-/// - Directories: size = 0 (not recursively summed)
-/// - No children for subdirectories (lazy load on expand)
+/// - Directories: size = 0 until a scan overlay is available
+/// - Directory children are shallow live entries; deeper structure is loaded on demand
 ///
 /// Errors: PathNotFound, PermissionDenied, Io
 pub fn list_dir(path: &Path) -> Result<FileNode, ScanError>
@@ -214,21 +220,21 @@ pub use scanner::list_dir;
 |------|--------|
 | `argus-core/src/scanner.rs` | Add `list_dir()` function + tests |
 | `argus-core/src/lib.rs` | Export `list_dir` |
-| `argus-tui/src/app.rs` | New fields: `view_root_path`, `scan_cache`, `db_path`; remove `snapshot_index`, `snapshots_dir`; new methods: `load_from_db`, `rebuild_tree` |
-| `argus-tui/src/handler.rs` | `s` writes scan to SQLite; diff uses `query_delta` + `build_diff_tree` instead of JSON files |
+| `argus-tui/src/app.rs` | Keep FS tree state, add `view_root_path`, `scan_cache`, `db_path`; new methods: `load_from_db`, `rebuild_tree` |
+| `argus-tui/src/handler.rs` | `s` writes scan to SQLite; expand uses `list_dir` + size overlay |
 | `argus-tui/src/event.rs` | Remove `render_empty_prompt`, `render_scan_prompt`; filter bar scoped to current path |
-| `argus-tui/src/components/file_tree.rs` | Handle `has_scan_data` for `"-"` rendering |
+| `argus-tui/src/components/file_tree.rs` | Handle `"-"` and `"..."` rendering |
 | `argus-tui/src/components/filter_bar.rs` | Accept `available_snapshots` from SQLite |
-| `argus-tui/src/components/metadata.rs` | Show scan status (last scan time, or "press s to scan") |
+| `argus-tui/src/components/metadata.rs` | Show scan status and current node size semantics |
 | `argus-tui/src/config.rs` | Add `BrowsingConfig` struct |
-| `argus-tui/src/main.rs` | Pass `db_path` to App; call `load_from_db()` instead of `load_all_snapshots()` |
+| `argus-tui/src/main.rs` | Pass `db_path` to App; call `load_from_db()` |
 
 ## 11. Implementation Order
 
 ```
  1. argus-core:   list_dir() + tests
  2. cargo test
- 3. argus-tui/app.rs:   new App fields, load_all_snapshots(), rebuild_tree()
+ 3. argus-tui/app.rs:   tree root state, load_from_db(), rebuild_tree()
  4. argus-tui/handler.rs:  new navigation (h on root = up, l = expand, s = scan tree root)
  5. argus-tui/event.rs:    remove empty/scan prompts, update filter bar data source
  6. argus-tui/file_tree.rs:   "-" rendering for unscanned dirs

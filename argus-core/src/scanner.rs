@@ -145,10 +145,10 @@ pub fn scan_path(
         insert_node(&mut root_node, &components, node);
     }
 
-    // Walk skipped directories fully for accurate size counting.  Also
-    // record the directory structure — immediate children get their total
-    // recursive size computed (one level deep), while deeper structure
-    // tracks names only (shown as "..." in the UI).
+    // Walk skipped directories fully for accurate size counting. Also
+    // keep the directory skeleton so the UI can continue expanding it.
+    // Immediate children get real sizes; deeper descendants stay structural
+    // placeholders and are rendered as "..." in the UI.
     for skip_path in skipped.lock().unwrap().drain(..) {
         if cancel.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
@@ -409,8 +409,8 @@ fn compute_size(node: &mut FileNode) -> u64 {
         return node.size;
     }
 
-    // If all direct children lack metadata, this node's size was
-    // pre-computed (e.g., skipped dir with structural-only children).
+    // If all direct children are placeholders, this node's size was
+    // pre-computed already (for example, a shallow-recorded skipped dir).
     if node.children.values().all(|c| !c.has_metadata) {
         return node.size;
     }
@@ -688,6 +688,7 @@ mod tests {
 
         let sub = node.children.get("sub").unwrap();
         assert!(sub.is_dir);
+        assert!(sub.has_metadata);
         assert_eq!(sub.size, 0); // Not recursively summed
         assert!(sub.children.is_empty()); // Not populated
     }

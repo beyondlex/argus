@@ -96,7 +96,6 @@ pub fn render(
         Span::styled(threshold_str, threshold_style),
         Span::raw("]"),
         Span::raw("  "),
-        Span::styled("[Clear]", Style::default().fg(Color::Red)),
         Span::styled(diff_hint, Style::default().fg(Color::DarkGray)),
         Span::styled(shortcut_hint, Style::default().fg(Color::DarkGray)),
     ];

@@ -76,7 +76,7 @@ argus/
 
 | 模式 | 适用场景 | 实现原理 |
 |------|---------|---------|
-| **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，数据写入本地快照文件 (`~/.config/argus/snapshots/`) |
+| **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，扫描历史写入 SQLite，客户端在内存中 materialize 为 `scan_cache` |
 | **服务模式 (Client-Server)** | TUI/GUI 需要秒级历史 Diff | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
 
 **独立模式下的文件树**：TUI 始终以用户当前工作目录 (cwd) 为根展示可自由游走的文件树。
@@ -87,10 +87,11 @@ argus/
 | 层 | 来源 | 始终可用 |
 |----|------|---------|
 | **FS 层** | `list_dir()` 惰性读取磁盘目录内容 | 是 |
-| **Scan 层** | `scan_cache` 缓存磁盘上的 JSON 快照 | 仅扫描后 |
+| **Scan 层** | `scan_cache` 缓存 SQLite materialize 出来的最新扫描结果 | 仅扫描后 |
 
 - 文件始终展示真实大小（单次 `stat` 低成本）
-- 目录有扫描数据时展示汇总大小，否则展示 `"-"`
+- 目录有扫描汇总大小时展示该值，否则展示 `"-"`
+- `...` 仅用于结构占位节点，表示深层元数据未持久化
 - Delta 是 scan 层上的可选覆盖层（受顶部筛选栏控制）
 - 详见 `docs/plans/standalone-fs-navigation-refactor.md`
 
@@ -110,7 +111,7 @@ sequenceDiagram
 
     alt 无 daemon 可连接
         Client->>Core: 直接调用扫描 / diff / explain
-        Core->>FS: 读写 JSON 快照
+        Core->>FS: 读写 SQLite / snapshot 视图
         Core-->>Client: 返回 Snapshot / DiffNode
         Client-->>User: 独立模式可用
     else daemon 可连接

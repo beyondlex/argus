@@ -44,11 +44,12 @@ pub fn render(
         lines.push(Line::from(vec![Span::raw("")]));
 
         // Current Size
-        let size_display = if node.is_dir() && !line.has_scan_data {
-            "- (not scanned)".to_string()
-        } else {
-            util::format_size(node.current_size())
-        };
+        let size_display = util::display_size_label(
+            node.has_metadata(),
+            node.is_dir(),
+            line.has_scan_data,
+            node.current_size(),
+        );
         lines.push(Line::from(vec![
             Span::styled("Size:", Style::default().fg(Color::Gray).bold()),
             Span::raw(" "),
@@ -57,7 +58,8 @@ pub fn render(
 
         // Size Delta
         if has_delta {
-            let delta = node.size_delta();
+            // Use the flattened tree overlay delta so metadata matches the tree view.
+            let delta = line.delta;
             let delta_str = util::format_delta(delta);
             let delta_color = if delta > 0 {
                 Color::Red

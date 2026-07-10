@@ -28,6 +28,7 @@ argus list-scans
 
 - starts from the current working directory
 - shows live filesystem navigation even when no scan data exists
+- shows `-` for ordinary unscanned directories, real sizes for files, and `...` for structural placeholder nodes
 - shows directory sizes when SQLite scan history is available
 - uses the filter bar for time range and delta threshold selection
 
@@ -35,4 +36,3 @@ argus list-scans
 
 - `docs/requirements/index.md`
 - `docs/plans/sqlite-storage-backend.md`
-

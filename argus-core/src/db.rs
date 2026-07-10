@@ -478,9 +478,6 @@ fn collect_path_records(current_path: &Path, node: &FileNode, records: &mut Vec<
 }
 
 fn count_files(node: &FileNode) -> u64 {
-    if !node.has_metadata {
-        return 0; // Structural-only node, not a real file record
-    }
     let mut count = if node.is_dir { 0 } else { 1 };
     for child in node.children.values() {
         count += count_files(child);
@@ -737,6 +734,57 @@ mod tests {
         assert_eq!(rebuilt.root_node.children.len(), 2);
         assert!(rebuilt.root_node.children.contains_key("dir"));
         assert!(rebuilt.root_node.children.contains_key("b.txt"));
+    }
+
+    #[test]
+    fn test_write_scan_counts_placeholder_descendants() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("argus.db");
+        let mut conn = open_db(&db_path).unwrap();
+
+        let mut placeholder_children = HashMap::new();
+        placeholder_children.insert("file.txt".to_string(), file_node("file.txt", 42));
+        let mut root_children = HashMap::new();
+        root_children.insert(
+            "cache".to_string(),
+            FileNode {
+                name: "cache".to_string(),
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 42,
+                modified: None,
+                created: None,
+                inode: None,
+                device: None,
+                has_metadata: false,
+                children: placeholder_children,
+            },
+        );
+        let root_name = Path::new("/tmp/downloads")
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let snapshot = Snapshot::new(
+            Path::new("/tmp/downloads").to_path_buf(),
+            FileNode {
+                name: root_name,
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 42,
+                modified: None,
+                created: None,
+                inode: None,
+                device: None,
+                has_metadata: true,
+                children: root_children,
+            },
+            42,
+        );
+
+        write_scan(&mut conn, &snapshot).unwrap();
+        let scans = query_scan_timestamps(&conn, Path::new("/tmp/downloads")).unwrap();
+        assert_eq!(scans[0].3, 1);
     }
 
     #[test]
