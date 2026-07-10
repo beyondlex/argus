@@ -32,6 +32,11 @@ Every client supports two modes:
 
 Design Standalone first. Server mode is an enhancement.
 
+TUI-specific rule:
+- `scan_cache` is an in-process materialized cache, not the source of truth.
+- When the current tree root changes, reload the latest snapshot for that root from SQLite before rebuilding the tree.
+- This keeps the TUI aligned with daemon-driven or cross-session DB updates.
+
 ### 2.3 AI Is a Plugin, Not Core
 
 - AI defaults off. All core features (scan, diff, browse, delete) work fully without AI.
@@ -69,6 +74,7 @@ Design Standalone first. Server mode is an enhancement.
 
 - Docs are not one-time work. Ask on every commit: **does this change need a doc update?**
 - If no dedicated doc exists (e.g. `CONTRIBUTING.md`), at minimum update `README.md`.
+- If the change is stable behavior that should feed README or wiki later, also update `docs/notes/tui-current-behavior.md` as the bridge note.
 
 ### 3.3 Progressive Architecture
 

@@ -28,11 +28,14 @@ argus list-scans
 
 - starts from the current working directory
 - shows live filesystem navigation even when no scan data exists
+- reloads the latest snapshot from SQLite when switching roots, so previously scanned directories regain size data
 - shows `-` for ordinary unscanned directories, real sizes for files, and `...` for structural placeholder nodes
 - shows directory sizes when SQLite scan history is available
 - uses the filter bar for time range and delta threshold selection
+- keeps the status bar compact with `[Tree]` / `[Filter]`, live scan progress, and the latest scan summary
 
 ## Docs
 
 - `docs/requirements/index.md`
 - `docs/plans/sqlite-storage-backend.md`
+- `docs/notes/tui-current-behavior.md`
