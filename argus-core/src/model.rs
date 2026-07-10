@@ -28,6 +28,7 @@ pub struct FileNode {
     pub file_type: FileType,
     pub size: u64,
     pub modified: Option<DateTime<Utc>>,
+    pub created: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inode: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,6 +291,7 @@ mod tests {
             file_type: FileType::Directory,
             size: 100,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -308,6 +310,7 @@ mod tests {
             file_type: FileType::File,
             size: 1024,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,

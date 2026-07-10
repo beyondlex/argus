@@ -98,6 +98,18 @@ pub fn render(
             ]));
         }
 
+        // Created Time
+        if let Some(created) = node.created() {
+            lines.push(Line::from(vec![
+                Span::styled("Created:", Style::default().fg(Color::Gray).bold()),
+                Span::raw(" "),
+                Span::styled(
+                    created.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
+
         // Type
         let type_str = if node.is_dir() { "Directory" } else { "File" };
         lines.push(Line::from(vec![

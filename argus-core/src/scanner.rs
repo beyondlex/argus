@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use ignore::WalkBuilder;
 
 use crate::model::{FileNode, FileType, ScanError, Snapshot};
@@ -123,6 +123,7 @@ pub fn scan_path(
         file_type: FileType::Directory,
         size: 0,
         modified: None,
+        created: None,
         inode: None,
         device: None,
         has_metadata: true,
@@ -192,6 +193,7 @@ pub fn scan_path(
             file_type: FileType::Directory,
             size,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -252,6 +254,7 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
         file_type,
         size,
         modified,
+        created: get_created(meta),
         inode: get_inode(meta).ok(),
         device: get_device(meta).ok(),
         has_metadata: true,
@@ -305,6 +308,13 @@ fn get_device(meta: &std::fs::Metadata) -> std::io::Result<u64> {
     Ok(meta.dev())
 }
 
+fn get_created(meta: &std::fs::Metadata) -> Option<DateTime<Utc>> {
+    meta.created().ok().and_then(|t| {
+        let duration = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+        DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+    })
+}
+
 #[cfg(not(unix))]
 fn get_device(_meta: &std::fs::Metadata) -> std::io::Result<u64> {
     Err(std::io::Error::new(
@@ -331,6 +341,7 @@ fn insert_node(parent: &mut FileNode, components: &[std::path::Component], node:
                 file_type: FileType::Directory,
                 size: 0,
                 modified: None,
+                created: None,
                 inode: None,
                 device: None,
                 has_metadata: true,
@@ -385,6 +396,7 @@ pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
         file_type: FileType::Directory,
         size: 0,
         modified: None,
+        created: None,
         inode: None,
         device: None,
         has_metadata: true,
@@ -477,6 +489,7 @@ fn walk_dir_structure(path: &Path) -> HashMap<String, FileNode> {
             file_type,
             size: 0,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: false,
@@ -588,6 +601,7 @@ mod tests {
             file_type: FileType::Directory,
             size: 0,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -602,6 +616,7 @@ mod tests {
                 file_type: FileType::File,
                 size: 100,
                 modified: None,
+                created: None,
                 inode: None,
                 device: None,
                 has_metadata: true,
@@ -617,6 +632,7 @@ mod tests {
                 file_type: FileType::File,
                 size: 200,
                 modified: None,
+                created: None,
                 inode: None,
                 device: None,
                 has_metadata: true,

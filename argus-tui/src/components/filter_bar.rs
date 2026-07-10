@@ -48,9 +48,8 @@ pub fn render(
 
     let threshold_str = filter.threshold.map(util::format_size).unwrap_or_default();
 
-    let _can_diff = has_enough_snapshots && filter.from_idx.is_some() && filter.to_idx.is_some();
     let diff_hint = if !has_enough_snapshots {
-        " (need 2 snapshots)"
+        " (need 2 scans)"
     } else if filter.from_idx.is_some()
         && filter.to_idx.is_some()
         && filter.from_idx == filter.to_idx
@@ -80,6 +79,12 @@ pub fn render(
         threshold_idle
     };
 
+    let shortcut_hint = if focus {
+        "  [Tab] navigate  [1/2] first/last  [↑/↓] cycle  [+/-] threshold  [c] clear"
+    } else {
+        ""
+    };
+
     let spans = vec![
         Span::styled("Time:", Style::default().fg(Color::White).bold()),
         Span::raw(" ["),
@@ -93,6 +98,7 @@ pub fn render(
         Span::raw("  "),
         Span::styled("[Clear]", Style::default().fg(Color::Red)),
         Span::styled(diff_hint, Style::default().fg(Color::DarkGray)),
+        Span::styled(shortcut_hint, Style::default().fg(Color::DarkGray)),
     ];
 
     let text = Paragraph::new(Line::from(spans)).block(block);
