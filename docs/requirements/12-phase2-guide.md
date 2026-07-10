@@ -402,7 +402,7 @@ pub async fn run(app: &mut App) -> Result<()> {
 第 0 步：argus-core list_dir() + 测试（惰性目录读取 API）
 第 1 步：argus-tui 脚手架（Cargo.toml + main.rs 事件循环 + App skeleton）
 第 2 步：config.rs — TUI 配置加载（含 [browsing] 配置组）
-第 3 步：app.rs 重构 — scan_cache、view_root_path、load_all_snapshots、rebuild_tree
+第 3 步：app.rs 重构 — scan_cache、view_root_path、load_from_db（SQLite）、rebuild_tree
 第 4 步：FileTree 组件 — "-" 渲染 + has_scan_data + 惰性展开
 第 5 步：handler.rs — s 直接扫描树根 + h 上导航 + l 展开/进入
 第 6 步：event.rs — 移除 empty/scan 弹窗 + filter bar 数据源切换
@@ -422,7 +422,7 @@ pub async fn run(app: &mut App) -> Result<()> {
 - [ ] 创建 `argus-tui` crate，并注册到 workspace
 - [ ] 接入 `ratatui` / `crossterm` / `tokio` / `toml`
 - [ ] 配置加载: `BrowsingConfig` + `auto_scan_on_start`
-- [ ] App 重构: `view_root_path`, `scan_cache`, `snapshot_index`, `load_all_snapshots`
+- [x] App 重构: `view_root_path`, `scan_cache`, `load_from_db()`（SQLite 替代 JSON 文件）
 - [ ] App 重构: `navigate_up()`, `expand_in_place()`, `rebuild_tree()`
 - [ ] App 重构: `start_scan()` 直接扫树根（无输入框）
 - [ ] App 重构: `handle_message(ScanComplete)` 更新 scan_cache + 刷新树
@@ -672,7 +672,7 @@ cargo run -p argus-tui
 由于文件树从"快照驱动"改为"FS 层 + SQLite 扫描历史"双源驱动，测试需覆盖：
 
 **状态逻辑测试**：
-- `test_load_all_snapshots`：从 SQLite 正确填充 scan_cache
+- `test_load_from_db`：从 SQLite 正确填充 scan_cache 和 available_snapshots
 - `test_rebuild_tree_from_cache`：scan_cache 命中时返回完整数据树
 - `test_rebuild_tree_from_fs`：scan_cache 未命中时返回 list_dir 浅层树
 - `test_navigate_up_changes_root`：导航到父目录后根路径更新

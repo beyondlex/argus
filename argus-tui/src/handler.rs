@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::atomic::Ordering;
 
-use crate::app::{App, AppMessage, AppMode, FilterMode, Focus};
+use crate::app::{App, AppMessage, AppMode, FilterMode, Focus, TreeNode};
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
@@ -288,14 +288,29 @@ fn expand_node(app: &mut App) {
         return;
     }
 
-    // If node lacks scan data and has no children, fetch from disk
-    if !line.has_scan_data {
+    // Lazy-load children from disk when the tree node has none, or when
+    // all existing children have size 0 (structural holdovers from a
+    // snapshot stored before grandchildren were correctly excluded).
+    let needs_listing = match &app.tree_root {
+        Some(TreeNode::Snapshot(root)) => find_node(root, &path_key)
+            .map(|n| n.children.is_empty() || n.children.values().all(|c| c.size == 0))
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    if needs_listing {
         if let Some(dir_path) = app.selected_node_full_path() {
             match argus_core::list_dir(&dir_path) {
                 Ok(listed) => {
-                    if let Some(crate::app::TreeNode::Snapshot(ref mut file_node)) = app.tree_root {
+                    if let Some(TreeNode::Snapshot(ref mut file_node)) = app.tree_root {
                         if let Some(target) = find_node_mut(file_node, &path_key) {
                             target.children = listed.children;
+                            // Lazily-loaded content has no recursive size
+                            // data — mark everything as has_metadata=false
+                            // so the UI shows "..." instead of "0 B".
+                            for child in target.children.values_mut() {
+                                child.has_metadata = false;
+                            }
                         }
                     }
                 }
@@ -310,6 +325,21 @@ fn expand_node(app: &mut App) {
 
     app.expanded.insert(path_key);
     app.update_tree_lines();
+}
+
+fn find_node<'a>(
+    node: &'a argus_core::FileNode,
+    target_path: &[String],
+) -> Option<&'a argus_core::FileNode> {
+    let (head, tail) = target_path.split_first()?;
+    if node.name != *head {
+        return None;
+    }
+    if tail.is_empty() {
+        return Some(node);
+    }
+    let child = node.children.get(&tail[0])?;
+    find_node(child, tail)
 }
 
 fn find_node_mut<'a>(
@@ -507,6 +537,7 @@ pub fn start_scan(app: &mut App) {
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();
     let path = app.view_root_path.clone();
+    let db_path = app.db_path.clone();
     let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -526,16 +557,9 @@ pub fn start_scan(app: &mut App) {
 
         match argus_core::scan_path(&path, &cancel, Some(progress_tx), &scan_skip_dirs) {
             Ok(snapshot) => {
-                let snapshots_dir = crate::util::default_snapshots_dir();
-                let _ = std::fs::create_dir_all(&snapshots_dir);
-                let filename = format!(
-                    "{}_{}.json.gz",
-                    argus_core::hash_root_path(&path),
-                    snapshot.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
-                );
-                let filepath = snapshots_dir.join(&filename);
-                if let Ok(bytes) = snapshot.to_compact_bytes() {
-                    let _ = std::fs::write(&filepath, &bytes);
+                // Write to SQLite
+                if let Ok(mut conn) = argus_core::open_db(&db_path) {
+                    let _ = argus_core::write_scan(&mut conn, &snapshot);
                 }
 
                 let _ = tx.blocking_send(AppMessage::ScanComplete(snapshot));
@@ -565,51 +589,37 @@ fn trigger_diff_if_ready(app: &mut App) {
         return;
     }
 
-    let from_info = &app.available_snapshots[from_idx];
-    let to_info = &app.available_snapshots[to_idx];
-
-    let from_content = match std::fs::read(&from_info.path) {
-        Ok(c) => c,
-        Err(e) => {
-            app.last_error = Some(format!("failed to read snapshot: {}", e));
-            return;
-        }
-    };
-    let to_content = match std::fs::read(&to_info.path) {
-        Ok(c) => c,
-        Err(e) => {
-            app.last_error = Some(format!("failed to read snapshot: {}", e));
-            return;
-        }
-    };
-
-    let old_snap: argus_core::Snapshot = match argus_core::Snapshot::from_bytes(&from_content) {
-        Ok(s) => s,
-        Err(e) => {
-            app.last_error = Some(format!("failed to parse snapshot: {}", e));
-            return;
-        }
-    };
-    let new_snap: argus_core::Snapshot = match argus_core::Snapshot::from_bytes(&to_content) {
-        Ok(s) => s,
-        Err(e) => {
-            app.last_error = Some(format!("failed to parse snapshot: {}", e));
-            return;
-        }
-    };
+    let from_info = app.available_snapshots[from_idx].clone();
+    let to_info = app.available_snapshots[to_idx].clone();
 
     let tx = app.tx.clone();
-    tokio::task::spawn_blocking(
-        move || match argus_core::compare_trees(&old_snap, &new_snap) {
-            Ok(diff) => {
-                let _ = tx.blocking_send(crate::app::AppMessage::DiffComplete(diff));
-            }
+    let path = app.view_root_path.clone();
+    let db_path = app.db_path.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = match argus_core::open_db(&db_path) {
+            Ok(c) => c,
             Err(e) => {
                 let _ =
-                    tx.blocking_send(crate::app::AppMessage::Error(format!("diff failed: {}", e)));
+                    tx.blocking_send(AppMessage::Error(format!("failed to open database: {}", e)));
+                return;
             }
-        },
-    );
+        };
+
+        match argus_core::query_delta(&conn, &path, &from_info.timestamp, &to_info.timestamp) {
+            Ok(records) => {
+                let root_name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let diff = argus_core::build_diff_tree(&records, &root_name);
+                let _ = tx.blocking_send(AppMessage::DiffComplete(diff));
+            }
+            Err(e) => {
+                let _ = tx.blocking_send(AppMessage::Error(format!("diff query failed: {}", e)));
+            }
+        }
+    });
 }
 
 fn expand_ancestor_prefixes(
@@ -672,6 +682,7 @@ mod tests {
     use crate::app::TreeNode;
     use argus_core::{FileNode, FileType, Snapshot};
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use tokio::sync::mpsc;
 
     fn make_file(name: &str) -> FileNode {
@@ -683,6 +694,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         }
     }
@@ -701,13 +713,19 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: map,
         }
     }
 
     fn make_app(root: FileNode) -> App {
         let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        let mut app = App::new(
+            crate::config::TuiConfig::default(),
+            PathBuf::from("/tmp/argus_test.db"),
+            tx,
+            rx,
+        );
         app.view_root_path = std::path::PathBuf::from("/tmp/test");
         let snapshot = Snapshot::new(std::path::PathBuf::from("/tmp/test"), root, 1);
         app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node));

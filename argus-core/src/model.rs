@@ -32,8 +32,18 @@ pub struct FileNode {
     pub inode: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<u64>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub has_metadata: bool,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub children: HashMap<String, FileNode>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -282,6 +292,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         };
         let snap = Snapshot::new(PathBuf::from("/tmp"), root, 100);
@@ -299,11 +310,13 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("test.txt"));
         let deserialized: FileNode = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "test.txt");
+        assert!(deserialized.has_metadata);
     }
 }

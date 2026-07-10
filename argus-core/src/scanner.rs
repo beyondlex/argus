@@ -125,6 +125,7 @@ pub fn scan_path(
         modified: None,
         inode: None,
         device: None,
+        has_metadata: true,
         children: HashMap::new(),
     };
 
@@ -143,8 +144,10 @@ pub fn scan_path(
         insert_node(&mut root_node, &components, node);
     }
 
-    // Walk skipped directories fully for accurate size counting, but don't
-    // build the tree inside them (keeps memory usage low).
+    // Walk skipped directories fully for accurate size counting.  Also
+    // record the directory structure — immediate children get their total
+    // recursive size computed (one level deep), while deeper structure
+    // tracks names only (shown as "..." in the UI).
     for skip_path in skipped.lock().unwrap().drain(..) {
         if cancel.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
@@ -154,12 +157,35 @@ pub fn scan_path(
         total_bytes = total_bytes.saturating_add(size);
         file_count += count;
 
-        // Lightweight directory node: accurate size, empty children (no tree
-        // expansion inside the skipped directory).
         let dir_name = skip_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+        let mut structure = walk_dir_structure(&skip_path);
+
+        // Compute total sizes for each immediate child of the skipped dir
+        // (one level deep).  Uses a fresh inode set to avoid the parent
+        // walk_dir_size having already recorded these inodes.
+        let mut child_seen_inodes: HashSet<(u64, u64)> = HashSet::new();
+        if let Ok(read_dir) = std::fs::read_dir(&skip_path) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if let Some(child) = structure.get_mut(&name) {
+                    if child.is_dir {
+                        let (child_size, _) =
+                            walk_dir_size(&entry.path(), cancel, &mut child_seen_inodes);
+                        child.size = child_size;
+                        child.has_metadata = true;
+                    } else {
+                        if let Ok(meta) = entry.metadata() {
+                            child.size = meta.len();
+                            child.has_metadata = true;
+                        }
+                    }
+                }
+            }
+        }
+
         let dir_node = FileNode {
             name: dir_name,
             is_dir: true,
@@ -168,7 +194,8 @@ pub fn scan_path(
             modified: None,
             inode: None,
             device: None,
-            children: HashMap::new(),
+            has_metadata: true,
+            children: structure,
         };
 
         let rel_path = skip_path.strip_prefix(path).unwrap_or(&skip_path);
@@ -227,6 +254,7 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
         modified,
         inode: get_inode(meta).ok(),
         device: get_device(meta).ok(),
+        has_metadata: true,
         children: HashMap::new(),
     }
 }
@@ -305,6 +333,7 @@ fn insert_node(parent: &mut FileNode, components: &[std::path::Component], node:
                 modified: None,
                 inode: None,
                 device: None,
+                has_metadata: true,
                 children: HashMap::new(),
             }
         });
@@ -358,12 +387,19 @@ pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
         modified: None,
         inode: None,
         device: None,
+        has_metadata: true,
         children,
     })
 }
 
 fn compute_size(node: &mut FileNode) -> u64 {
     if node.children.is_empty() {
+        return node.size;
+    }
+
+    // If all direct children lack metadata, this node's size was
+    // pre-computed (e.g., skipped dir with structural-only children).
+    if node.children.values().all(|c| !c.has_metadata) {
         return node.size;
     }
 
@@ -416,6 +452,43 @@ fn walk_dir_size(
     }
 
     (total, count)
+}
+
+/// Walk a directory tree recording its structure (names, directory nesting)
+/// without individual file sizes.  All returned nodes have `has_metadata: false`
+/// and `size: 0`, signalling to the UI that individual size data is unavailable.
+fn walk_dir_structure(path: &Path) -> HashMap<String, FileNode> {
+    let mut children = HashMap::new();
+    let Ok(read_dir) = std::fs::read_dir(path) else {
+        return children;
+    };
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let file_type = if is_dir {
+            FileType::Directory
+        } else {
+            detect_file_type(&entry.path())
+        };
+
+        let node = FileNode {
+            name: name.clone(),
+            is_dir,
+            file_type,
+            size: 0,
+            modified: None,
+            inode: None,
+            device: None,
+            has_metadata: false,
+            children: if is_dir {
+                walk_dir_structure(&entry.path())
+            } else {
+                HashMap::new()
+            },
+        };
+        children.insert(name, node);
+    }
+    children
 }
 
 #[cfg(test)]
@@ -517,6 +590,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         };
 
@@ -530,6 +604,7 @@ mod tests {
                 modified: None,
                 inode: None,
                 device: None,
+                has_metadata: true,
                 children: HashMap::new(),
             },
         );
@@ -544,6 +619,7 @@ mod tests {
                 modified: None,
                 inode: None,
                 device: None,
+                has_metadata: true,
                 children: HashMap::new(),
             },
         );
@@ -680,7 +756,15 @@ mod tests {
 
         let nm_node = snapshot.root_node.children.get("node_modules").unwrap();
         assert!(nm_node.is_dir);
-        assert!(nm_node.children.is_empty()); // No tree inside skipped dir
+        assert!(!nm_node.children.is_empty());
+        assert!(nm_node.has_metadata);
+        // Immediate children get accurate sizes (one level deep)
+        let pkg = nm_node.children.get("pkg").unwrap();
+        assert!(pkg.has_metadata);
+        assert_eq!(pkg.size, 18 + 15);
+        // Deeper levels (pkg/src) have no metadata
+        let src = pkg.children.get("src").unwrap();
+        assert!(!src.has_metadata);
         assert_eq!(nm_node.size, 18 + 15); // Full recursive size, not just one level
     }
 

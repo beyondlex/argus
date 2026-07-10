@@ -52,6 +52,8 @@ pub enum DbError {
     Io(#[from] std::io::Error),
 }
 
+pub type ScanTimestampInfo = (i64, DateTime<Utc>, u64, u64);
+
 pub fn default_db_path() -> PathBuf {
     let config_dir = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -181,7 +183,9 @@ pub fn query_delta(
             size_from,
             size_to,
             delta: i64_from_u64(size_to)? - i64_from_u64(size_from)?,
-            is_dir: to.map(|r| r.is_dir).unwrap_or_else(|| from.map(|r| r.is_dir).unwrap_or(false)),
+            is_dir: to
+                .map(|r| r.is_dir)
+                .unwrap_or_else(|| from.map(|r| r.is_dir).unwrap_or(false)),
             file_type,
             exists_from: from.is_some(),
             exists_to: to.is_some(),
@@ -194,7 +198,7 @@ pub fn query_delta(
 pub fn query_scan_timestamps(
     conn: &Connection,
     root_path: &Path,
-) -> Result<Vec<(i64, DateTime<Utc>, u64, u64)>, DbError> {
+) -> Result<Vec<ScanTimestampInfo>, DbError> {
     let root_path_hash = hash_root_path(root_path);
     let mut stmt = conn.prepare(
         "SELECT id, timestamp, total_size, total_files
@@ -257,7 +261,7 @@ pub fn rebuild_snapshot(conn: &Connection, root_path: &Path) -> Result<Snapshot,
              FROM path_records
              WHERE scan_id = ?1 AND path = ?2",
             params![scan_id, root_path_str],
-            |row| path_record_from_row(row),
+            path_record_from_row,
         )
         .optional()?
         .ok_or_else(|| DbError::NoScanFound(root_path.display().to_string()))?;
@@ -281,7 +285,7 @@ pub fn rebuild_snapshot(conn: &Connection, root_path: &Path) -> Result<Snapshot,
         version: crate::model::SNAPSHOT_VERSION,
         timestamp: parse_timestamp(&timestamp)?,
         root_path: root_path.to_path_buf(),
-        root_path_hash: root_path_hash,
+        root_path_hash,
         total_size: root_node.size,
         root_node,
     })
@@ -454,12 +458,21 @@ fn collect_path_records(current_path: &Path, node: &FileNode, records: &mut Vec<
     });
 
     for child in node.children.values() {
+        // Structural-only nodes (grandchildren of skipped dirs, no actual
+        // size data) are not persisted — they'll be lazily loaded from
+        // disk when the user expands the parent directory.
+        if !child.has_metadata {
+            continue;
+        }
         let child_path = current_path.join(&child.name);
         collect_path_records(&child_path, child, records);
     }
 }
 
 fn count_files(node: &FileNode) -> u64 {
+    if !node.has_metadata {
+        return 0; // Structural-only node, not a real file record
+    }
     let mut count = if node.is_dir { 0 } else { 1 };
     for child in node.children.values() {
         count += count_files(child);
@@ -483,6 +496,7 @@ fn record_to_file_node(record: &PathRecord) -> FileNode {
             .map(|dt| dt.with_timezone(&Utc)),
         inode: record.inode,
         device: record.device,
+        has_metadata: true,
         children: HashMap::new(),
     }
 }
@@ -513,16 +527,20 @@ fn insert_record_recursive(
         return;
     }
 
-    let child = current.children.entry(name.clone()).or_insert_with(|| FileNode {
-        name,
-        is_dir: true,
-        file_type: FileType::Directory,
-        size: 0,
-        modified: None,
-        inode: None,
-        device: None,
-        children: HashMap::new(),
-    });
+    let child = current
+        .children
+        .entry(name.clone())
+        .or_insert_with(|| FileNode {
+            name,
+            is_dir: true,
+            file_type: FileType::Directory,
+            size: 0,
+            modified: None,
+            inode: None,
+            device: None,
+            has_metadata: true,
+            children: HashMap::new(),
+        });
     insert_record_recursive(child, components, index + 1, record);
 }
 
@@ -555,13 +573,16 @@ fn insert_delta_recursive(
         return;
     }
 
-    let child = current.children.entry(name.to_string()).or_insert_with(|| DiffNode {
-        name: name.to_string(),
-        is_dir: true,
-        current_size: 0,
-        size_delta: 0,
-        children: HashMap::new(),
-    });
+    let child = current
+        .children
+        .entry(name.to_string())
+        .or_insert_with(|| DiffNode {
+            name: name.to_string(),
+            is_dir: true,
+            current_size: 0,
+            size_delta: 0,
+            children: HashMap::new(),
+        });
     insert_delta_recursive(child, components, index + 1, record);
 }
 
@@ -650,6 +671,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         }
     }
@@ -663,6 +685,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children,
         }
     }
@@ -728,7 +751,7 @@ mod tests {
         let mut conn = open_db(&db_path).unwrap();
 
         let root_path = Path::new("/tmp/downloads");
-        let mut old = sample_snapshot(root_path);
+        let old = sample_snapshot(root_path);
         let mut new = sample_snapshot(root_path);
         new.root_node
             .children
@@ -743,9 +766,14 @@ mod tests {
         write_scan(&mut conn, &old_clone).unwrap();
         write_scan(&mut conn, &new_clone).unwrap();
 
-        let deltas = query_delta(&conn, root_path, &old_clone.timestamp, &new_clone.timestamp).unwrap();
-        assert!(deltas.iter().any(|d| d.path == "new.txt" && d.exists_to && !d.exists_from));
-        assert!(deltas.iter().any(|d| d.path == "b.txt" && d.exists_from && !d.exists_to));
+        let deltas =
+            query_delta(&conn, root_path, &old_clone.timestamp, &new_clone.timestamp).unwrap();
+        assert!(deltas
+            .iter()
+            .any(|d| d.path == "new.txt" && d.exists_to && !d.exists_from));
+        assert!(deltas
+            .iter()
+            .any(|d| d.path == "b.txt" && d.exists_from && !d.exists_to));
     }
 
     #[test]

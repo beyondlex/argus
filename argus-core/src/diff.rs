@@ -203,6 +203,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: HashMap::new(),
         }
     }
@@ -221,6 +222,7 @@ mod tests {
             modified: None,
             inode: None,
             device: None,
+            has_metadata: true,
             children: map,
         }
     }

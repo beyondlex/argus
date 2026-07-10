@@ -169,7 +169,9 @@ fn render_tree_line<'a>(
 
     let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
 
-    let size_str = if line.node.is_dir() && !line.has_scan_data {
+    let size_str = if !line.node.has_metadata() {
+        "...".to_string()
+    } else if line.node.is_dir() && !line.has_scan_data {
         "-".to_string()
     } else {
         util::format_size(line.node.current_size())
@@ -188,7 +190,7 @@ fn render_tree_line<'a>(
         },
     );
 
-    let size_style = if line.node.is_dir() && !line.has_scan_data {
+    let size_style = if !line.node.has_metadata() || (line.node.is_dir() && !line.has_scan_data) {
         base.fg(Color::DarkGray).bg(Color::Reset)
     } else {
         base.fg(Color::Yellow).bg(Color::Reset)

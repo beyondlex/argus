@@ -14,6 +14,7 @@ fn make_file(name: &str, size: u64) -> FileNode {
         modified: None,
         inode: None,
         device: None,
+        has_metadata: true,
         children: HashMap::new(),
     }
 }
@@ -32,6 +33,7 @@ fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
         modified: None,
         inode: None,
         device: None,
+        has_metadata: true,
         children: map,
     }
 }
@@ -127,20 +129,37 @@ fn test_compare_trees_added_removed() {
 // ── TUI-specific state logic tests ──────────────────────────────────────────
 
 #[test]
-fn test_known_snapshots_only_from_same_root() {
-    let files = [
-        "hashA_2026-06-01T00:00:00Z.json",
-        "hashA_2026-07-01T00:00:00Z.json",
-        "hashB_2026-06-15T00:00:00Z.json",
+fn test_snapshot_info_construction() {
+    use argus_tui::app::SnapshotInfo;
+    use chrono::Utc;
+
+    let now = Utc::now();
+    let info = SnapshotInfo::from_scan_timestamp_info(1, now, 1024, 5);
+    assert_eq!(info.scan_id, 1);
+    assert_eq!(info.timestamp, now);
+    assert_eq!(info.total_size, 1024);
+    assert_eq!(info.total_files, 5);
+}
+
+#[test]
+fn test_available_snapshots_sorting() {
+    use argus_tui::app::SnapshotInfo;
+    use chrono::{TimeZone, Utc};
+
+    let ts1 = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+    let ts2 = Utc.with_ymd_and_hms(2026, 7, 1, 0, 0, 0).unwrap();
+    let ts3 = Utc.with_ymd_and_hms(2026, 6, 15, 0, 0, 0).unwrap();
+
+    let mut snapshots = vec![
+        SnapshotInfo::from_scan_timestamp_info(3, ts3, 300, 3),
+        SnapshotInfo::from_scan_timestamp_info(1, ts1, 100, 1),
+        SnapshotInfo::from_scan_timestamp_info(2, ts2, 200, 2),
     ];
 
-    let timestamps: Vec<&str> = files
-        .iter()
-        .filter(|f| f.starts_with("hashA"))
-        .map(|f| &f[..])
-        .collect();
-
-    assert_eq!(timestamps.len(), 2);
+    snapshots.sort_by_key(|s| s.timestamp);
+    assert_eq!(snapshots[0].scan_id, 1); // June 1
+    assert_eq!(snapshots[1].scan_id, 3); // June 15
+    assert_eq!(snapshots[2].scan_id, 2); // July 1
 }
 
 #[test]

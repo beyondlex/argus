@@ -6,12 +6,13 @@ async fn main() -> Result<()> {
     let config_path = argus_tui::util::default_config_path();
     let tui_config = argus_tui::config::load_config(&config_path);
 
+    let db_path = argus_core::default_db_path();
     let (tx, rx) = mpsc::channel(256);
 
-    let mut app = argus_tui::app::App::new(tui_config, tx, rx);
+    let mut app = argus_tui::app::App::new(tui_config, db_path, tx, rx);
 
-    // Load all snapshots into cache
-    app.load_all_snapshots();
+    // Load scan history from SQLite into cache
+    app.load_from_db();
 
     // Build tree for current working directory
     app.rebuild_tree();

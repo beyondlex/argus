@@ -151,25 +151,24 @@ pub struct TreeLine {
 
 ## 7. Scan Cache
 
-On startup, all `.json` files in `~/.config/argus/snapshots/` are parsed and indexed:
+On startup, scan history is loaded from the SQLite database (`~/.config/argus/argus.db`):
 
 ```rust
-fn load_all_snapshots(&mut self) {
-    for json_file in snapshots_dir/*.json {
-        let snapshot: Snapshot = serde_json::from_str(&content)?;
-        self.scan_cache.insert(snapshot.root_path.clone(), snapshot);
+fn load_from_db(&mut self) {
+    let conn = open_db(&self.db_path)?;
+    let scans = query_scan_timestamps(&conn, &self.view_root_path);
+    self.available_snapshots = scans.into_iter().map(|(id, ts, size, files)| {
+        SnapshotInfo { scan_id: id, timestamp: ts, total_size: size, total_files: files }
+    }).collect();
 
-        let hash = hash_root_path(&snapshot.root_path);
-        self.snapshot_index.entry(hash).or_default().push(
-            SnapshotInfo { path_hash: hash, timestamp, path: json_file }
-        );
+    if let Ok(snapshot) = rebuild_snapshot(&conn, &self.view_root_path) {
+        self.scan_cache.insert(self.view_root_path.clone(), snapshot);
     }
-    // Sort each entry by timestamp
 }
 ```
 
-When multiple snapshots exist for the same path, the latest one is used for size display.
-The filter bar lists all available timestamps for the current `view_root_path`'s hash.
+The latest snapshot for each root path is materialized into `scan_cache` for size display.
+The filter bar lists all available timestamps for the current `view_root_path` from SQLite.
 
 ## 8. Config Changes
 
@@ -210,14 +209,14 @@ pub use scanner::list_dir;
 |------|--------|
 | `argus-core/src/scanner.rs` | Add `list_dir()` function + tests |
 | `argus-core/src/lib.rs` | Export `list_dir` |
-| `argus-tui/src/app.rs` | New fields: `view_root_path`, `scan_cache`, `snapshot_index`; remove old fields; new methods: `load_all_snapshots`, `rebuild_tree`, `navigate_to`, `navigate_up`, `expand_in_place` |
-| `argus-tui/src/handler.rs` | `s` no longer opens prompt; `h` on root navigates up; `l` checks scan cache |
+| `argus-tui/src/app.rs` | New fields: `view_root_path`, `scan_cache`, `db_path`; remove `snapshot_index`, `snapshots_dir`; new methods: `load_from_db`, `rebuild_tree` |
+| `argus-tui/src/handler.rs` | `s` writes scan to SQLite; diff uses `query_delta` + `build_diff_tree` instead of JSON files |
 | `argus-tui/src/event.rs` | Remove `render_empty_prompt`, `render_scan_prompt`; filter bar scoped to current path |
 | `argus-tui/src/components/file_tree.rs` | Handle `has_scan_data` for `"-"` rendering |
-| `argus-tui/src/components/filter_bar.rs` | Accept `snapshot_index` + `view_root_path` hash |
+| `argus-tui/src/components/filter_bar.rs` | Accept `available_snapshots` from SQLite |
 | `argus-tui/src/components/metadata.rs` | Show scan status (last scan time, or "press s to scan") |
 | `argus-tui/src/config.rs` | Add `BrowsingConfig` struct |
-| `argus-tui/src/main.rs` | Pass `auto_scan_on_start` to startup flow |
+| `argus-tui/src/main.rs` | Pass `db_path` to App; call `load_from_db()` instead of `load_all_snapshots()` |
 
 ## 11. Implementation Order
 
@@ -242,7 +241,7 @@ pub use scanner::list_dir;
 | `model.rs` | FileNode/Snapshot/DiffNode structure unchanged |
 | `diff.rs` | compare_trees/filter_by_threshold unchanged |
 | `util.rs` | format_size/format_delta unchanged |
-| Snapshot JSON format | `{hash}_{timestamp}.json` unchanged |
+| SQLite schema | `scan_events` / `path_records` (see sqlite-storage-backend.md) |
 | Trash-based delete | Unchanged |
 | Keybinding config schema | Unchanged (s still maps to scan) |
 | Sort modes | Unchanged |

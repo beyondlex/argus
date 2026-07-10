@@ -8,8 +8,6 @@ use tokio::sync::mpsc;
 
 use argus_core::{filter_by_threshold, DiffNode, FileNode, Snapshot};
 
-use crate::util;
-
 // ── Data types ──────────────────────────────────────────────────────────────
 
 /// Messages from background tasks to the UI
@@ -152,6 +150,13 @@ impl TreeNode {
             TreeNode::Diff(_) => None,
         }
     }
+
+    pub fn has_metadata(&self) -> bool {
+        match self {
+            TreeNode::Snapshot(n) => n.has_metadata,
+            TreeNode::Diff(_) => true,
+        }
+    }
 }
 
 /// A single line in the flattened tree view
@@ -163,12 +168,24 @@ pub struct TreeLine {
     pub has_scan_data: bool,
 }
 
-/// Snapshot metadata parsed from filename
+/// Snapshot metadata from SQLite scan_events
 #[derive(Debug, Clone)]
 pub struct SnapshotInfo {
-    pub path_hash: String,
+    pub scan_id: i64,
     pub timestamp: DateTime<Utc>,
-    pub path: PathBuf,
+    pub total_size: u64,
+    pub total_files: u64,
+}
+
+impl SnapshotInfo {
+    pub fn from_scan_timestamp_info(id: i64, ts: DateTime<Utc>, size: u64, files: u64) -> Self {
+        Self {
+            scan_id: id,
+            timestamp: ts,
+            total_size: size,
+            total_files: files,
+        }
+    }
 }
 
 /// Which field within the FilterBar is focused
@@ -235,13 +252,11 @@ pub struct App {
     // Scan cache: path → full scanned snapshot
     pub scan_cache: HashMap<PathBuf, Snapshot>,
 
-    // Snapshot index: path_hash → all available snapshots for that path
-    pub snapshot_index: HashMap<String, Vec<SnapshotInfo>>,
-
-    // Snapshots scoped to current view_root_path's hash
+    // Snapshots scoped to current view_root_path (loaded from SQLite)
     pub available_snapshots: Vec<SnapshotInfo>,
 
-    pub snapshots_dir: PathBuf,
+    // Path to the SQLite database
+    pub db_path: PathBuf,
 
     // Diff filter state
     pub filter_state: FilterState,
@@ -278,10 +293,10 @@ pub struct App {
 impl App {
     pub fn new(
         config: crate::config::TuiConfig,
+        db_path: PathBuf,
         tx: mpsc::Sender<AppMessage>,
         rx: mpsc::Receiver<AppMessage>,
     ) -> Self {
-        let snapshots_dir = util::default_snapshots_dir();
         let view_root_path =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -298,9 +313,8 @@ impl App {
             scroll_offset: 0,
             expanded: HashSet::new(),
             scan_cache: HashMap::new(),
-            snapshot_index: HashMap::new(),
             available_snapshots: Vec::new(),
-            snapshots_dir,
+            db_path,
             filter_state: FilterState {
                 from_idx: None,
                 to_idx: None,
@@ -324,84 +338,49 @@ impl App {
         }
     }
 
-    /// Load all snapshots from disk into scan_cache and snapshot_index
-    pub fn load_all_snapshots(&mut self) {
-        let _ = std::fs::create_dir_all(&self.snapshots_dir);
-
-        let entries = match std::fs::read_dir(&self.snapshots_dir) {
-            Ok(e) => e,
+    /// Load scan history from SQLite into scan_cache and available_snapshots
+    pub fn load_from_db(&mut self) {
+        let conn = match argus_core::open_db(&self.db_path) {
+            Ok(c) => c,
             Err(_) => return,
         };
 
-        for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let path = entry.path();
-            let filename = match path.file_name().and_then(|s| s.to_str()) {
-                Some(f) => f.to_string(),
-                None => continue,
-            };
-
-            // Accept both .json (old format) and .json.gz (compact format)
-            let stem = if filename.ends_with(".json.gz") {
-                &filename[..filename.len() - 8]
-            } else if filename.ends_with(".json") {
-                &filename[..filename.len() - 5]
-            } else {
-                continue;
-            };
-
-            let Some((path_hash, ts_str)) = stem.split_once('_') else {
-                continue;
-            };
-            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
-                continue;
-            };
-            let ts = ts.with_timezone(&Utc);
-
-            let data = match std::fs::read(&path) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            let snapshot: Snapshot = match Snapshot::from_bytes(&data) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
-            // Index by root path for direct lookup
-            self.scan_cache
-                .insert(snapshot.root_path.clone(), snapshot.clone());
-
-            // Index by hash for filter bar
-            self.snapshot_index
-                .entry(path_hash.to_string())
-                .or_default()
-                .push(SnapshotInfo {
-                    path_hash: path_hash.to_string(),
-                    timestamp: ts,
-                    path,
-                });
+        // Load available scan timestamps for current view root
+        if let Ok(scans) = argus_core::query_scan_timestamps(&conn, &self.view_root_path) {
+            self.available_snapshots = scans
+                .into_iter()
+                .map(|(id, ts, size, files)| {
+                    SnapshotInfo::from_scan_timestamp_info(id, ts, size, files)
+                })
+                .collect();
         }
 
-        // Sort each snapshot_index entry by timestamp
-        for snapshots in self.snapshot_index.values_mut() {
-            snapshots.sort_by_key(|a| a.timestamp);
+        // Try to rebuild the latest snapshot for current view root
+        if let Ok(snapshot) = argus_core::rebuild_snapshot(&conn, &self.view_root_path) {
+            self.scan_cache
+                .insert(self.view_root_path.clone(), snapshot);
+        }
+    }
+
+    fn refresh_available_snapshots(&mut self) {
+        let conn = match argus_core::open_db(&self.db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if let Ok(scans) = argus_core::query_scan_timestamps(&conn, &self.view_root_path) {
+            self.available_snapshots = scans
+                .into_iter()
+                .map(|(id, ts, size, files)| {
+                    SnapshotInfo::from_scan_timestamp_info(id, ts, size, files)
+                })
+                .collect();
         }
     }
 
     /// Build tree for current view_root_path from scan_cache or filesystem
     pub fn rebuild_tree(&mut self) {
-        // Scope available_snapshots to current view_root_path's hash
-        let path_hash = argus_core::hash_root_path(&self.view_root_path);
-        self.available_snapshots = self
-            .snapshot_index
-            .get(&path_hash)
-            .cloned()
-            .unwrap_or_default();
-        self.available_snapshots.sort_by_key(|a| a.timestamp);
+        // Refresh available snapshots from DB for current root
+        self.refresh_available_snapshots();
 
         // Check scan cache first
         if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
@@ -486,25 +465,8 @@ impl App {
                 self.scan_cache
                     .insert(snapshot.root_path.clone(), snapshot.clone());
 
-                // Update snapshot index
-                let hash = argus_core::hash_root_path(&snapshot.root_path);
-                let info = SnapshotInfo {
-                    path_hash: hash.clone(),
-                    timestamp: snapshot.timestamp,
-                    path: self.snapshots_dir.join(format!(
-                        "{}_{}.json.gz",
-                        hash,
-                        snapshot.timestamp.format("%Y-%m-%dT%H:%M:%SZ")
-                    )),
-                };
-                self.snapshot_index.entry(hash).or_default().push(info);
-                // Re-sort after insertion
-                if let Some(snapshots) = self
-                    .snapshot_index
-                    .get_mut(&argus_core::hash_root_path(&snapshot.root_path))
-                {
-                    snapshots.sort_by_key(|a| a.timestamp);
-                }
+                // Refresh available snapshots from DB
+                self.refresh_available_snapshots();
 
                 // Rebuild tree if scanned path matches current view
                 if snapshot.root_path == self.view_root_path {

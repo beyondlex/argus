@@ -101,7 +101,8 @@ fn cmd_scan(path: &Path) -> Result<i32> {
     })
     .context("failed to set Ctrl+C handler")?;
 
-    let snapshot = scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
+    let snapshot =
+        scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
     let db_path = default_db_path();
     let mut conn = open_db(&db_path).context("failed to open SQLite database")?;
     let scan_id = write_scan(&mut conn, &snapshot).context("failed to write scan to database")?;
