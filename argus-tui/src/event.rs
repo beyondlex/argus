@@ -17,6 +17,11 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
     let cursor_blink_rate = Duration::from_millis(500);
 
     loop {
+        // Advance scan spinner on each render tick
+        if app.scanning {
+            app.scan_spinner = (app.scan_spinner + 1) % 10;
+        }
+
         terminal.draw(|f| render(f, app, cursor_visible))?;
 
         let timeout = tick_rate
@@ -142,7 +147,9 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         app.mode,
         app.focus,
         file_count,
+        app.scanning,
         app.scan_progress,
+        app.scan_spinner,
         error_str,
     );
 

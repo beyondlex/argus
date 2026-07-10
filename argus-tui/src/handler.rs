@@ -602,6 +602,7 @@ pub fn set_root_to_selected(app: &mut App) {
 pub fn start_scan(app: &mut App) {
     app.scanning = true;
     app.scan_progress = None;
+    app.scan_spinner = 0;
     app.cancel_scan = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();

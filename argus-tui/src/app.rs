@@ -284,6 +284,7 @@ pub struct App {
     // Scan state
     pub scanning: bool,
     pub scan_progress: Option<(u64, u64)>,
+    pub scan_spinner: u8,
     pub cancel_scan: Arc<AtomicBool>,
 
     // Delete state
@@ -345,6 +346,7 @@ impl App {
             pending_gg: false,
             scanning: false,
             scan_progress: None,
+            scan_spinner: 0,
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             rx,

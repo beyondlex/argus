@@ -8,6 +8,10 @@ use ratatui::{
 
 use crate::app::{AppMode, Focus};
 
+const SPINNER_FRAMES: &[char] = &[
+    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+];
+
 /// Render the status bar
 pub fn render(
     f: &mut Frame,
@@ -15,7 +19,9 @@ pub fn render(
     mode: AppMode,
     focus: Focus,
     file_count: usize,
+    scanning: bool,
     scan_progress: Option<(u64, u64)>,
+    scan_spinner: u8,
     has_error: Option<&str>,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
@@ -46,12 +52,19 @@ pub fn render(
 
     left_spans.push(Span::raw(format!(" | files: {}", file_count)));
 
-    if let Some((current, _total)) = scan_progress {
-        left_spans.push(Span::raw(" | scanning... "));
+    if scanning {
+        let spinner = SPINNER_FRAMES[scan_spinner as usize];
+        left_spans.push(Span::raw(" | "));
         left_spans.push(Span::styled(
-            format!("{} files", current),
+            format!("{} scanning", spinner),
             Style::default().fg(Color::Yellow),
         ));
+        if let Some((current, _total)) = scan_progress {
+            left_spans.push(Span::styled(
+                format!(" {} files", current),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
     }
 
     if let Some(err) = has_error {
