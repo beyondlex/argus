@@ -96,32 +96,6 @@ pub fn is_protected_path(path: &Path) -> bool {
         .any(|p| canonical_str == *p || canonical_str.starts_with(&format!("{}/", p)))
 }
 
-/// Count total files in a directory tree
-pub fn count_files<F>(
-    node: &F,
-    is_dir_fn: fn(&F) -> bool,
-    children_fn: fn(&F) -> &std::collections::HashMap<String, F>,
-) -> u64 {
-    let mut count = 0u64;
-    if !is_dir_fn(node) {
-        count += 1;
-    }
-    for child in children_fn(node).values() {
-        count += count_files(child, is_dir_fn, children_fn);
-    }
-    count
-}
-
-/// Count files in a FileNode tree
-pub fn count_file_nodes(node: &argus_core::FileNode) -> u64 {
-    count_files(node, |n| n.is_dir, |n| &n.children)
-}
-
-/// Count files in a DiffNode tree
-pub fn count_diff_nodes(node: &argus_core::DiffNode) -> u64 {
-    count_files(node, |n| n.is_dir, |n| &n.children)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

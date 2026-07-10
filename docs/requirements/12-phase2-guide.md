@@ -121,7 +121,7 @@ enum AppMode {
 |                           |  Metadata Panel      |
 |  File Tree (70%)          |  - path              |
 |                           |  - current/delta     |
-|  ~/                       |  - file count        |
+|  ~/                       |  - modified time     |
 |  ├── Desktop/ +1.2GB     |  - modified time     |
 |  ├── file.iso  +500MB    +----------------------+
 |  └── ...                  |  Status Bar          |
@@ -661,7 +661,7 @@ cargo run -p argus-tui
 ### 7.5 元数据显示
 
 - 光标移动到文件/目录时，元数据面板更新
-- 显示路径、大小、增量、文件数、修改时间
+- 显示路径、大小、增量、修改时间
 
 ### 7.6 删除交互
 

@@ -159,6 +159,10 @@ fn branch_marker(line: &TreeLine) -> &'static str {
     }
 }
 
+fn is_symlink(line: &TreeLine) -> bool {
+    line.node.file_type() == argus_core::FileType::Symlink
+}
+
 fn render_tree_line<'a>(
     line: &'a TreeLine,
     is_selected: bool,
@@ -273,6 +277,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
                 ctx.is_current_match,
                 ctx.is_selected,
                 line.node.is_dir(),
+                is_symlink(line),
             ));
         } else {
             let (fg, actual_bg) = if ctx.is_current_match {
@@ -281,6 +286,8 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
                 (Color::Black, Color::Blue)
             } else if line.node.is_dir() {
                 (Color::Cyan, ctx.bg)
+            } else if is_symlink(line) {
+                (Color::Magenta, ctx.bg)
             } else {
                 (Color::White, ctx.bg)
             };
@@ -299,6 +306,10 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
+        } else if is_symlink(line) {
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -315,6 +326,7 @@ fn match_highlight_spans<'a>(
     is_current_match: bool,
     is_selected: bool,
     is_dir: bool,
+    is_symlink: bool,
 ) -> Vec<Span<'a>> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
@@ -324,7 +336,13 @@ fn match_highlight_spans<'a>(
     let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
         (Color::Black, Color::Green, Color::Black, Color::Blue)
     } else {
-        let normal_fg = if is_dir { Color::Cyan } else { Color::White };
+        let normal_fg = if is_dir {
+            Color::Cyan
+        } else if is_symlink {
+            Color::Magenta
+        } else {
+            Color::White
+        };
         (Color::Green, Color::Black, normal_fg, Color::Black)
     };
 

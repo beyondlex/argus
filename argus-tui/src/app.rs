@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
-use argus_core::{filter_by_threshold, DiffNode, FileNode, Snapshot};
+use argus_core::{filter_by_threshold, DiffNode, FileNode, FileType, Snapshot};
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
@@ -112,6 +112,13 @@ impl TreeNode {
         match self {
             TreeNode::Snapshot(n) => n.is_dir,
             TreeNode::Diff(n) => n.is_dir,
+        }
+    }
+
+    pub fn file_type(&self) -> FileType {
+        match self {
+            TreeNode::Snapshot(n) => n.file_type,
+            TreeNode::Diff(_) => FileType::Other,
         }
     }
 

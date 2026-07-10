@@ -382,7 +382,7 @@ pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
             Ok(e) => e,
             Err(_) => continue,
         };
-        let meta = match entry.metadata() {
+        let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -691,6 +691,27 @@ mod tests {
         assert!(sub.has_metadata);
         assert_eq!(sub.size, 0); // Not recursively summed
         assert!(sub.children.is_empty()); // Not populated
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_list_dir_preserves_symlink_type() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("linked.txt");
+        fs::write(&target, "content").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let result = list_dir(dir.path());
+        assert!(result.is_ok());
+        let node = result.unwrap();
+        let linked = node.children.get("linked.txt").unwrap();
+
+        assert_eq!(linked.file_type, FileType::Symlink);
+        assert!(!linked.is_dir);
+        assert_eq!(linked.size, 0);
     }
 
     #[cfg(unix)]

@@ -76,7 +76,7 @@ fi
 |                           |  元数据面板 (30%)      |
 |  文件树浏览器 (70%)       |  - 路径               |
 |                           |  - 当前大小/增量       |
-|  ~/                       |  - 文件数              |
+|  ~/                       |  - modified time       |
 |  ├── Desktop/  +1.2GB    |  - 修改时间            |
 |  ├── Downloads/ -400MB   |  - 后缀分布(bar chart) |
 |  │   ├── big_file.iso     |                       |

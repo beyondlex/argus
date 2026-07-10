@@ -25,7 +25,8 @@ pub fn render(
         .title(" Metadata ")
         .title_alignment(ratatui::layout::Alignment::Left);
 
-    let _inner = block.inner(area);
+    let inner = block.inner(area);
+    let content_width = inner.width as usize;
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -33,14 +34,14 @@ pub fn render(
         let node = &line.node;
 
         // Path
-        lines.push(Line::from(vec![Span::styled(
+        push_kv_line(
+            &mut lines,
+            content_width,
             "Path:",
+            node.name().to_string(),
             Style::default().fg(Color::Gray).bold(),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            node.name(),
             Style::default().fg(Color::White),
-        )]));
+        );
         lines.push(Line::from(vec![Span::raw("")]));
 
         // Current Size
@@ -50,11 +51,14 @@ pub fn render(
             line.has_scan_data,
             node.current_size(),
         );
-        lines.push(Line::from(vec![
-            Span::styled("Size:", Style::default().fg(Color::Gray).bold()),
-            Span::raw(" "),
-            Span::styled(size_display, Style::default().fg(Color::Yellow)),
-        ]));
+        push_kv_line(
+            &mut lines,
+            content_width,
+            "Size:",
+            size_display,
+            Style::default().fg(Color::Gray).bold(),
+            Style::default().fg(Color::Yellow),
+        );
 
         // Size Delta
         if has_delta {
@@ -68,57 +72,58 @@ pub fn render(
             } else {
                 Color::Gray
             };
-            lines.push(Line::from(vec![
-                Span::styled("Delta:", Style::default().fg(Color::Gray).bold()),
-                Span::raw(" "),
-                Span::styled(delta_str, Style::default().fg(delta_color)),
-            ]));
-        }
-
-        // File Count
-        if node.is_dir() {
-            let count = match node {
-                crate::app::TreeNode::Snapshot(n) => util::count_file_nodes(n),
-                crate::app::TreeNode::Diff(n) => util::count_diff_nodes(n),
-            };
-            lines.push(Line::from(vec![
-                Span::styled("Files:", Style::default().fg(Color::Gray).bold()),
-                Span::raw(" "),
-                Span::styled(count.to_string(), Style::default().fg(Color::White)),
-            ]));
+            push_kv_line(
+                &mut lines,
+                content_width,
+                "Delta:",
+                delta_str,
+                Style::default().fg(Color::Gray).bold(),
+                Style::default().fg(delta_color),
+            );
         }
 
         // Modified Time
         if let Some(modified) = node.modified() {
-            lines.push(Line::from(vec![
-                Span::styled("Modified:", Style::default().fg(Color::Gray).bold()),
-                Span::raw(" "),
-                Span::styled(
-                    modified.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
+            push_kv_line(
+                &mut lines,
+                content_width,
+                "Modified:",
+                modified.format("%Y-%m-%d %H:%M:%S").to_string(),
+                Style::default().fg(Color::Gray).bold(),
+                Style::default().fg(Color::White),
+            );
         }
 
         // Created Time
         if let Some(created) = node.created() {
-            lines.push(Line::from(vec![
-                Span::styled("Created:", Style::default().fg(Color::Gray).bold()),
-                Span::raw(" "),
-                Span::styled(
-                    created.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
+            push_kv_line(
+                &mut lines,
+                content_width,
+                "Created:",
+                created.format("%Y-%m-%d %H:%M:%S").to_string(),
+                Style::default().fg(Color::Gray).bold(),
+                Style::default().fg(Color::White),
+            );
         }
 
         // Type
-        let type_str = if node.is_dir() { "Directory" } else { "File" };
-        lines.push(Line::from(vec![
-            Span::styled("Type:", Style::default().fg(Color::Gray).bold()),
-            Span::raw(" "),
-            Span::styled(type_str, Style::default().fg(Color::White)),
-        ]));
+        let type_str = match node.file_type() {
+            argus_core::FileType::Directory => "Directory",
+            argus_core::FileType::Symlink => "Symlink",
+            argus_core::FileType::Fifo => "FIFO",
+            argus_core::FileType::Socket => "Socket",
+            argus_core::FileType::Device => "Device",
+            argus_core::FileType::Other => "Other",
+            argus_core::FileType::File => "File",
+        };
+        push_kv_line(
+            &mut lines,
+            content_width,
+            "Type:",
+            type_str.to_string(),
+            Style::default().fg(Color::Gray).bold(),
+            Style::default().fg(Color::White),
+        );
     } else {
         lines.push(Line::from(vec![Span::styled(
             "No selection",
@@ -130,25 +135,47 @@ pub fn render(
     lines.push(Line::from(vec![Span::raw("")]));
     if has_scan {
         if let Some(ts) = last_scan {
-            lines.push(Line::from(vec![
-                Span::styled("Scanned:", Style::default().fg(Color::Green).bold()),
-                Span::raw(" "),
-                Span::styled(
-                    ts.format("%Y-%m-%d %H:%M:%S").to_string(),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
+            push_kv_line(
+                &mut lines,
+                content_width,
+                "Scanned:",
+                ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+                Style::default().fg(Color::Green).bold(),
+                Style::default().fg(Color::White),
+            );
         }
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("Scanned:", Style::default().fg(Color::Gray).bold()),
-            Span::raw(" "),
-            Span::styled("Press s to scan", Style::default().fg(Color::DarkGray)),
-        ]));
+        push_kv_line(
+            &mut lines,
+            content_width,
+            "Scanned:",
+            "Press s to scan".to_string(),
+            Style::default().fg(Color::Gray).bold(),
+            Style::default().fg(Color::DarkGray),
+        );
     }
 
     let text = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
     f.render_widget(text, area);
+}
+
+fn push_kv_line(
+    lines: &mut Vec<Line>,
+    width: usize,
+    label: &str,
+    value: String,
+    label_style: Style,
+    value_style: Style,
+) {
+    let label_width = label.chars().count();
+    let value_width = value.chars().count();
+    let padding = width.saturating_sub(label_width + value_width).max(1);
+
+    lines.push(Line::from(vec![
+        Span::styled(label.to_string(), label_style),
+        Span::raw(" ".repeat(padding)),
+        Span::styled(value, value_style),
+    ]));
 }
