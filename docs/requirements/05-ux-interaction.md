@@ -7,17 +7,17 @@
 ### 1.1 命令集
 
 ```bash
-# 单次扫描并保存快照
-argus scan --path ~/Downloads --output ./snap.json
+# 单次扫描并写入 SQLite
+argus scan --path ~/Downloads
 
-# 对比两个快照，按阈值过滤（支持人类可读格式如 50MB / 2.5GB）
-argus diff --old ./snap-a.json --new ./snap-b.json --threshold 50MB
+# 按时间范围对比当前树根，支持人类可读阈值如 50MB / 2.5GB
+argus diff --path ~/Downloads --from 2026-06-01T00:00:00Z --to 2026-06-15T00:00:00Z --threshold 50MB
 
 # 输出结构化报告（支持 text / json / markdown 格式）
-argus diff --old ./snap-a.json --new ./snap-b.json --threshold 100MB --format json
+argus diff --path ~/Downloads --from 2026-06-01T00:00:00Z --to 2026-06-15T00:00:00Z --threshold 100MB --format json
 
 # 模拟 AI 诊断：打印特征提取 Prompt（不调用任何 AI API）
-argus explain --old ./snap-a.json --new ./snap-b.json --target-path ~/Library/Caches
+argus explain --path ~/Downloads --target-path ~/Library/Caches
 ```
 
 ### 1.2 阈值参数
@@ -55,7 +55,7 @@ CLI 退出码标准化，支持脚本化管道和 CI 集成：
 
 ```bash
 # CI 用法示例：检查 Downloads 是否新增 >100MB
-argus diff --old snap_a.json --new snap_b.json --threshold 100MB
+argus diff --path ~/Downloads --from 2026-06-01T00:00:00Z --to 2026-06-15T00:00:00Z --threshold 100MB
 if [ $? -eq 1 ]; then
     echo "⚠️ 发现大变动，触发告警"
 fi
@@ -133,7 +133,7 @@ fi
 
 ### 2.5 智能交互
 
-- **启动行为**：启动时加载所有 JSON 快照到 scan cache；当前树根路径有缓存则直接展示完整数据树。
+- **启动行为**：启动时从 SQLite 加载 scan history；当前树根路径有记录则直接展示完整数据树。
 - **配置项**：`[browsing].auto_scan_on_start` 控制是否启动时自动扫描 cwd。
 - **光标停顿 1 秒**：Phase 4 再启用的自动异步 AI 诊断触发。
 - **实时进度条**：扫描或 Diff 计算时显示进度百分比。

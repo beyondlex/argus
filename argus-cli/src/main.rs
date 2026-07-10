@@ -1,30 +1,31 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use argus_core::{
-    compare_trees, extract_feature, filter_by_threshold, generate_prompt, has_significant_changes,
-    parse_human_size, scan_path, DiffNode, FileNode, Snapshot,
+    build_diff_tree, default_db_path, filter_by_threshold, has_significant_changes, open_db,
+    parse_human_size, query_delta, query_root_summaries, query_scan_timestamps, scan_path,
+    write_scan, DiffNode, FileNode, RootScanSummary,
 };
 
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        Commands::Scan { path, output } => cmd_scan(path, output),
+        Commands::Scan { path } => cmd_scan(path),
         Commands::Diff {
-            old,
-            new,
+            path,
+            from,
+            to,
             threshold,
             format,
-        } => cmd_diff(old, new, threshold, format),
-        Commands::Explain {
-            old,
-            new,
-            target_path,
-        } => cmd_explain(old, new, target_path),
+        } => cmd_diff(path, from, to, threshold, format),
+        Commands::ListScans { path } => cmd_list_scans(path),
     };
 
     match result {
@@ -36,10 +37,12 @@ fn main() {
     }
 }
 
-use clap::{Parser, Subcommand, ValueEnum};
-
 #[derive(Parser)]
-#[command(name = "argus")]
+#[command(
+    name = "argus",
+    version,
+    about = "SQLite-first CLI for scanning disk usage and comparing scan history"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -55,33 +58,40 @@ enum OutputFormat {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Scan a path and write it into the SQLite scan history.
     Scan {
-        #[arg(long)]
+        #[arg(long, help = "Path to scan")]
         path: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
     },
+    /// Compare two timestamps for one root path and print a diff report.
     Diff {
-        #[arg(long)]
-        old: PathBuf,
-        #[arg(long)]
-        new: PathBuf,
-        #[arg(long = "threshold", default_value = "0")]
+        #[arg(long, help = "Root path to compare")]
+        path: PathBuf,
+        #[arg(long, help = "Start timestamp in RFC3339 UTC")]
+        from: String,
+        #[arg(long, help = "End timestamp in RFC3339 UTC")]
+        to: String,
+        #[arg(
+            long = "threshold",
+            default_value = "0",
+            help = "Only show changes at or above this size"
+        )]
         threshold: String,
-        #[arg(long = "format", default_value = "text")]
+        #[arg(
+            long = "format",
+            default_value = "text",
+            help = "Output format: text, json, or markdown"
+        )]
         format: OutputFormat,
     },
-    Explain {
-        #[arg(long)]
-        old: PathBuf,
-        #[arg(long)]
-        new: PathBuf,
-        #[arg(long = "target-path")]
-        target_path: PathBuf,
+    /// List available scan timestamps or scan roots.
+    ListScans {
+        #[arg(long, help = "Root path to list scans for")]
+        path: Option<PathBuf>,
     },
 }
 
-fn cmd_scan(path: &Path, output: &Path) -> Result<i32> {
+fn cmd_scan(path: &Path) -> Result<i32> {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel.clone();
 
@@ -91,21 +101,13 @@ fn cmd_scan(path: &Path, output: &Path) -> Result<i32> {
     })
     .context("failed to set Ctrl+C handler")?;
 
-    let (tx, rx) = mpsc::channel();
+    let snapshot = scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
+    let db_path = default_db_path();
+    let mut conn = open_db(&db_path).context("failed to open SQLite database")?;
+    let scan_id = write_scan(&mut conn, &snapshot).context("failed to write scan to database")?;
 
-    let snapshot = scan_path(path, &cancel, Some(tx), &[])
-        .map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
-
-    while rx.try_recv().is_ok() {}
-
-    let bytes = snapshot
-        .to_compact_bytes()
-        .context("failed to serialize snapshot")?;
-
-    std::fs::write(output, &bytes)
-        .with_context(|| format!("failed to write snapshot file: {}", output.display()))?;
-
-    println!("snapshot saved to: {}", output.display());
+    println!("scan saved to SQLite: {}", db_path.display());
+    println!("scan id: {}", scan_id);
     println!("scan path: {}", path.display());
     println!("total files: {}", count_files(&snapshot.root_node));
     println!("total size: {}", format_size(snapshot.total_size));
@@ -114,8 +116,9 @@ fn cmd_scan(path: &Path, output: &Path) -> Result<i32> {
 }
 
 fn cmd_diff(
-    old_path: &Path,
-    new_path: &Path,
+    path: &Path,
+    from: &str,
+    to: &str,
     threshold_str: &str,
     format: &OutputFormat,
 ) -> Result<i32> {
@@ -126,25 +129,21 @@ fn cmd_diff(
             .map_err(|e| anyhow::anyhow!("failed to parse threshold '{}': {}", threshold_str, e))?
     };
 
-    let old_data = std::fs::read(old_path)
-        .with_context(|| format!("failed to read old snapshot: {}", old_path.display()))?;
-    let new_data = std::fs::read(new_path)
-        .with_context(|| format!("failed to read new snapshot: {}", new_path.display()))?;
+    let from_time = parse_rfc3339_utc(from)?;
+    let to_time = parse_rfc3339_utc(to)?;
+    let db_path = default_db_path();
+    let conn = open_db(&db_path).context("failed to open SQLite database")?;
 
-    let old_snap = Snapshot::from_bytes(&old_data).context("failed to parse old snapshot")?;
-    let new_snap = Snapshot::from_bytes(&new_data).context("failed to parse new snapshot")?;
-
-    let diff =
-        compare_trees(&old_snap, &new_snap).map_err(|e| anyhow::anyhow!("diff failed: {}", e))?;
+    let records =
+        query_delta(&conn, path, &from_time, &to_time).context("failed to query SQLite delta")?;
+    let root_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let diff = build_diff_tree(&records, &root_name);
 
     let filtered = if threshold > 0 {
-        filter_by_threshold(&diff, threshold).unwrap_or(DiffNode {
-            name: diff.name.clone(),
-            is_dir: diff.is_dir,
-            current_size: diff.current_size,
-            size_delta: diff.size_delta,
-            children: std::collections::HashMap::new(),
-        })
+        filter_by_threshold(&diff, threshold).unwrap_or_else(|| empty_diff_root(&root_name))
     } else {
         diff
     };
@@ -159,37 +158,68 @@ fn cmd_diff(
     Ok(if has_changes { 1 } else { 0 })
 }
 
-fn cmd_explain(old_path: &Path, new_path: &Path, target_path: &Path) -> Result<i32> {
-    let old_data = std::fs::read(old_path)
-        .with_context(|| format!("failed to read old snapshot: {}", old_path.display()))?;
-    let new_data = std::fs::read(new_path)
-        .with_context(|| format!("failed to read new snapshot: {}", new_path.display()))?;
+fn cmd_list_scans(path: &Option<PathBuf>) -> Result<i32> {
+    let db_path = default_db_path();
+    let conn = open_db(&db_path).context("failed to open SQLite database")?;
 
-    let old_snap = Snapshot::from_bytes(&old_data).context("failed to parse old snapshot")?;
-    let new_snap = Snapshot::from_bytes(&new_data).context("failed to parse new snapshot")?;
-
-    let diff =
-        compare_trees(&old_snap, &new_snap).map_err(|e| anyhow::anyhow!("diff failed: {}", e))?;
-
-    let scan_root = &new_snap.root_path;
-    let relative = if target_path == scan_root {
-        scan_root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
-    } else if let Ok(rest) = target_path.strip_prefix(scan_root) {
-        rest.to_string_lossy().trim_start_matches('/').to_string()
-    } else {
-        target_path.to_string_lossy().to_string()
-    };
-
-    let context = extract_feature(&diff, &relative)
-        .ok_or_else(|| anyhow::anyhow!("path not found in diff tree: {}", target_path.display()))?;
-
-    let prompt = generate_prompt(&context);
-    println!("{}", prompt);
+    match path {
+        Some(path) => {
+            let scans = query_scan_timestamps(&conn, path).context("failed to list scans")?;
+            if scans.is_empty() {
+                println!("no scans found for {}", path.display());
+            } else {
+                for (id, timestamp, total_size, total_files) in scans {
+                    println!(
+                        "{}  {}  files: {}  size: {}",
+                        id,
+                        timestamp.to_rfc3339(),
+                        total_files,
+                        format_size(total_size),
+                    );
+                }
+            }
+        }
+        None => {
+            let roots = query_root_summaries(&conn).context("failed to list scan roots")?;
+            if roots.is_empty() {
+                println!("no scan roots found");
+            } else {
+                for RootScanSummary {
+                    root_path,
+                    root_path_hash,
+                    scan_count,
+                    latest_timestamp,
+                } in roots
+                {
+                    println!(
+                        "{}  [{}]  scans: {}  latest: {}",
+                        root_path.display(),
+                        root_path_hash,
+                        scan_count,
+                        latest_timestamp.to_rfc3339(),
+                    );
+                }
+            }
+        }
+    }
 
     Ok(0)
+}
+
+fn parse_rfc3339_utc(input: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(input)
+        .map(|dt| dt.with_timezone(&Utc))
+        .with_context(|| format!("failed to parse RFC3339 timestamp: {input}"))
+}
+
+fn empty_diff_root(name: &str) -> DiffNode {
+    DiffNode {
+        name: name.to_string(),
+        is_dir: true,
+        current_size: 0,
+        size_delta: 0,
+        children: HashMap::new(),
+    }
 }
 
 fn print_text_diff(node: &DiffNode, _threshold: u64) {

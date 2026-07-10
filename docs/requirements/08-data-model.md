@@ -217,41 +217,33 @@ fn parse_indexed_response(raw: &str) -> Result<HashMap<PathBuf, AiResult>>;
 - 用户在同一会话中重复查看同一目录 → 直接命中缓存，不重复请求
 - 用户关闭客户端 → 缓存释放（AI 结果不持久化，因 LLM 版本迭代后旧结论可能不准）
 
-## 3. 快照持久化
+## 3. 扫描历史持久化
 
-### 3.1 JSON 快照
+### 3.1 SQLite 主存储
 
-- 使用 `serde_json` 序列化/反序列化。
-- 存储路径：`~/.config/argus/snapshots/{root_path_hash}_{timestamp}.json.gz`（`root_path_hash` 防止多盘扫描冲突，取 SHA256 前 8 字符）。
-- 格式：compact JSON + gzip（扩展名 `.json.gz`），相比 pretty-print JSON 减少约 95% 体积。旧格式 `.json` 文件通过 gzip 魔数自动检测，向后兼容。
-- TUI 启动时会**加载所有** JSON 快照到内存 `scan_cache`（`HashMap<PathBuf, Snapshot>`），键为 `root_path`。
-- 同一路径有多个快照时，最新快照用于 size 展示，历史快照用于 diff。
-- 快照文件头部包含 `version` 字段（当前为 `2`），用于格式演进：
+- 单次扫描结果写入 SQLite 数据库 `~/.config/argus/argus.db`。
+- 数据库中保存扫描事件、路径记录、根路径哈希和必要的文件系统元数据。
+- TUI 启动时从 SQLite 加载当前工作目录对应的最新扫描结果；若无扫描数据，则降级为 `list_dir` 的文件系统视图。
 
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
-    pub version: u32,          // 快照格式版本号，当前 = 2
+    pub version: u32,
     pub timestamp: DateTime<Utc>,
     pub root_path: PathBuf,
-    pub root_path_hash: String, // SHA256(root_path) 前 8 字符
+    pub root_path_hash: String,
     pub total_size: u64,
     pub root_node: FileNode,
 }
 ```
 
-- `root_path_hash` 用于：
-  - 快照文件名去重：`{root_path_hash}_{timestamp}.json.gz`
-  - 加载时校验路径一致性（防止 `--old snap_a.json --new snap_b.json` 时错用不同根路径的快照）
-- 依赖：`sha2 = "0.10"`（见 Phase 1 实施指南）
+- `Snapshot` 仍然作为内存中的视图模型存在，用于 TUI/CLI 渲染和 diff 输入，但不再作为主持久化格式。
+- `root_path_hash` 用于数据库分组和路径一致性校验。
 
-- 反序列化时校验 `version`：不匹配时返回 `SnapshotError::VersionMismatch`，阻止加载旧格式。
-- 优点：开发时可肉眼 Debug，无需额外工具。
+### 3.2 后期导出
 
-### 3.2 后期演进（二进制格式）
-
-- 可迁移至 FlatBuffers 或 `bincode` 以提升性能和减小体积。
-- 保留 JSON 格式作为兼容选项。
+- 如果未来需要文件级导出或离线调试，可再考虑 JSON / binary export。
+- 这些导出格式不属于当前主存储路径。
 
 ## 4. API 设计（面向 Daemon）
 
@@ -317,22 +309,19 @@ pub enum ScanError {
 - `Cancelled`：立即停止扫描并返回错误。Phase 1 不返回已构建的部分树，避免调用方误把不完整目录树写入快照。
 - `PathNotFound`：终止扫描，返回错误。
 
-### 5.2 SnapshotError
+### 5.2 DbError
 
 ```rust
 #[derive(thiserror::Error, Debug)]
-pub enum SnapshotError {
-    #[error("快照版本不兼容: 期望 v{expected}, 实际 v{actual}")]
-    VersionMismatch { expected: u32, actual: u32 },
+pub enum DbError {
+    #[error("数据库错误: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 
-    #[error("快照文件损坏: {0}")]
-    Corrupted(String),
+    #[error("找不到扫描数据: {0}")]
+    NoScanFound(String),
 
-    #[error("快照文件不存在: {0}")]
-    NotFound(PathBuf),
-
-    #[error("序列化错误: {0}")]
-    Serde(#[from] serde_json::Error),
+    #[error("时间戳解析错误: {0}")]
+    TimestampParse(String),
 
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
@@ -340,8 +329,8 @@ pub enum SnapshotError {
 ```
 
 **行为策略**：
-- `VersionMismatch`：提示用户快照版本不兼容，推荐重新扫描，不自动修复。
-- `Corrupted`：记录日志，建议用户删除损坏快照重新生成。
+- `NoScanFound`：提示用户当前根路径没有可用扫描记录。
+- `TimestampParse`：提示数据库中的时间字段损坏或格式不合法。
 
 ### 5.3 DiffError
 
@@ -360,54 +349,55 @@ pub enum DiffError {
 - `RootPathMismatch`：不允许对比不同根路径的快照（语义上无意义）。
 - `Internal`：panic 等价，作为兜底。正常流程不应触发。
 
-## 6. 数据库时序模型（Phase 3+）
+## 6. 数据库时序模型
 
-Daemon 模式下，用 SQLite 替代 JSON 快照实现灵活的时序查询。
+SQLite 是扫描历史和时序查询的主存储层。Daemon 模式下仍使用同一套表结构和查询语义。
 
 ### 6.1 核心表
 
 ```sql
--- 每次扫描的记录，全局唯一标识一次扫描事件
 CREATE TABLE scan_events (
-    id          INTEGER PRIMARY KEY,
-    timestamp   TEXT NOT NULL,  -- ISO 8601
-    root_path   TEXT NOT NULL,  -- 扫描根路径
-    total_size  INTEGER NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp      TEXT NOT NULL,
+    root_path      TEXT NOT NULL,
+    root_path_hash TEXT NOT NULL,
+    total_size     INTEGER NOT NULL,
+    total_files    INTEGER NOT NULL DEFAULT 0
 );
 
--- 每个文件/目录在每次扫描中的大小记录
+CREATE INDEX idx_scan_events_root_hash_ts
+    ON scan_events(root_path_hash, timestamp);
+
 CREATE TABLE path_records (
     scan_id     INTEGER NOT NULL REFERENCES scan_events(id),
-    path        TEXT NOT NULL,   -- 绝对路径，如 "/home/user/Downloads/big.iso"
-    size        INTEGER NOT NULL, -- 该时间点的大小（字节）
-    is_dir      INTEGER NOT NULL, -- 0/1
+    path        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    is_dir      INTEGER NOT NULL DEFAULT 0,
+    file_type   TEXT NOT NULL,
+    modified    TEXT,
+    inode       INTEGER,
+    device      INTEGER,
     PRIMARY KEY (scan_id, path)
 );
 
 CREATE INDEX idx_path_records_path ON path_records(path);
-CREATE INDEX idx_path_records_scan_id ON path_records(scan_id);
 ```
 
 ### 6.2 查询模式
 
-Time-Series Query 的核心差异在于：**从"加载两份全量 JSON 做 diff"变为"SQL 聚合任意子树在任意时间范围的 delta"**。
+Time-Series Query 的核心差异在于：**从"加载两份完整树做 diff"变为"SQL 聚合任意子树在任意时间范围的 delta"**。
 
 ```sql
--- 查询 /home/user/Downloads 在 scan_id=(A, B) 之间的 delta
 SELECT
-    p1.path,
-    p2.size - p1.size AS delta,
-    p2.size AS current_size
-FROM path_records p1
-JOIN path_records p2 ON p1.path = p2.path
-WHERE p1.scan_id = 1  -- from
-  AND p2.scan_id = 2  -- to
-  AND p1.path LIKE '/home/user/Downloads/%'
+    ap.path,
+    COALESCE(sf.size, 0) AS size_from,
+    COALESCE(st.size, 0) AS size_to,
+    COALESCE(st.size, 0) - COALESCE(sf.size, 0) AS delta
+FROM ...
 ```
 
-### 6.3 与快照对比的关系
+### 6.3 与树渲染的关系
 
-- **快照对比 = 一次性加载完整子树，内存中做 Tree Merge**
-- **时序查询 = 按需 SQL 查询（仅加载可见节点），无 Tree Merge**
-- 两者共享相同的 `DiffNode` 展示结构。TUI 的 diff 渲染层对数据来源无感知
-- 独立模式输出 `DiffNode`，daemon 模式也输出 `DiffNode`，TUI 统一渲染
+- `Snapshot` 仍然用于表示当前视图树，但由 SQLite materialize 得到。
+- `DiffNode` 仍然是 diff 展示结构。
+- TUI 的渲染层对数据来源保持无感知。
