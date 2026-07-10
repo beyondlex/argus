@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::atomic::Ordering;
 
-use crate::app::{App, AppMode, FilterMode, Focus};
+use crate::app::{App, AppMessage, AppMode, FilterMode, Focus};
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
@@ -16,6 +16,44 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     if app.scanning {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
+        }
+        return;
+    }
+
+    // Focus-aware key routing: when FilterBar is focused
+    if app.focus == Focus::FilterBar {
+        match key.code {
+            KeyCode::Esc => {
+                app.focus = Focus::Tree;
+            }
+            KeyCode::Tab => {
+                app.filter_state.cycle_focus();
+            }
+            KeyCode::Char('1') if !app.available_snapshots.is_empty() => {
+                app.filter_state.from_idx = Some(0);
+                trigger_diff_if_ready(app);
+            }
+            KeyCode::Char('2') if app.available_snapshots.len() > 1 => {
+                app.filter_state.to_idx = Some(app.available_snapshots.len() - 1);
+                trigger_diff_if_ready(app);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                cycle_snapshot(app, -1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                cycle_snapshot(app, 1);
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                adjust_threshold(app, true);
+            }
+            KeyCode::Char('-') => {
+                adjust_threshold(app, false);
+            }
+            KeyCode::Char('0') => {
+                app.filter_state.threshold = None;
+                trigger_diff_if_ready(app);
+            }
+            _ => {}
         }
         return;
     }
@@ -151,12 +189,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
             }
         }
-        KeyCode::Tab => {
-            app.focus = match app.focus {
-                Focus::Tree => Focus::FilterBar,
-                Focus::FilterBar => Focus::Tree,
-            };
-        }
+
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
@@ -166,21 +199,13 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             app.should_quit = true;
         }
+        KeyCode::Char('f') => {
+            app.focus = Focus::FilterBar;
+        }
         KeyCode::Esc => {
             // Esc is used by filter/delete/help modes, not for quit
         }
-        KeyCode::Char('1')
-            if !app.available_snapshots.is_empty() && app.focus == Focus::FilterBar =>
-        {
-            app.filter_state.from_idx = Some(0);
-            trigger_diff_if_ready(app);
-        }
-        KeyCode::Char('2')
-            if app.available_snapshots.len() > 1 && app.focus == Focus::FilterBar =>
-        {
-            app.filter_state.to_idx = Some(app.available_snapshots.len() - 1);
-            trigger_diff_if_ready(app);
-        }
+
         _ => {}
     }
     // Reset gg double-tap on any key other than g
@@ -484,19 +509,18 @@ pub fn start_scan(app: &mut App) {
     let path = app.view_root_path.clone();
     let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
 
-    tokio::spawn(async move {
+    tokio::task::spawn_blocking(move || {
         let (progress_tx, progress_rx) =
             std::sync::mpsc::channel::<argus_core::scanner::ProgressUpdate>();
 
+        // Forward progress updates from blocking scan to UI via dedicated thread
         let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        std::thread::spawn(move || {
             while let Ok(update) = progress_rx.recv() {
-                let _ = tx_clone
-                    .send(crate::app::AppMessage::ScanProgress {
-                        file_count: update.file_count,
-                        total_bytes: update.total_bytes,
-                    })
-                    .await;
+                let _ = tx_clone.blocking_send(AppMessage::ScanProgress {
+                    file_count: update.file_count,
+                    total_bytes: update.total_bytes,
+                });
             }
         });
 
@@ -514,14 +538,10 @@ pub fn start_scan(app: &mut App) {
                     let _ = std::fs::write(&filepath, &bytes);
                 }
 
-                let _ = tx
-                    .send(crate::app::AppMessage::ScanComplete(snapshot))
-                    .await;
+                let _ = tx.blocking_send(AppMessage::ScanComplete(snapshot));
             }
             Err(e) => {
-                let _ = tx
-                    .send(crate::app::AppMessage::Error(format!("scan failed: {}", e)))
-                    .await;
+                let _ = tx.blocking_send(AppMessage::Error(format!("scan failed: {}", e)));
             }
         }
     });
@@ -579,18 +599,17 @@ fn trigger_diff_if_ready(app: &mut App) {
     };
 
     let tx = app.tx.clone();
-    tokio::spawn(async move {
-        match argus_core::compare_trees(&old_snap, &new_snap) {
+    tokio::task::spawn_blocking(
+        move || match argus_core::compare_trees(&old_snap, &new_snap) {
             Ok(diff) => {
-                let _ = tx.send(crate::app::AppMessage::DiffComplete(diff)).await;
+                let _ = tx.blocking_send(crate::app::AppMessage::DiffComplete(diff));
             }
             Err(e) => {
-                let _ = tx
-                    .send(crate::app::AppMessage::Error(format!("diff failed: {}", e)))
-                    .await;
+                let _ =
+                    tx.blocking_send(crate::app::AppMessage::Error(format!("diff failed: {}", e)));
             }
-        }
-    });
+        },
+    );
 }
 
 fn expand_ancestor_prefixes(
@@ -604,6 +623,47 @@ fn expand_ancestor_prefixes(
     for len in 2..=path.len() {
         expanded.insert(path[..len].to_vec());
     }
+}
+
+// ── FilterBar helpers ────────────────────────────────────────────────────────
+
+fn cycle_snapshot(app: &mut App, delta: isize) {
+    let snap_len = app.available_snapshots.len();
+    if snap_len == 0 {
+        return;
+    }
+    match app.filter_state.sub_focus {
+        crate::app::FilterFocus::From => {
+            let cur = app.filter_state.from_idx.unwrap_or(0);
+            let next = (cur as isize + delta).rem_euclid(snap_len as isize) as usize;
+            app.filter_state.from_idx = Some(next);
+            trigger_diff_if_ready(app);
+        }
+        crate::app::FilterFocus::To => {
+            let cur = app.filter_state.to_idx.unwrap_or(snap_len - 1);
+            let next = (cur as isize + delta).rem_euclid(snap_len as isize) as usize;
+            app.filter_state.to_idx = Some(next);
+            trigger_diff_if_ready(app);
+        }
+        _ => {}
+    }
+}
+
+fn adjust_threshold(app: &mut App, increase: bool) {
+    let cur = app.filter_state.threshold.unwrap_or(0);
+    let step = if cur < 1024 {
+        512
+    } else if cur < 1024 * 1024 {
+        1024 * 10
+    } else {
+        1024 * 1024
+    };
+    if increase {
+        app.filter_state.threshold = Some(cur + step);
+    } else {
+        app.filter_state.threshold = Some(cur.saturating_sub(step));
+    }
+    trigger_diff_if_ready(app);
 }
 
 #[cfg(test)]

@@ -96,7 +96,7 @@ pub fn scan_path(
         entries.push((entry_path, meta));
         file_count += 1;
 
-        if file_count.is_multiple_of(10_000) {
+        if file_count.is_multiple_of(1_000) {
             if let Some(ref tx) = progress_tx {
                 let _ = tx.send(ProgressUpdate {
                     file_count,

@@ -6,16 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{FilterState, SnapshotInfo};
+use crate::app::{FilterFocus, FilterState, SnapshotInfo};
 use crate::util;
-
-#[allow(dead_code)]
-pub enum FilterArea {
-    From,
-    To,
-    Threshold,
-    Clear,
-}
 
 /// Render the filter bar
 pub fn render(
@@ -24,10 +16,13 @@ pub fn render(
     filter: &FilterState,
     snapshots: &[SnapshotInfo],
     focus: bool,
+    sub_focus: FilterFocus,
     has_enough_snapshots: bool,
 ) {
+    let border_color = if focus { Color::Cyan } else { Color::DarkGray };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
         .title(" Filter ")
         .title_alignment(ratatui::layout::Alignment::Left);
 
@@ -65,10 +60,24 @@ pub fn render(
         ""
     };
 
-    let from_style = if focus {
-        Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+    let active_style = Style::default().fg(Color::Yellow).bg(Color::DarkGray);
+    let idle_style = Style::default().fg(Color::Cyan);
+    let threshold_idle = Style::default().fg(Color::Magenta);
+
+    let from_style = if focus && sub_focus == FilterFocus::From {
+        active_style
     } else {
-        Style::default().fg(Color::Cyan)
+        idle_style
+    };
+    let to_style = if focus && sub_focus == FilterFocus::To {
+        active_style
+    } else {
+        idle_style
+    };
+    let threshold_style = if focus && sub_focus == FilterFocus::Threshold {
+        active_style
+    } else {
+        threshold_idle
     };
 
     let spans = vec![
@@ -76,24 +85,10 @@ pub fn render(
         Span::raw(" ["),
         Span::styled(from_str, from_style),
         Span::raw(" → "),
-        Span::styled(
-            to_str,
-            if focus {
-                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::Cyan)
-            },
-        ),
+        Span::styled(to_str, to_style),
         Span::raw("]"),
         Span::raw("  Δ≥ ["),
-        Span::styled(
-            threshold_str,
-            if focus {
-                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::Magenta)
-            },
-        ),
+        Span::styled(threshold_str, threshold_style),
         Span::raw("]"),
         Span::raw("  "),
         Span::styled("[Clear]", Style::default().fg(Color::Red)),

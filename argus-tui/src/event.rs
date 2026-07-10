@@ -95,6 +95,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         &app.filter_state,
         &app.available_snapshots,
         filter_focused,
+        app.filter_state.sub_focus,
         has_enough,
     );
 

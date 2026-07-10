@@ -46,15 +46,12 @@ pub fn render(
 
     left_spans.push(Span::raw(format!(" | files: {}", file_count)));
 
-    if let Some((current, total)) = scan_progress {
+    if let Some((current, _total)) = scan_progress {
         left_spans.push(Span::raw(" | scanning... "));
-        if total > 0 {
-            let pct = (current as f64 / total as f64 * 100.0) as u64;
-            left_spans.push(Span::styled(
-                format!("{}%", pct.min(100)),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
+        left_spans.push(Span::styled(
+            format!("{} files", current),
+            Style::default().fg(Color::Yellow),
+        ));
     }
 
     if let Some(err) = has_error {

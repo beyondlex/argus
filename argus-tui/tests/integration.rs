@@ -152,6 +152,7 @@ fn test_filter_state_from_empty_to_set() {
         to_idx: None,
         threshold: None,
         dirty: false,
+        sub_focus: argus_tui::app::FilterFocus::From,
     };
     assert!(filter.from_idx.is_none() && filter.to_idx.is_none());
 

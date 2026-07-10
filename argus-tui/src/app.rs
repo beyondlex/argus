@@ -171,6 +171,14 @@ pub struct SnapshotInfo {
     pub path: PathBuf,
 }
 
+/// Which field within the FilterBar is focused
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterFocus {
+    From,
+    To,
+    Threshold,
+}
+
 /// Filter bar state
 #[derive(Debug, Clone)]
 pub struct FilterState {
@@ -178,6 +186,7 @@ pub struct FilterState {
     pub to_idx: Option<usize>,
     pub threshold: Option<u64>,
     pub dirty: bool,
+    pub sub_focus: FilterFocus,
 }
 
 impl FilterState {
@@ -194,6 +203,14 @@ impl FilterState {
         self.to_idx = None;
         self.threshold = None;
         self.dirty = false;
+    }
+
+    pub fn cycle_focus(&mut self) {
+        self.sub_focus = match self.sub_focus {
+            FilterFocus::From => FilterFocus::To,
+            FilterFocus::To => FilterFocus::Threshold,
+            FilterFocus::Threshold => FilterFocus::From,
+        };
     }
 }
 
@@ -289,6 +306,7 @@ impl App {
                 to_idx: None,
                 threshold: None,
                 dirty: false,
+                sub_focus: FilterFocus::From,
             },
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
