@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Format bytes into human-readable string (e.g., "1.5 GB", "800 KB")
 pub fn format_size(bytes: u64) -> String {
@@ -45,6 +46,41 @@ pub fn display_size_label(
         "-".to_string()
     } else {
         format_size(current_size)
+    }
+}
+
+/// Format a count with thousands separators.
+pub fn format_count(count: u64) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (idx, ch) in digits.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
+/// Format a duration as seconds with two decimal places.
+pub fn format_duration(duration: Duration) -> String {
+    format!("{:.2}s", duration.as_secs_f64())
+}
+
+/// Display a path relative to $HOME when possible.
+pub fn display_path(path: &Path) -> String {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return path.display().to_string();
+    };
+
+    if let Ok(relative) = path.strip_prefix(&home) {
+        if relative.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", relative.display())
+        }
+    } else {
+        path.display().to_string()
     }
 }
 
@@ -113,5 +149,15 @@ mod tests {
     #[test]
     fn test_display_size_label_placeholder_shows_ellipsis() {
         assert_eq!(display_size_label(false, true, false, 0), "...");
+    }
+
+    #[test]
+    fn test_format_count_inserts_commas() {
+        assert_eq!(format_count(123456), "123,456");
+    }
+
+    #[test]
+    fn test_format_duration_formats_seconds() {
+        assert_eq!(format_duration(Duration::from_millis(32_450)), "32.45s");
     }
 }

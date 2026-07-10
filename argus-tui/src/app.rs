@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
@@ -176,6 +178,14 @@ pub struct TreeLine {
     pub delta: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScanSummary {
+    pub root_path: PathBuf,
+    pub total_size: u64,
+    pub total_files: u64,
+    pub duration: Duration,
+}
+
 /// Snapshot metadata from SQLite scan_events
 #[derive(Debug, Clone)]
 pub struct SnapshotInfo {
@@ -285,6 +295,9 @@ pub struct App {
     pub scanning: bool,
     pub scan_progress: Option<(u64, u64)>,
     pub scan_spinner: u8,
+    pub scan_spinner_tick: Instant,
+    pub scan_started_at: Option<Instant>,
+    pub last_scan_summary: Option<ScanSummary>,
     pub cancel_scan: Arc<AtomicBool>,
 
     // Delete state
@@ -347,6 +360,9 @@ impl App {
             scanning: false,
             scan_progress: None,
             scan_spinner: 0,
+            scan_spinner_tick: Instant::now(),
+            scan_started_at: None,
+            last_scan_summary: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             rx,
@@ -483,6 +499,18 @@ impl App {
             }
             AppMessage::ScanComplete(snapshot) => {
                 self.scanning = false;
+                let items = self.scan_progress.map(|(count, _)| count).unwrap_or(0);
+                let duration = self
+                    .scan_started_at
+                    .take()
+                    .map(|started| started.elapsed())
+                    .unwrap_or_default();
+                self.last_scan_summary = Some(ScanSummary {
+                    root_path: snapshot.root_path.clone(),
+                    total_size: snapshot.total_size,
+                    total_files: items,
+                    duration,
+                });
                 self.scan_progress = None;
 
                 // Update scan cache
@@ -516,6 +544,7 @@ impl App {
             }
             AppMessage::Error(e) => {
                 self.scanning = false;
+                self.scan_started_at = None;
                 self.set_error(e, 5);
             }
         }

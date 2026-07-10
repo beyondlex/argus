@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, Focus, TreeNode};
 
@@ -670,6 +671,8 @@ pub fn start_scan(app: &mut App) {
     app.scanning = true;
     app.scan_progress = None;
     app.scan_spinner = 0;
+    app.scan_spinner_tick = Instant::now();
+    app.scan_started_at = Some(Instant::now());
     app.cancel_scan = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();

@@ -14,6 +14,67 @@ pub struct ProgressUpdate {
     pub total_bytes: u64,
 }
 
+struct ProgressTracker {
+    file_count: u64,
+    total_bytes: u64,
+    last_reported_file_count: u64,
+    last_reported_total_bytes: u64,
+    progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
+}
+
+const PROGRESS_FILE_BATCH: u64 = 32;
+const PROGRESS_BYTES_BATCH: u64 = 1 * 1024 * 1024;
+
+impl ProgressTracker {
+    fn new(progress_tx: Option<mpsc::Sender<ProgressUpdate>>) -> Self {
+        Self {
+            file_count: 0,
+            total_bytes: 0,
+            last_reported_file_count: 0,
+            last_reported_total_bytes: 0,
+            progress_tx,
+        }
+    }
+
+    fn record(&mut self, files: u64, bytes: u64) {
+        self.file_count = self.file_count.saturating_add(files);
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.maybe_report();
+    }
+
+    fn record_files_only(&mut self, files: u64) {
+        self.record(files, 0);
+    }
+
+    fn maybe_report(&mut self) {
+        let file_delta = self
+            .file_count
+            .saturating_sub(self.last_reported_file_count);
+        let size_delta = self
+            .total_bytes
+            .saturating_sub(self.last_reported_total_bytes);
+        if file_delta >= PROGRESS_FILE_BATCH || size_delta >= PROGRESS_BYTES_BATCH {
+            self.last_reported_file_count = self.file_count;
+            self.last_reported_total_bytes = self.total_bytes;
+            if let Some(ref tx) = self.progress_tx {
+                let _ = tx.send(ProgressUpdate {
+                    file_count: self.file_count,
+                    total_bytes: self.total_bytes,
+                });
+            }
+        }
+    }
+
+    fn finish_with(&mut self, file_count: u64, total_bytes: u64) {
+        if let Some(ref tx) = self.progress_tx {
+            let _ = tx.send(ProgressUpdate {
+                file_count,
+                total_bytes,
+            });
+        }
+    }
+}
+
 pub fn scan_path(
     path: &Path,
     cancel: &AtomicBool,
@@ -24,10 +85,11 @@ pub fn scan_path(
         return Err(ScanError::PathNotFound(path.to_path_buf()));
     }
 
+    let mut scan_items = 0u64;
+    let mut scan_total_bytes = 0u64;
     let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
     let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
-    let mut file_count = 0u64;
-    let mut total_bytes = 0u64;
+    let mut progress = ProgressTracker::new(progress_tx);
 
     // Collect paths of directories matching skip patterns so we can
     // walk them fully for size counting after the main walk (no tree
@@ -89,21 +151,15 @@ pub fn scan_path(
                 }
             }
             if meta.is_file() {
-                total_bytes = total_bytes.saturating_add(meta.len());
+                progress.record(1, meta.len());
+                scan_total_bytes = scan_total_bytes.saturating_add(meta.len());
+            } else {
+                progress.record_files_only(1);
             }
         }
 
+        scan_items += 1;
         entries.push((entry_path, meta));
-        file_count += 1;
-
-        if file_count.is_multiple_of(1_000) {
-            if let Some(ref tx) = progress_tx {
-                let _ = tx.send(ProgressUpdate {
-                    file_count,
-                    total_bytes,
-                });
-            }
-        }
     }
 
     entries.sort_by(|a, b| {
@@ -154,9 +210,9 @@ pub fn scan_path(
             return Err(ScanError::Cancelled);
         }
 
-        let (size, count) = walk_dir_size(&skip_path, cancel, &mut seen_inodes);
-        total_bytes = total_bytes.saturating_add(size);
-        file_count += count;
+        let (size, count) = walk_dir_size(&skip_path, cancel, &mut seen_inodes, &mut progress);
+        scan_items = scan_items.saturating_add(count);
+        scan_total_bytes = scan_total_bytes.saturating_add(size);
 
         let dir_name = skip_path
             .file_name()
@@ -174,7 +230,7 @@ pub fn scan_path(
                 if let Some(child) = structure.get_mut(&name) {
                     if child.is_dir {
                         let (child_size, _) =
-                            walk_dir_size(&entry.path(), cancel, &mut child_seen_inodes);
+                            walk_dir_size_quiet(&entry.path(), cancel, &mut child_seen_inodes);
                         child.size = child_size;
                         child.has_metadata = true;
                     } else {
@@ -207,16 +263,11 @@ pub fn scan_path(
         }
     }
 
-    compute_size(&mut root_node);
+    let total_size = compute_size(&mut root_node);
 
-    let snapshot = Snapshot::new(path.to_path_buf(), root_node, total_bytes);
+    let snapshot = Snapshot::new(path.to_path_buf(), root_node, total_size);
 
-    if let Some(ref tx) = progress_tx {
-        let _ = tx.send(ProgressUpdate {
-            file_count,
-            total_bytes,
-        });
-    }
+    progress.finish_with(scan_items, total_size);
 
     Ok(snapshot)
 }
@@ -431,6 +482,24 @@ fn walk_dir_size(
     path: &Path,
     cancel: &AtomicBool,
     seen_inodes: &mut HashSet<(u64, u64)>,
+    progress: &mut ProgressTracker,
+) -> (u64, u64) {
+    walk_dir_size_impl(path, cancel, seen_inodes, Some(progress))
+}
+
+fn walk_dir_size_quiet(
+    path: &Path,
+    cancel: &AtomicBool,
+    seen_inodes: &mut HashSet<(u64, u64)>,
+) -> (u64, u64) {
+    walk_dir_size_impl(path, cancel, seen_inodes, None)
+}
+
+fn walk_dir_size_impl(
+    path: &Path,
+    cancel: &AtomicBool,
+    seen_inodes: &mut HashSet<(u64, u64)>,
+    mut progress: Option<&mut ProgressTracker>,
 ) -> (u64, u64) {
     let mut total = 0u64;
     let mut count = 0u64;
@@ -460,6 +529,13 @@ fn walk_dir_size(
             }
             total = total.saturating_add(meta.len());
             count += 1;
+            if let Some(progress) = progress.as_deref_mut() {
+                progress.record(1, meta.len());
+            }
+        } else {
+            if let Some(progress) = progress.as_deref_mut() {
+                progress.record_files_only(1);
+            }
         }
     }
 
@@ -768,10 +844,32 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let mut seen = HashSet::new();
-        let (size, count) = walk_dir_size(&sub, &cancel, &mut seen);
+        let mut progress = ProgressTracker::new(None);
+        let (size, count) = walk_dir_size(&sub, &cancel, &mut seen, &mut progress);
         // "hello" = 5 bytes, "world!" = 6 bytes
         assert_eq!(size, 11);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_scan_progress_does_not_double_count_skipped_dir_children() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("readme.md"), "project").unwrap();
+
+        let nm = dir.path().join("node_modules");
+        fs::create_dir_all(nm.join("pkg/src")).unwrap();
+        fs::write(nm.join("pkg").join("index.js"), "module.exports = 1").unwrap();
+        fs::write(nm.join("pkg/src").join("lib.js"), "function f() {}").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let skip = vec!["node_modules".to_string()];
+        let snapshot = scan_path(dir.path(), &cancel, Some(tx), &skip).unwrap();
+
+        let final_update = rx.try_iter().last().unwrap();
+        assert_eq!(final_update.total_bytes, snapshot.total_size);
+        assert_eq!(final_update.total_bytes, 7 + 18 + 15);
+        assert_eq!(final_update.file_count, 4);
     }
 
     #[test]
@@ -826,6 +924,7 @@ mod tests {
 
         // Total should include both: main.rs + inside target
         assert_eq!(snapshot.total_size, 12 + 4 + 6);
+        assert_eq!(snapshot.root_node.size, snapshot.total_size);
 
         let tg_node = snapshot.root_node.children.get("target").unwrap();
         assert!(tg_node.is_dir);

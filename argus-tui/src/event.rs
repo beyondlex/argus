@@ -12,14 +12,16 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(16); // ~60fps
+    let spinner_rate = Duration::from_millis(120);
     let mut cursor_visible = true;
     let mut last_cursor_tick = Instant::now();
     let cursor_blink_rate = Duration::from_millis(500);
 
     loop {
-        // Advance scan spinner on each render tick
-        if app.scanning {
+        // Advance scan spinner on a slower cadence so it feels steady instead of frantic.
+        if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
             app.scan_spinner = (app.scan_spinner + 1) % 10;
+            app.scan_spinner_tick = Instant::now();
         }
 
         terminal.draw(|f| render(f, app, cursor_visible))?;
@@ -140,16 +142,18 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
     // Status bar
     let error_str = app.last_error.as_deref();
-    let file_count = app.tree_lines.len();
+    let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
         chunks[3],
         app.mode,
         app.focus,
-        file_count,
+        &app.view_root_path,
         app.scanning,
         app.scan_progress,
         app.scan_spinner,
+        scan_elapsed,
+        app.last_scan_summary.as_ref(),
         error_str,
     );
 

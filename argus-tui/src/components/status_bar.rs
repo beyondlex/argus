@@ -6,7 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{AppMode, Focus};
+use crate::app::{AppMode, Focus, ScanSummary};
+use crate::util;
+use std::path::Path;
+use std::time::Duration;
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -16,53 +19,108 @@ pub fn render(
     area: Rect,
     mode: AppMode,
     focus: Focus,
-    file_count: usize,
+    view_root_path: &Path,
     scanning: bool,
     scan_progress: Option<(u64, u64)>,
     scan_spinner: u8,
+    scan_elapsed: Option<Duration>,
+    scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
-    match mode {
-        AppMode::Browsing => {
-            left_spans.push(Span::styled(
-                " Browsing ",
-                Style::default().fg(Color::Green).bg(Color::Black),
-            ));
-        }
-        AppMode::DeletePrompt => {
-            left_spans.push(Span::styled(
-                " DELETE CONFIRM ",
-                Style::default()
-                    .fg(Color::Red)
-                    .bg(Color::Black)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ));
-        }
-        AppMode::Help => {
-            left_spans.push(Span::styled(
-                " HELP ",
-                Style::default().fg(Color::Cyan).bg(Color::Black),
-            ));
-        }
+    if matches!(mode, AppMode::DeletePrompt) {
+        left_spans.push(Span::styled(
+            " DELETE CONFIRM ",
+            Style::default()
+                .fg(Color::Red)
+                .bg(Color::Black)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    } else if matches!(mode, AppMode::Help) {
+        left_spans.push(Span::styled(
+            " HELP ",
+            Style::default().fg(Color::Cyan).bg(Color::Black),
+        ));
     }
 
-    left_spans.push(Span::raw(format!(" | files: {}", file_count)));
+    let focus_str = match focus {
+        Focus::Tree => "[Tree]",
+        Focus::FilterBar => "[Filter]",
+    };
+    if !left_spans.is_empty() {
+        left_spans.push(Span::raw(" | "));
+    }
+    left_spans.push(Span::styled(focus_str, Style::default().fg(Color::Cyan)));
 
     if scanning {
-        let spinner = SPINNER_FRAMES[scan_spinner as usize];
         left_spans.push(Span::raw(" | "));
         left_spans.push(Span::styled(
-            format!("{} scanning", spinner),
-            Style::default().fg(Color::Yellow),
+            util::display_path(view_root_path),
+            Style::default().fg(Color::Gray),
         ));
-        if let Some((current, _total)) = scan_progress {
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled("Size:", Style::default().fg(Color::Gray)));
+        if let Some((current, total_bytes)) = scan_progress {
             left_spans.push(Span::styled(
-                format!(" {} files", current),
+                format!(" {}", util::format_size(total_bytes)),
+                Style::default().fg(Color::Yellow),
+            ));
+            left_spans.push(Span::raw("  "));
+            left_spans.push(Span::styled("Items:", Style::default().fg(Color::Gray)));
+            left_spans.push(Span::styled(
+                format!(" {}", util::format_count(current)),
                 Style::default().fg(Color::Yellow),
             ));
         }
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled("Took:", Style::default().fg(Color::Gray)));
+        left_spans.push(Span::styled(
+            format!(
+                " {}",
+                util::format_duration(scan_elapsed.unwrap_or_default())
+            ),
+            Style::default().fg(Color::Yellow),
+        ));
+        left_spans.push(Span::styled(
+            format!("  {}", SPINNER_FRAMES[scan_spinner as usize]),
+            Style::default().fg(Color::Yellow),
+        ));
+        left_spans.push(Span::styled(
+            " (press esc cancel)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else if let Some(summary) = scan_summary {
+        left_spans.push(Span::raw(" | "));
+        left_spans.push(Span::styled(
+            util::display_path(&summary.root_path),
+            Style::default().fg(Color::Gray),
+        ));
+        left_spans.push(Span::raw("  "));
+        left_spans.push(Span::styled(
+            "Size:".to_string(),
+            Style::default().fg(Color::Gray),
+        ));
+        left_spans.push(Span::styled(
+            format!(" {}", util::format_size(summary.total_size)),
+            Style::default().fg(Color::Yellow),
+        ));
+        left_spans.push(Span::styled(
+            " Items:".to_string(),
+            Style::default().fg(Color::Gray),
+        ));
+        left_spans.push(Span::styled(
+            format!(" {}", util::format_count(summary.total_files)),
+            Style::default().fg(Color::Yellow),
+        ));
+        left_spans.push(Span::styled(
+            " Took:".to_string(),
+            Style::default().fg(Color::Gray),
+        ));
+        left_spans.push(Span::styled(
+            format!(" {}", util::format_duration(summary.duration)),
+            Style::default().fg(Color::Yellow),
+        ));
     }
 
     if let Some(err) = has_error {
@@ -73,47 +131,9 @@ pub fn render(
         ));
     }
 
-    // Focus indicator
-    let focus_str = match focus {
-        Focus::Tree => "[Tree]",
-        Focus::FilterBar => "[Filter]",
-    };
-    left_spans.push(Span::raw(" | "));
-    left_spans.push(Span::styled(focus_str, Style::default().fg(Color::Cyan)));
-
-    let right_spans = vec![
-        Span::styled(" [?] Help ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Q] Quit ", Style::default().fg(Color::DarkGray)),
-    ];
-
-    // Use full width, left and right aligned
+    // Use full width for the single status line
     let left_line = Line::from(left_spans);
-    let right_line = Line::from(right_spans);
 
     let block = Block::default().style(Style::default().bg(Color::Black));
-    let inner = block.inner(area);
-
-    // Render left part
-    f.render_widget(
-        Paragraph::new(left_line).block(Block::default()),
-        Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width.saturating_sub(20),
-            height: inner.height,
-        },
-    );
-
-    // Render right part
-    f.render_widget(
-        Paragraph::new(right_line)
-            .block(Block::default())
-            .right_aligned(),
-        Rect {
-            x: inner.x.saturating_add(inner.width.saturating_sub(20)),
-            y: inner.y,
-            width: 20,
-            height: inner.height,
-        },
-    );
+    f.render_widget(Paragraph::new(left_line).block(block), area);
 }
