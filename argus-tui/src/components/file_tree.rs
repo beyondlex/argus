@@ -11,6 +11,8 @@ use ratatui::{
 use crate::app::{fuzzy_match_indices, FilterMode, SearchMatch, SortMode, TreeLine};
 use crate::util;
 
+const SCROLL_MARGIN: usize = 3;
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
@@ -37,10 +39,13 @@ pub fn render(
     let is_active_match = filter_mode == FilterMode::Active && current_match < match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
 
-    let scroll_offset = if cursor >= scroll_offset + available_height {
-        cursor.saturating_sub(available_height).saturating_add(1)
-    } else if cursor < scroll_offset {
+    let scroll_offset = if cursor >= scroll_offset + available_height.saturating_sub(SCROLL_MARGIN)
+    {
         cursor
+            .saturating_sub(available_height)
+            .saturating_add(SCROLL_MARGIN + 1)
+    } else if cursor < scroll_offset + SCROLL_MARGIN {
+        cursor.saturating_sub(SCROLL_MARGIN)
     } else {
         scroll_offset
     };
@@ -73,27 +78,30 @@ pub fn render(
         ));
     }
 
-    let total_visible = lines.len().saturating_add(1);
-    let mut scrollbar_state =
-        ScrollbarState::new(total_visible).position(scroll_offset.saturating_add(1));
+    let has_scrollbar = lines.len() > available_height;
+    if has_scrollbar {
+        let total_visible = lines.len().saturating_add(1);
+        let mut scrollbar_state =
+            ScrollbarState::new(total_visible).position(scroll_offset.saturating_add(1));
+
+        let scrollbar_area = Rect {
+            x: inner.right().saturating_sub(1),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        };
+        f.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("│")),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
+    }
 
     f.render_widget(Paragraph::new(rendered_lines).block(block), area);
-
-    let scrollbar_area = Rect {
-        x: inner.right().saturating_sub(1),
-        y: inner.y,
-        width: 1,
-        height: inner.height,
-    };
-    f.render_stateful_widget(
-        Scrollbar::default()
-            .orientation(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some("│")),
-        scrollbar_area,
-        &mut scrollbar_state,
-    );
 }
 
 fn filter_status_line<'a>(

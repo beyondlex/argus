@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -297,6 +297,9 @@ pub struct App {
     pub last_error: Option<String>,
     pub error_clear_at: Option<std::time::Instant>,
 
+    // Log file path (~/.config/argus/argus.log)
+    pub log_path: PathBuf,
+
     // Quit
     pub should_quit: bool,
 }
@@ -310,6 +313,7 @@ impl App {
     ) -> Self {
         let view_root_path =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let log_path = default_log_path();
 
         Self {
             config,
@@ -346,6 +350,7 @@ impl App {
             rx,
             last_error: None,
             error_clear_at: None,
+            log_path,
             should_quit: false,
         }
     }
@@ -406,32 +411,39 @@ impl App {
 
     fn build_current_tree(&mut self) {
         self.diff_lookup.clear();
-        // Check scan cache first
-        if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
-            self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
-        } else {
-            // Fall back to FS listing
-            match argus_core::list_dir(&self.view_root_path) {
-                Ok(node) => {
-                    // Enrich FS-listed children with scan cache sizes when
-                    // available (e.g. parent of a scanned directory shows
-                    // real size instead of "-").
-                    let mut enriched = node;
-                    for child in enriched.children.values_mut() {
-                        let child_path = self.view_root_path.join(&child.name);
-                        if let Some(snapshot) = self.scan_cache.get(&child_path) {
-                            child.size = snapshot.root_node.size;
+        // Always build tree from current FS listing.
+        // Scan cache only enriches sizes — never the tree structure.
+        match argus_core::list_dir(&self.view_root_path) {
+            Ok(node) => {
+                let mut enriched = node;
+                // Enrich FS-listed children with scan cache sizes.
+                // If the root was scanned, walk its snapshot tree to find
+                // each child's real recursive size.
+                let root_scan = self.scan_cache.get(&self.view_root_path);
+                for child in enriched.children.values_mut() {
+                    let child_path = self.view_root_path.join(&child.name);
+                    // First check if the child itself was individually scanned
+                    if let Some(snapshot) = self.scan_cache.get(&child_path) {
+                        child.size = snapshot.root_node.size;
+                        child.has_metadata = true;
+                    // Otherwise, look up the child in the root's snapshot tree
+                    } else if let Some(root) = root_scan {
+                        if let Some(node) = root.root_node.children.get(&child.name) {
+                            child.size = node.size;
                             child.has_metadata = true;
                         }
                     }
-                    self.tree_root = Some(TreeNode::Snapshot(enriched));
                 }
-                Err(e) => {
-                    self.last_error = Some(format!("failed to list directory: {}", e));
-                    self.error_clear_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
-                    self.tree_root = None;
+                // Also enrich the root node itself
+                if let Some(snapshot) = root_scan {
+                    enriched.size = snapshot.root_node.size;
+                    enriched.has_metadata = true;
                 }
+                self.tree_root = Some(TreeNode::Snapshot(enriched));
+            }
+            Err(e) => {
+                self.set_error(format!("failed to list directory: {}", e), 3);
+                self.tree_root = None;
             }
         }
 
@@ -443,7 +455,7 @@ impl App {
     pub fn update_tree_lines(&mut self) {
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
-        let has_scan_data = self.scan_cache.contains_key(&self.view_root_path);
+        let root_has_scan = self.scan_cache.contains_key(&self.view_root_path);
 
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(root)) => {
@@ -454,7 +466,9 @@ impl App {
                     expanded,
                     sort_mode,
                     &mut lines,
-                    has_scan_data,
+                    &self.scan_cache,
+                    &self.view_root_path,
+                    root_has_scan,
                     &mut Vec::new(),
                     &self.diff_lookup,
                 );
@@ -513,9 +527,7 @@ impl App {
             }
             AppMessage::Error(e) => {
                 self.scanning = false;
-                self.last_error = Some(e);
-                self.error_clear_at =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                self.set_error(e, 5);
             }
         }
     }
@@ -569,6 +581,23 @@ impl App {
         !self.diff_lookup.is_empty()
     }
 
+    /// Set error message and log to file.
+    pub fn set_error(&mut self, msg: String, duration_secs: u64) {
+        self.last_error = Some(msg.clone());
+        self.error_clear_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
+        if let Ok(ts) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+        {
+            let line = format!("[{}] {}\n", ts.as_secs(), msg);
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.log_path)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+        }
+    }
+
     /// Return the relative path of the tree line at `idx`, rooted at `view_root_path`.
     pub fn tree_line_relative_path(&self, idx: usize) -> Option<Vec<String>> {
         let line = self.tree_lines.get(idx)?;
@@ -614,7 +643,9 @@ fn flatten_snapshot_tree(
     expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
-    has_scan_data: bool,
+    scan_cache: &HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+    root_has_scan: bool,
     path: &mut Vec<String>,
     diff_lookup: &HashMap<Vec<String>, (u64, i64)>,
 ) {
@@ -624,11 +655,16 @@ fn flatten_snapshot_tree(
 
     let delta = diff_lookup.get(&path_key).map(|&(_, d)| d).unwrap_or(0);
 
+    // Per-node scan data: root scan covers all descendants, and individual
+    // sub-paths may also be scanned independently.
+    let node_path = build_node_path(view_root_path, &path_key);
+    let node_has_scan = root_has_scan || scan_cache.contains_key(&node_path);
+
     lines.push(TreeLine {
         depth,
         node: TreeNode::Snapshot(node.clone()),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
-        has_scan_data: has_scan_data || !node.is_dir,
+        has_scan_data: node_has_scan || !node.is_dir,
         delta,
     });
 
@@ -642,7 +678,9 @@ fn flatten_snapshot_tree(
                 expanded,
                 sort_mode,
                 lines,
-                has_scan_data,
+                scan_cache,
+                view_root_path,
+                root_has_scan,
                 path,
                 diff_lookup,
             );
@@ -650,6 +688,15 @@ fn flatten_snapshot_tree(
     }
 
     path.pop();
+}
+
+/// Rebuild a full filesystem path from view_root_path + relative path components
+fn build_node_path(root: &Path, components: &[String]) -> PathBuf {
+    let mut p = root.to_path_buf();
+    for c in components.iter().skip(1) {
+        p.push(c);
+    }
+    p
 }
 
 fn sort_children_snapshot(children: &mut Vec<&FileNode>, mode: SortMode) {
@@ -683,6 +730,20 @@ pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
     let start = target_lc[..byte_pos].chars().count();
     let end = start + query_lc.chars().count();
     Some((start..end).collect())
+}
+
+/// Default path for the log file: ~/.config/argus/argus.log
+pub fn default_log_path() -> PathBuf {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
+            PathBuf::from(home).join(".config")
+        });
+    let dir = config_dir.join("argus");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("argus.log")
 }
 
 /// Walk the full tree in depth-first display order (children sorted by sort_mode).

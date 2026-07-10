@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, Focus, TreeNode};
@@ -179,14 +180,10 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
                 if line.node.is_dir() && line.node.name() == root_name {
-                    app.last_error = Some("cannot delete root directory".into());
-                    app.error_clear_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                    app.set_error("cannot delete root directory".into(), 3);
                 } else if let Some(full_path) = app.selected_node_full_path() {
                     if crate::util::is_protected_path(&full_path) {
-                        app.last_error = Some("protected path, cannot delete".into());
-                        app.error_clear_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                        app.set_error("protected path, cannot delete".into(), 3);
                     } else {
                         app.delete_target_path = Some(full_path);
                         app.mode = AppMode::DeletePrompt;
@@ -225,14 +222,15 @@ fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
             if let Some(path) = app.delete_target_path.clone() {
                 match trash::delete(&path) {
                     Ok(_) => {
-                        app.last_error = Some(format!("deleted: {}", path.display()));
-                        app.error_clear_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                        app.set_error(format!("deleted: {}", path.display()), 3);
+                        app.scan_cache.remove(&path);
+                        // Remove the node from the tree in-place to preserve
+                        // expand/collapse state of other nodes.
+                        remove_tree_node(app, &path);
+                        app.update_tree_lines();
                     }
                     Err(e) => {
-                        app.last_error = Some(format!("delete failed: {}", e));
-                        app.error_clear_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+                        app.set_error(format!("delete failed: {}", e), 5);
                     }
                 }
             }
@@ -307,22 +305,40 @@ fn expand_node(app: &mut App) {
         if let Some(dir_path) = app.selected_node_full_path() {
             match argus_core::list_dir(&dir_path) {
                 Ok(listed) => {
+                    // Pre-compute scanned sizes from root snapshot for dir
+                    // children before mutating the tree.
+                    let mut enrich: HashMap<String, (u64, bool)> = HashMap::new();
+                    if let Some(TreeNode::Snapshot(ref root)) = app.tree_root {
+                        for (name, child) in &listed.children {
+                            if child.is_dir {
+                                let mut child_path = path_key.clone();
+                                child_path.push(name.clone());
+                                if let Some(scanned) = find_node(root, &child_path) {
+                                    enrich.insert(
+                                        name.clone(),
+                                        (scanned.size, scanned.has_metadata),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Now apply the listing and enrichment
                     if let Some(TreeNode::Snapshot(ref mut file_node)) = app.tree_root {
                         if let Some(target) = find_node_mut(file_node, &path_key) {
                             target.children = listed.children;
-                            // Lazily-loaded content has no recursive size
-                            // data — mark everything as has_metadata=false
-                            // so the UI shows "..." instead of "0 B".
                             for child in target.children.values_mut() {
-                                child.has_metadata = false;
+                                if let Some(&(size, meta)) = enrich.get(&child.name) {
+                                    child.size = size;
+                                    child.has_metadata = meta;
+                                } else if child.is_dir {
+                                    child.has_metadata = false;
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    app.last_error = Some(format!("cannot list directory: {}", e));
-                    app.error_clear_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                    app.set_error(format!("cannot list directory: {}", e), 3);
                 }
             }
         }
@@ -361,6 +377,32 @@ fn find_node_mut<'a>(
 
     let child = node.children.get_mut(&tail[0])?;
     find_node_mut(child, tail)
+}
+
+/// Remove a node from the in-memory tree by its full filesystem path.
+/// Preserves expand/collapse state of all other nodes.
+fn remove_tree_node(app: &mut App, full_path: &std::path::Path) {
+    let Ok(relative) = full_path.strip_prefix(&app.view_root_path) else {
+        return;
+    };
+    let mut components: Vec<String> = relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(String::from))
+        .collect();
+    if components.is_empty() {
+        return;
+    }
+    let root_name = match app.tree_root {
+        Some(crate::app::TreeNode::Snapshot(ref n)) => n.name.clone(),
+        _ => return,
+    };
+    components.insert(0, root_name);
+    let name = components.pop().unwrap();
+    if let Some(crate::app::TreeNode::Snapshot(ref mut root)) = app.tree_root {
+        if let Some(parent) = find_node_mut(root, &components) {
+            parent.children.remove(&name);
+        }
+    }
 }
 
 fn jump_to_next_match(app: &mut App, delta: isize) {
