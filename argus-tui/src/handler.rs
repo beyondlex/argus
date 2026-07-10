@@ -309,11 +309,33 @@ fn expand_node(app: &mut App) {
                     // children before mutating the tree.
                     let mut enrich: HashMap<String, (u64, bool)> = HashMap::new();
                     if let Some(TreeNode::Snapshot(ref root)) = app.tree_root {
+                        let root_scan_tree = app
+                            .scan_cache
+                            .get(&app.view_root_path)
+                            .map(|s| &s.root_node);
                         for (name, child) in &listed.children {
                             if child.is_dir {
                                 let mut child_path = path_key.clone();
                                 child_path.push(name.clone());
-                                if let Some(scanned) = find_node(root, &child_path) {
+                                let scan_full_path = dir_path.join(name);
+                                let from_cache = app
+                                    .scan_cache
+                                    .get(&scan_full_path)
+                                    .map(|s| {
+                                        (s.root_node.size, s.root_node.has_metadata)
+                                    });
+                                if let Some(val) = from_cache {
+                                    enrich.insert(name.clone(), val);
+                                } else if let Some(scanned) = root_scan_tree
+                                    .and_then(|tree| find_node(tree, &child_path))
+                                {
+                                    enrich.insert(
+                                        name.clone(),
+                                        (scanned.size, scanned.has_metadata),
+                                    );
+                                } else if let Some(scanned) =
+                                    find_node(root, &child_path)
+                                {
                                     enrich.insert(
                                         name.clone(),
                                         (scanned.size, scanned.has_metadata),
