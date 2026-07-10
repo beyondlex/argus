@@ -20,6 +20,10 @@ size and the real file size for files (since single-file `stat` is cheap).
 
 The TUI always shows a browsable filesystem tree. Scanning is an enhancement, not a prerequisite.
 
+Filter (time range / threshold) only controls whether delta information appears on tree nodes.
+The file tree itself is always shown — even when `from == to` (same timestamp), a single-snapshot view
+is displayed without delta markings.
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Always:  FS tree (lazy-listed from disk)               │

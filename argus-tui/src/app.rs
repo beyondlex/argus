@@ -151,6 +151,13 @@ impl TreeNode {
         }
     }
 
+    pub fn created(&self) -> Option<DateTime<Utc>> {
+        match self {
+            TreeNode::Snapshot(n) => n.created,
+            TreeNode::Diff(_) => None,
+        }
+    }
+
     pub fn has_metadata(&self) -> bool {
         match self {
             TreeNode::Snapshot(n) => n.has_metadata,
@@ -379,9 +386,20 @@ impl App {
 
     /// Build tree for current view_root_path from scan_cache or filesystem
     pub fn rebuild_tree(&mut self) {
-        // Refresh available snapshots from DB for current root
         self.refresh_available_snapshots();
+        self.build_current_tree();
+        self.filter_state.clear();
+        self.update_tree_lines();
+    }
 
+    /// Build tree from scan_cache or FS listing, preserving filter state.
+    /// Used when from==to (show current FS tree without delta).
+    pub fn show_normal_tree(&mut self) {
+        self.build_current_tree();
+        self.update_tree_lines();
+    }
+
+    fn build_current_tree(&mut self) {
         // Check scan cache first
         if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
             self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
@@ -389,7 +407,18 @@ impl App {
             // Fall back to FS listing
             match argus_core::list_dir(&self.view_root_path) {
                 Ok(node) => {
-                    self.tree_root = Some(TreeNode::Snapshot(node));
+                    // Enrich FS-listed children with scan cache sizes when
+                    // available (e.g. parent of a scanned directory shows
+                    // real size instead of "-").
+                    let mut enriched = node;
+                    for child in enriched.children.values_mut() {
+                        let child_path = self.view_root_path.join(&child.name);
+                        if let Some(snapshot) = self.scan_cache.get(&child_path) {
+                            child.size = snapshot.root_node.size;
+                            child.has_metadata = true;
+                        }
+                    }
+                    self.tree_root = Some(TreeNode::Snapshot(enriched));
                 }
                 Err(e) => {
                     self.last_error = Some(format!("failed to list directory: {}", e));
@@ -402,8 +431,6 @@ impl App {
 
         self.cursor = 0;
         self.expanded.clear();
-        self.filter_state.clear();
-        self.update_tree_lines();
     }
 
     /// Update the tree lines from current tree_root
@@ -476,11 +503,11 @@ impl App {
             AppMessage::DiffComplete(diff) => {
                 // Apply threshold filter if set
                 let filtered = if let Some(thresh) = self.filter_state.threshold {
-                    filter_by_threshold(&diff, thresh).unwrap_or(diff)
+                    filter_by_threshold(&diff, thresh)
                 } else {
-                    diff
+                    Some(diff)
                 };
-                self.tree_root = Some(TreeNode::Diff(filtered));
+                self.tree_root = filtered.map(TreeNode::Diff);
                 self.cursor = 0;
                 self.expanded.clear();
                 self.update_tree_lines();

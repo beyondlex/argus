@@ -253,7 +253,15 @@ pub fn rebuild_snapshot(conn: &Connection, root_path: &Path) -> Result<Snapshot,
     let root_path_hash = hash_root_path(root_path);
     let scan_id = latest_scan_id(conn, &root_path_hash)?
         .ok_or_else(|| DbError::NoScanFound(root_path.display().to_string()))?;
+    rebuild_snapshot_by_id(conn, scan_id, root_path)
+}
 
+pub fn rebuild_snapshot_by_id(
+    conn: &Connection,
+    scan_id: i64,
+    root_path: &Path,
+) -> Result<Snapshot, DbError> {
+    let root_path_hash = hash_root_path(root_path);
     let root_path_str = root_path.to_string_lossy().to_string();
     let root_record = conn
         .query_row(
@@ -494,6 +502,7 @@ fn record_to_file_node(record: &PathRecord) -> FileNode {
             .as_deref()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc)),
+        created: None,
         inode: record.inode,
         device: record.device,
         has_metadata: true,
@@ -536,6 +545,7 @@ fn insert_record_recursive(
             file_type: FileType::Directory,
             size: 0,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -669,6 +679,7 @@ mod tests {
             file_type: FileType::File,
             size,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -683,6 +694,7 @@ mod tests {
             file_type: FileType::Directory,
             size: 0,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,

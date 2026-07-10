@@ -7,8 +7,8 @@ pub mod scanner;
 pub use ai_feature::{extract_feature, generate_prompt};
 pub use db::{
     build_diff_tree, default_db_path, open_db, query_delta, query_root_summaries,
-    query_scan_timestamps, rebuild_snapshot, write_scan, DbError, PathDelta, PathRecord,
-    RootScanSummary, ScanTimestampInfo,
+    query_scan_timestamps, rebuild_snapshot, rebuild_snapshot_by_id, write_scan, DbError,
+    PathDelta, PathRecord, RootScanSummary, ScanTimestampInfo,
 };
 pub use diff::{compare_trees, filter_by_threshold, has_significant_changes};
 pub use model::{

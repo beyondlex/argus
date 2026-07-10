@@ -53,6 +53,11 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 app.filter_state.threshold = None;
                 trigger_diff_if_ready(app);
             }
+            KeyCode::Char('c') => {
+                app.filter_state.clear();
+                app.focus = Focus::Tree;
+                app.rebuild_tree();
+            }
             _ => {}
         }
         return;
@@ -589,6 +594,13 @@ fn trigger_diff_if_ready(app: &mut App) {
         return;
     }
 
+    // When from == to, show current FS tree (no delta info).
+    // File tree always shows current files like Finder; filter only affects delta display.
+    if from_idx == to_idx {
+        app.show_normal_tree();
+        return;
+    }
+
     let from_info = app.available_snapshots[from_idx].clone();
     let to_info = app.available_snapshots[to_idx].clone();
 
@@ -692,6 +704,7 @@ mod tests {
             file_type: FileType::File,
             size: 1,
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
@@ -711,6 +724,7 @@ mod tests {
             file_type: FileType::Directory,
             size: map.values().map(|child| child.size).sum(),
             modified: None,
+            created: None,
             inode: None,
             device: None,
             has_metadata: true,
