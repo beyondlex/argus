@@ -636,7 +636,7 @@ fn flatten_diff_tree(
     lines.push(TreeLine {
         depth,
         node: TreeNode::Diff(node.clone()),
-        expanded: is_expanded && node.is_dir && !node.children.is_empty(),
+        expanded: is_expanded && node.is_dir,
         has_scan_data: true,
     });
 
