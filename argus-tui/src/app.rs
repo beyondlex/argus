@@ -173,6 +173,7 @@ pub struct TreeLine {
     pub node: TreeNode,
     pub expanded: bool,
     pub has_scan_data: bool,
+    pub delta: i64,
 }
 
 /// Snapshot metadata from SQLite scan_events
@@ -268,6 +269,9 @@ pub struct App {
     // Diff filter state
     pub filter_state: FilterState,
 
+    // Diff data overlaid on the snapshot tree (maps path → (current_size, delta))
+    pub diff_lookup: HashMap<Vec<String>, (u64, i64)>,
+
     // Tree filter (fuzzy search)
     pub filter_word: String,
     pub filter_mode: FilterMode,
@@ -329,6 +333,7 @@ impl App {
                 dirty: false,
                 sub_focus: FilterFocus::From,
             },
+            diff_lookup: HashMap::new(),
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -400,6 +405,7 @@ impl App {
     }
 
     fn build_current_tree(&mut self) {
+        self.diff_lookup.clear();
         // Check scan cache first
         if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
             self.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
@@ -450,23 +456,11 @@ impl App {
                     &mut lines,
                     has_scan_data,
                     &mut Vec::new(),
+                    &self.diff_lookup,
                 );
                 lines
             }
-            Some(TreeNode::Diff(root)) => {
-                let mut lines = Vec::new();
-                flatten_diff_tree(
-                    root,
-                    0,
-                    expanded,
-                    sort_mode,
-                    &mut lines,
-                    has_scan_data,
-                    &mut Vec::new(),
-                );
-                lines
-            }
-            None => Vec::new(),
+            _ => Vec::new(),
         };
 
         self.tree_lines = lines;
@@ -507,7 +501,12 @@ impl App {
                 } else {
                     Some(diff)
                 };
-                self.tree_root = filtered.map(TreeNode::Diff);
+                // Build lookup map from diff tree instead of replacing tree_root.
+                // Tree always shows current FS state; diff only adds delta info.
+                self.diff_lookup.clear();
+                if let Some(diff) = filtered {
+                    build_diff_lookup(&diff, &mut Vec::new(), &mut self.diff_lookup);
+                }
                 self.cursor = 0;
                 self.expanded.clear();
                 self.update_tree_lines();
@@ -567,7 +566,7 @@ impl App {
 
     /// Check if delta column should be shown
     pub fn has_delta_column(&self) -> bool {
-        matches!(&self.tree_root, Some(TreeNode::Diff(_)))
+        !self.diff_lookup.is_empty()
     }
 
     /// Return the relative path of the tree line at `idx`, rooted at `view_root_path`.
@@ -608,6 +607,7 @@ impl App {
 
 // ── Tree flattening ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn flatten_snapshot_tree(
     node: &FileNode,
     depth: usize,
@@ -616,16 +616,20 @@ fn flatten_snapshot_tree(
     lines: &mut Vec<TreeLine>,
     has_scan_data: bool,
     path: &mut Vec<String>,
+    diff_lookup: &HashMap<Vec<String>, (u64, i64)>,
 ) {
     path.push(node.name.clone());
     let path_key = path.clone();
     let is_expanded = depth == 0 || expanded.contains(&path_key);
+
+    let delta = diff_lookup.get(&path_key).map(|&(_, d)| d).unwrap_or(0);
 
     lines.push(TreeLine {
         depth,
         node: TreeNode::Snapshot(node.clone()),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
         has_scan_data: has_scan_data || !node.is_dir,
+        delta,
     });
 
     if is_expanded && node.is_dir {
@@ -640,45 +644,7 @@ fn flatten_snapshot_tree(
                 lines,
                 has_scan_data,
                 path,
-            );
-        }
-    }
-
-    path.pop();
-}
-
-fn flatten_diff_tree(
-    node: &DiffNode,
-    depth: usize,
-    expanded: &HashSet<Vec<String>>,
-    sort_mode: SortMode,
-    lines: &mut Vec<TreeLine>,
-    _has_scan_data: bool,
-    path: &mut Vec<String>,
-) {
-    path.push(node.name.clone());
-    let path_key = path.clone();
-    let is_expanded = depth == 0 || expanded.contains(&path_key);
-
-    lines.push(TreeLine {
-        depth,
-        node: TreeNode::Diff(node.clone()),
-        expanded: is_expanded && node.is_dir,
-        has_scan_data: true,
-    });
-
-    if is_expanded && node.is_dir {
-        let mut children: Vec<&DiffNode> = node.children.values().collect();
-        sort_children_diff(&mut children, sort_mode);
-        for child in children {
-            flatten_diff_tree(
-                child,
-                depth + 1,
-                expanded,
-                sort_mode,
-                lines,
-                _has_scan_data,
-                path,
+                diff_lookup,
             );
         }
     }
@@ -694,12 +660,17 @@ fn sort_children_snapshot(children: &mut Vec<&FileNode>, mode: SortMode) {
     }
 }
 
-fn sort_children_diff(children: &mut Vec<&DiffNode>, mode: SortMode) {
-    match mode {
-        SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
-        SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size_delta.abs())),
-        SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.current_size)),
+fn build_diff_lookup(
+    node: &DiffNode,
+    path: &mut Vec<String>,
+    lookup: &mut HashMap<Vec<String>, (u64, i64)>,
+) {
+    path.push(node.name.clone());
+    lookup.insert(path.clone(), (node.current_size, node.size_delta));
+    for child in node.children.values() {
+        build_diff_lookup(child, path, lookup);
     }
+    path.pop();
 }
 
 pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {

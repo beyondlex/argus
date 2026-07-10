@@ -32,6 +32,7 @@ pub fn render(
         .title(title)
         .title_alignment(ratatui::layout::Alignment::Left);
     let inner = block.inner(area);
+    let content_width = inner.width.saturating_sub(1);
 
     let is_active_match = filter_mode == FilterMode::Active && current_match < match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
@@ -68,6 +69,7 @@ pub fn render(
             is_current_match,
             filter_mode != FilterMode::Inactive && !filter_word.is_empty(),
             filter_word,
+            content_width,
         ));
     }
 
@@ -78,16 +80,17 @@ pub fn render(
     f.render_widget(Paragraph::new(rendered_lines).block(block), area);
 
     let scrollbar_area = Rect {
-        x: area.right().saturating_sub(1),
-        y: area.y,
+        x: inner.right().saturating_sub(1),
+        y: inner.y,
         width: 1,
-        height: area.height,
+        height: inner.height,
     };
     f.render_stateful_widget(
         Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
-            .end_symbol(None),
+            .end_symbol(None)
+            .track_symbol(Some("│")),
         scrollbar_area,
         &mut scrollbar_state,
     );
@@ -154,6 +157,7 @@ fn render_tree_line<'a>(
     is_current_match: bool,
     has_filter: bool,
     filter_word: &'a str,
+    content_width: u16,
 ) -> Line<'a> {
     let bg = if is_current_match {
         Color::Blue
@@ -171,7 +175,7 @@ fn render_tree_line<'a>(
 
     let size_str = if !line.node.has_metadata() {
         "...".to_string()
-    } else if line.node.is_dir() && !line.has_scan_data {
+    } else if line.node.is_dir() && !line.has_scan_data && line.node.current_size() == 0 {
         "-".to_string()
     } else {
         util::format_size(line.node.current_size())
@@ -190,23 +194,43 @@ fn render_tree_line<'a>(
         },
     );
 
-    let size_style = if !line.node.has_metadata() || (line.node.is_dir() && !line.has_scan_data) {
+    let size_style = if !line.node.has_metadata()
+        || (line.node.is_dir() && !line.has_scan_data && line.node.current_size() == 0)
+    {
         base.fg(Color::DarkGray).bg(Color::Reset)
     } else {
         base.fg(Color::Yellow).bg(Color::Reset)
     };
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(size_str, size_style));
 
-    let delta = line.node.size_delta();
-    if delta != 0 {
+    let delta = line.delta;
+    let delta_str = if delta != 0 {
         let delta_color = if delta > 0 { Color::Red } else { Color::Green };
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
+        Some((
             util::format_delta(delta),
             base.fg(delta_color).add_modifier(Modifier::BOLD),
-        ));
+        ))
+    } else {
+        None
+    };
+
+    // Calculate visible widths for right-alignment
+    let name_width: usize = spans.iter().map(|s| s.content.len()).sum();
+    let size_width = size_str.len();
+    let delta_width = delta_str.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
+    let gap = if delta_str.is_some() { 2 } else { 1 };
+    let right_block = delta_width + gap + size_width;
+    let pad = (content_width as usize).saturating_sub(name_width + right_block);
+
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    } else {
+        spans.push(Span::raw(" "));
     }
+    if let Some((ds, style)) = delta_str {
+        spans.push(Span::styled(ds, style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(size_str, size_style));
 
     Line::from(spans)
 }

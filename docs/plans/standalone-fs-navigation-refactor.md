@@ -16,13 +16,14 @@ when `argus-tui` is launched. Size and delta data are **optional metadata** atta
 A node that has been scanned shows its size/delta; a node not yet scanned shows `"-"` for directory
 size and the real file size for files (since single-file `stat` is cheap).
 
-## 2. Core Principle
+## 2. Core Principle — HARD RULE
 
 The TUI always shows a browsable filesystem tree. Scanning is an enhancement, not a prerequisite.
 
-Filter (time range / threshold) only controls whether delta information appears on tree nodes.
-The file tree itself is always shown — even when `from == to` (same timestamp), a single-snapshot view
-is displayed without delta markings.
+**The tree always reflects the current filesystem state.** Scan records (historical snapshots) and
+diff data ONLY affect the delta values displayed on tree nodes. They NEVER change the tree structure
+— no node appears or disappears based on filter state. Expanding/collapsing directories works
+identically regardless of whether a time filter is active.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
