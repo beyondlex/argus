@@ -563,9 +563,7 @@ impl App {
                     full.push(comp);
                 }
                 if let Ok((total, _)) = client.get_delta(&full, from, to).await {
-                    if total != 0 {
-                        deltas.insert(path.clone(), total);
-                    }
+                    deltas.insert(path.clone(), total);
                 }
             }
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
