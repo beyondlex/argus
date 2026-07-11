@@ -3,6 +3,7 @@ mod debounce;
 mod ipc_server;
 mod watcher;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, Mutex};
@@ -42,9 +43,11 @@ async fn main() {
     wait_for_shutdown().await;
 
     tracing::info!("shutting down...");
+    watcher_handle.store(false, Ordering::Relaxed);
     drop(watcher_handle);
     debounce_handle.await.expect("debounce engine failed");
-    ipc_handle.await.expect("ipc server failed");
+    ipc_handle.abort();
+    tracing::info!("argusd stopped");
     tracing::info!("argusd stopped");
 }
 
