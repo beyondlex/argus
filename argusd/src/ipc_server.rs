@@ -59,67 +59,71 @@ async fn handle_connection(
     db: Arc<Mutex<Connection>>,
     start_time: Instant,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let payload_len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut payload = vec![0u8; payload_len];
-    stream.read_exact(&mut payload).await?;
-
-    let request: DaemonRequest = bincode::deserialize(&payload)?;
-
-    let response = match request {
-        DaemonRequest::Ping => DaemonResponse::Pong,
-        DaemonRequest::GetStatus => {
-            let conn = db.lock().await;
-            let uptime = start_time.elapsed().as_secs();
-            drop(conn);
-            DaemonResponse::Status {
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                watch_dirs: Vec::new(),
-                uptime_secs: uptime,
-            }
+    loop {
+        let mut len_buf = [0u8; 4];
+        if stream.read_exact(&mut len_buf).await.is_err() {
+            break;
         }
-        DaemonRequest::GetDelta {
-            path,
-            from_ms,
-            to_ms,
-        } => {
-            let conn = db.lock().await;
-            match query_delta_total(&conn, &path, from_ms, to_ms) {
-                Ok(total_delta) => {
-                    let entries =
-                        query_delta_detail(&conn, &path, from_ms, to_ms).unwrap_or_default();
-                    DaemonResponse::Delta {
-                        total_delta,
-                        entries,
-                    }
+        let payload_len = u32::from_be_bytes(len_buf) as usize;
+
+        let mut payload = vec![0u8; payload_len];
+        stream.read_exact(&mut payload).await?;
+
+        let request: DaemonRequest = bincode::deserialize(&payload)?;
+
+        let response = match request {
+            DaemonRequest::Ping => DaemonResponse::Pong,
+            DaemonRequest::GetStatus => {
+                let conn = db.lock().await;
+                let uptime = start_time.elapsed().as_secs();
+                drop(conn);
+                DaemonResponse::Status {
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    watch_dirs: Vec::new(),
+                    uptime_secs: uptime,
                 }
-                Err(e) => DaemonResponse::Error {
-                    message: e.to_string(),
-                },
             }
-        }
-        DaemonRequest::GetDeltaDetail {
-            path,
-            from_ms,
-            to_ms,
-        } => {
-            let conn = db.lock().await;
-            match query_delta_detail(&conn, &path, from_ms, to_ms) {
-                Ok(entries) => DaemonResponse::DeltaDetail { entries },
-                Err(e) => DaemonResponse::Error {
-                    message: e.to_string(),
-                },
+            DaemonRequest::GetDelta {
+                path,
+                from_ms,
+                to_ms,
+            } => {
+                let conn = db.lock().await;
+                match query_delta_total(&conn, &path, from_ms, to_ms) {
+                    Ok(total_delta) => {
+                        let entries =
+                            query_delta_detail(&conn, &path, from_ms, to_ms).unwrap_or_default();
+                        DaemonResponse::Delta {
+                            total_delta,
+                            entries,
+                        }
+                    }
+                    Err(e) => DaemonResponse::Error {
+                        message: e.to_string(),
+                    },
+                }
             }
-        }
-    };
+            DaemonRequest::GetDeltaDetail {
+                path,
+                from_ms,
+                to_ms,
+            } => {
+                let conn = db.lock().await;
+                match query_delta_detail(&conn, &path, from_ms, to_ms) {
+                    Ok(entries) => DaemonResponse::DeltaDetail { entries },
+                    Err(e) => DaemonResponse::Error {
+                        message: e.to_string(),
+                    },
+                }
+            }
+        };
 
-    let response_bytes = bincode::serialize(&response)?;
-    let len = (response_bytes.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
-    stream.write_all(&response_bytes).await?;
-    stream.flush().await?;
+        let response_bytes = bincode::serialize(&response)?;
+        let len = (response_bytes.len() as u32).to_be_bytes();
+        stream.write_all(&len).await?;
+        stream.write_all(&response_bytes).await?;
+        stream.flush().await?;
+    }
 
     Ok(())
 }
