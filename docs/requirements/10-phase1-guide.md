@@ -64,7 +64,7 @@ argus-core/src/
 ├── lib.rs
 ├── model.rs         # FileNode, Snapshot
 ├── scanner.rs       # Scanner 扫描引擎
-└── db.rs            # SQLite 存储层
+└── db.rs            # 未来 daemon 数据库基础设施（预留）
 ```
 
 ### 2.3 核心模块说明
@@ -81,10 +81,7 @@ argus-core/src/
 5. **进度感知**：扫描 30 秒后自动启用进度指示器。每扫描 10,000 个文件通过 `mpsc::Sender` 推送一次进度更新 `(file_count, total_bytes)`，上层 CLI/TUI 可选择监听渲染。
 
 #### db.rs
-实现 SQLite 存储层：
-1. `store_scan` — 写入扫描记录 (Snapshot) 到 SQLite。
-2. `load_scan` — 按 path_hash 加载最新扫描记录。
-3. `list_scans` — 列出所有扫描记录或按 path_hash 筛选。
+预留数据库基础设施，供未来 daemon 使用。当前仅提供 `default_db_path()` 和 `open_db()`。
 
 ### 2.4 补充模块
 
@@ -136,8 +133,7 @@ anyhow = "1.0"
 
 | 命令 | 参数 | 功能 |
 |------|------|------|
-| `scan` | `--path <PATH>` | 扫描目录并写入 SQLite |
-| `list-scans` | `[--path <PATH>]` | 列出扫描记录，可选按路径筛选 |
+| `scan` | `--path <PATH>` | 扫描目录并打印摘要（纯内存） |
 
 **阈值解析说明**（`argus-core` 提供工具函数）：
 ```rust
@@ -162,7 +158,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Scan { path: PathBuf },
-    ListScans { path: Option<PathBuf> },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -170,10 +165,7 @@ fn main() -> anyhow::Result<()> {
     match &cli.command {
         Commands::Scan { path } => {
             // 调用 Scanner::scan(path, &AtomicBool::new(false))
-            // 写入 Snapshot 到 SQLite
-        }
-        Commands::ListScans { path } => {
-            // 查询 SQLite 中的扫描记录
+            // 打印摘要
         }
     }
     Ok(())
@@ -191,21 +183,13 @@ fn main() -> anyhow::Result<()> {
 
 ## 4. 验收标准 (Definition of Done)
 
-### 4.1 测试全盘扫描与持久化
+### 4.1 测试全盘扫描
 
 ```bash
 cargo run -p argus-cli -- scan --path ~/Downloads
 ```
 
-**验证点**：检查 SQLite 文件 `~/.config/argus/argus.db` 是否生成，内含合规的扫描记录。
-
-### 4.2 测试扫描记录查询
-
-```bash
-cargo run -p argus-cli -- list-scans --path ~/Downloads
-```
-
-**验证点**：终端应显示该路径的扫描时间、总大小、文件数。
+**验证点**：终端应打印扫描路径、文件总数、总大小。
 
 ### 4.6 单元测试要求
 
@@ -247,14 +231,13 @@ let tree = file_tree! {
 | 嵌套目录 | 3 级目录树，含多个文件 | 正确的树结构，汇总 size 等于子节点之和 |
 | 硬链接去重 | 同一 inode 出现两次 | size 只计一次 |
 | 取消扫描 | 触发 `AtomicBool` true | 返回 `Err(ScanError::Cancelled)` |
-| SQLite 读写 | 存入 Snapshot 再加载 | 取出内容与存入一致 |
+| 扫描摘要 | 扫描后校验文件和总数 | 与 `count_files` 一致 |
 
 ## 5. 开发顺序建议
 
 ```
 第 1 步：model.rs — 数据结构定义
 第 2 步：scanner.rs — 扫描引擎（含单元测试）
-第 3 步：db.rs — SQLite 存储层（含单元测试）
-第 4 步：argus-cli/main.rs — CLI 命令解析与调用
-第 5 步：手动验收测试（按 4.1-4.5 执行）
+第 3 步：argus-cli/main.rs — CLI 命令解析与调用
+第 4 步：手动验收测试（按 4.1 执行）
 ```

@@ -2,29 +2,22 @@
 
 Argus is a personal desktop disk intelligence tool.
 
-Scans are written to `~/.config/argus/argus.db`. The TUI reads scan history from SQLite to enrich directory sizes.
+Scans run in memory only — no persistence. The database (`~/.config/argus/argus.db`)
+is reserved for future daemon delta data.
 
 ## CLI
 
 ```bash
-# Scan the current tree root into SQLite
+# Scan a path and print summary
 argus scan --path ~/Downloads
-
-# List scan timestamps for one root
-argus list-scans --path ~/Downloads
-
-# List all scanned roots
-argus list-scans
 ```
 
 ## TUI
 
-- starts from the current working directory
-- shows live filesystem navigation even when no scan data exists
-- reloads the latest snapshot from SQLite when switching roots, so previously scanned directories regain size data
-- shows `-` for ordinary unscanned directories, real sizes for files, and `...` for structural placeholder nodes
-- shows directory sizes when SQLite scan history is available
-- keeps the status bar compact with `[Tree]`, live scan progress, and the latest scan summary
+- starts from the current working directory with a pure FS tree (dirs show `-`)
+- press `s` to scan the current root — sizes appear in-memory for the session
+- navigating away loses scan data for the old root; re-scan when needed
+- keeps the status bar compact with `[Tree]`, live scan progress, and scan summary
 
 ## Docs
 

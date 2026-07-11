@@ -1,21 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use argus_core::{
-    default_db_path, open_db, query_root_summaries, query_scan_timestamps, scan_path, write_scan,
-    FileNode, RootScanSummary,
-};
+use argus_core::{scan_path, FileNode};
 
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Scan { path } => cmd_scan(path),
-        Commands::ListScans { path } => cmd_list_scans(path),
     };
 
     match result {
@@ -28,11 +24,7 @@ fn main() {
 }
 
 #[derive(Parser)]
-#[command(
-    name = "argus",
-    version,
-    about = "SQLite-first CLI for scanning disk usage and comparing scan history"
-)]
+#[command(name = "argus", version, about = "Disk usage scanner")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -40,19 +32,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan a path and write it into the SQLite scan history.
+    /// Scan a path and print disk usage summary.
     Scan {
         #[arg(long, help = "Path to scan")]
         path: PathBuf,
     },
-    /// List available scan timestamps or scan roots.
-    ListScans {
-        #[arg(long, help = "Root path to list scans for")]
-        path: Option<PathBuf>,
-    },
 }
 
-fn cmd_scan(path: &Path) -> Result<i32> {
+fn cmd_scan(path: &PathBuf) -> Result<i32> {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel.clone();
 
@@ -64,63 +51,10 @@ fn cmd_scan(path: &Path) -> Result<i32> {
 
     let snapshot =
         scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
-    let db_path = default_db_path();
-    let mut conn = open_db(&db_path).context("failed to open SQLite database")?;
-    let scan_id = write_scan(&mut conn, &snapshot).context("failed to write scan to database")?;
 
-    println!("scan saved to SQLite: {}", db_path.display());
-    println!("scan id: {}", scan_id);
     println!("scan path: {}", path.display());
     println!("total files: {}", count_files(&snapshot.root_node));
     println!("total size: {}", format_size(snapshot.total_size));
-
-    Ok(0)
-}
-
-fn cmd_list_scans(path: &Option<PathBuf>) -> Result<i32> {
-    let db_path = default_db_path();
-    let conn = open_db(&db_path).context("failed to open SQLite database")?;
-
-    match path {
-        Some(path) => {
-            let scans = query_scan_timestamps(&conn, path).context("failed to list scans")?;
-            if scans.is_empty() {
-                println!("no scans found for {}", path.display());
-            } else {
-                for (id, timestamp, total_size, total_files) in scans {
-                    println!(
-                        "{}  {}  files: {}  size: {}",
-                        id,
-                        timestamp.to_rfc3339(),
-                        total_files,
-                        format_size(total_size),
-                    );
-                }
-            }
-        }
-        None => {
-            let roots = query_root_summaries(&conn).context("failed to list scan roots")?;
-            if roots.is_empty() {
-                println!("no scan roots found");
-            } else {
-                for RootScanSummary {
-                    root_path,
-                    root_path_hash,
-                    scan_count,
-                    latest_timestamp,
-                } in roots
-                {
-                    println!(
-                        "{}  [{}]  scans: {}  latest: {}",
-                        root_path.display(),
-                        root_path_hash,
-                        scan_count,
-                        latest_timestamp.to_rfc3339(),
-                    );
-                }
-            }
-        }
-    }
 
     Ok(0)
 }

@@ -628,7 +628,6 @@ pub fn start_scan(app: &mut App) {
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();
     let path = app.view_root_path.clone();
-    let db_path = app.db_path.clone();
     let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -648,11 +647,6 @@ pub fn start_scan(app: &mut App) {
 
         match argus_core::scan_path(&path, &cancel, Some(progress_tx), &scan_skip_dirs) {
             Ok(snapshot) => {
-                // Write to SQLite
-                if let Ok(mut conn) = argus_core::open_db(&db_path) {
-                    let _ = argus_core::write_scan(&mut conn, &snapshot);
-                }
-
                 let _ = tx.blocking_send(AppMessage::ScanComplete(snapshot));
             }
             Err(e) => {
@@ -723,12 +717,7 @@ mod tests {
 
     fn make_app(root: FileNode) -> App {
         let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(
-            crate::config::TuiConfig::default(),
-            PathBuf::from("/tmp/argus_test.db"),
-            tx,
-            rx,
-        );
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = std::path::PathBuf::from("/tmp/test");
         let snapshot = Snapshot::new(std::path::PathBuf::from("/tmp/test"), root, 1);
         app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));

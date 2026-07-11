@@ -30,7 +30,7 @@
 |  +---------------------------------------------------------+  |
 |  |                    argus-core                            |  |
 |  |  - FileTree 算法 (核心数据结构)                           |  |
-|  |  - SQLite 扫描记录持久化                                  |  |
+|  |  - ScanCache 内存会话缓存                                  |  |
 |  |  - 快照序列化 (JSON)                                      |  |
 |  |  - 多线程并行扫描器 (基于 ignore 库)                      |  |
 |  +---------------------------------------------------------+  |
@@ -50,7 +50,7 @@ argus/
 │       ├── lib.rs
 │       ├── model.rs        # 核心数据结构
 │       ├── scanner.rs      # 文件扫描引擎
-│       └── db.rs           # SQLite 存储层
+│       └── db.rs           # 未来 daemon 数据库基础设施
 ├── argusd/                 # 守护进程 (bin)
 │   ├── Cargo.toml
 │   └── src/
@@ -75,7 +75,7 @@ argus/
 
 | 模式 | 适用场景 | 实现原理 |
 |------|---------|---------|
-| **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，扫描历史写入 SQLite，客户端在内存中 materialize 为 `scan_cache` |
+| **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，扫描结果缓存在内存 `scan_cache` 中，不持久化 |
 | **服务模式 (Client-Server)** | TUI/GUI 需要实时增量监控 | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
 
 **独立模式下的文件树**：TUI 始终以用户当前工作目录 (cwd) 为根展示可自由游走的文件树。
@@ -86,7 +86,7 @@ argus/
 | 层 | 来源 | 始终可用 |
 |----|------|---------|
 | **FS 层** | `list_dir()` 惰性读取磁盘目录内容 | 是 |
-| **Scan 层** | `scan_cache` 缓存 SQLite materialize 出来的最新扫描结果 | 仅扫描后 |
+| **Scan 层** | `scan_cache` 缓存当前会话的扫描结果 | 仅扫描后 |
 
 - 文件始终展示真实大小（单次 `stat` 低成本）
 - 目录有扫描汇总大小时展示该值，否则展示 `"-"`
@@ -132,7 +132,7 @@ sequenceDiagram
 
     opt daemon 断开或不可用
         Client-->>User: 自动降级回独立模式
-        Client->>Core: 回退为本地 SQLite 模式
+        Client->>Core: 回退为纯 FS 模式
     end
 ```
 

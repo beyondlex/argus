@@ -4,24 +4,25 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 
 ## Source Of Truth
 
-- SQLite is the persistent store for scan history.
-- `scan_cache` is an in-process materialized cache of the latest snapshot for a root path.
-- `load_from_db()` refreshes the current root's cache from SQLite.
-- `rebuild_tree()` and `show_normal_tree()` both reload the current root from SQLite before rebuilding the tree.
+- Scans are in-memory only — no SQLite persistence.
+- `scan_cache` is a session-only cache populated by pressing `s`.
+- The tree always starts from the current working directory with pure FS structure.
+- The database (`~/.config/argus/argus.db`) is reserved for future daemon delta data.
 
 ## Current Tree Behavior
 
 - The tree always starts from the current working directory.
 - The tree always reflects the current filesystem structure.
-- Scan history only enriches node sizes; it never changes tree shape.
-- When a directory has no scan data, ordinary directories show `-`.
+- Without a scan, ordinary directories show `-` and files show real size.
 - Structural placeholder nodes show `...`.
 - Symlinks are rendered distinctly from regular files.
-- Switching roots with `u` or `.` reloads the latest snapshot for that root if one exists in SQLite.
+- Switching roots with `u` or `.` resets to FS tree (no persisted scan data).
 
 ## Scan And Status Bar Behavior
 
-- Pressing `s` scans the current tree root.
+- Pressing `s` scans the current tree root in-memory.
+- Scan data is cached for the current session in `scan_cache`.
+- Navigating away loses scan data for the old root; re-scan when needed.
 - Scan progress shows:
   - current path
   - `Size`
@@ -39,11 +40,11 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 ## UI Consistency Rules
 
 - Tree size, metadata size, and scan summary size should use the same root snapshot size.
-- Whenever the current root changes, the UI should reload from SQLite first, then rebuild the tree.
-- Any daemon-driven refresh should update SQLite first; the TUI can then materialize the latest state from `scan_cache` / `load_from_db()`.
+- Whenever the current root changes, rebuild the tree from FS (no DB load).
+- Any daemon-driven refresh should update the in-memory cache; the TUI can then materialize the latest state from `scan_cache`.
 
 ## Good README / Wiki Targets
 
-- README "TUI" overview: current root, scan history, tree size semantics, status bar behavior.
-- Wiki "How scanning works": SQLite-first flow, `scan_cache`, root reload behavior.
-- Wiki "Troubleshooting": why a root may briefly show no size before the cache refresh completes.
+- README "TUI" overview: current root, in-memory scan, tree size semantics, status bar behavior.
+- Wiki "How scanning works": in-memory flow, `scan_cache`, session scope.
+- Wiki "Troubleshooting": why a root shows no size before pressing `s`.

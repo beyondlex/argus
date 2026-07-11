@@ -167,9 +167,6 @@ pub struct App {
     // Scan cache: path → full scanned snapshot
     pub scan_cache: HashMap<PathBuf, Snapshot>,
 
-    // Path to the SQLite database
-    pub db_path: PathBuf,
-
     // Tree filter (fuzzy search)
     pub filter_word: String,
     pub filter_mode: FilterMode,
@@ -209,7 +206,6 @@ pub struct App {
 impl App {
     pub fn new(
         config: crate::config::TuiConfig,
-        db_path: PathBuf,
         tx: mpsc::Sender<AppMessage>,
         rx: mpsc::Receiver<AppMessage>,
     ) -> Self {
@@ -230,7 +226,6 @@ impl App {
             scroll_offset: 0,
             expanded: HashSet::new(),
             scan_cache: HashMap::new(),
-            db_path,
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -252,28 +247,8 @@ impl App {
         }
     }
 
-    /// Load latest scan from SQLite into scan_cache
-    pub fn load_from_db(&mut self) {
-        let conn = match argus_core::open_db(&self.db_path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        if !self.scan_cache.contains_key(&self.view_root_path) {
-            if let Ok(snapshot) = argus_core::rebuild_snapshot(&conn, &self.view_root_path) {
-                self.scan_cache
-                    .insert(self.view_root_path.clone(), snapshot);
-            }
-        }
-    }
-
     /// Build tree for current view_root_path from scan_cache or filesystem
     pub fn rebuild_tree(&mut self) {
-        self.rebuild_tree_internal();
-    }
-
-    fn rebuild_tree_internal(&mut self) {
-        self.load_from_db();
         self.build_current_tree();
         self.update_tree_lines();
     }
@@ -730,11 +705,9 @@ mod tests {
     use super::*;
     use crate::app::TreeNode;
     use crate::config::TuiConfig;
-    use argus_core::{open_db, write_scan, FileNode, FileType, Snapshot};
+    use argus_core::{FileNode, FileType, Snapshot};
     use std::collections::HashMap;
-    use std::fs;
     use std::path::PathBuf;
-    use tempfile::TempDir;
     use tokio::sync::mpsc;
 
     fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
@@ -793,47 +766,12 @@ mod tests {
 
     fn make_app(root: FileNode, root_path: PathBuf) -> App {
         let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(
-            TuiConfig::default(),
-            PathBuf::from("/tmp/argus_test.db"),
-            tx,
-            rx,
-        );
+        let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = root_path.clone();
         app.tree_root = Some(TreeNode::Snapshot(root));
         let snapshot = Snapshot::new(root_path, make_dir("test", vec![]), 0);
         app.scan_cache.insert(app.view_root_path.clone(), snapshot);
         app
-    }
-
-    #[test]
-    fn test_rebuild_tree_loads_scanned_parent_root_from_db() {
-        let temp = TempDir::new().unwrap();
-        let github_path = temp.path().join("github");
-        fs::create_dir_all(&github_path).unwrap();
-        fs::write(github_path.join("readme.md"), "hello").unwrap();
-
-        let mut root = make_dir("github", vec![make_file("readme.md", 5)]);
-        root.size = 5;
-        let snapshot = Snapshot::new(github_path.clone(), root, 5);
-
-        let db_path = temp.path().join("argus.db");
-        let mut conn = open_db(&db_path).unwrap();
-        write_scan(&mut conn, &snapshot).unwrap();
-
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), db_path, tx, rx);
-        app.view_root_path = github_path;
-
-        app.rebuild_tree();
-
-        let root_line = app
-            .tree_lines
-            .iter()
-            .find(|line| line.depth == 0)
-            .expect("root line should exist");
-        assert_eq!(root_line.node.current_size(), 5);
-        assert_eq!(root_line.node.current_size(), snapshot.total_size);
     }
 
     #[test]
