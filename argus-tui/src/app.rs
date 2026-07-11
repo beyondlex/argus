@@ -158,6 +158,7 @@ pub struct App {
     pub time_from: u64,
     pub time_to: u64,
     pub time_preset: usize,
+    last_refresh_line_count: usize,
 
     // Tree filter (fuzzy search)
     pub filter_word: String,
@@ -229,6 +230,7 @@ impl App {
             time_from: 0,
             time_to: 0,
             time_preset: 0,
+            last_refresh_line_count: 0,
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -318,6 +320,10 @@ impl App {
         self.tree_lines = lines;
         if self.cursor >= self.tree_lines.len() && !self.tree_lines.is_empty() {
             self.cursor = self.tree_lines.len() - 1;
+        }
+        if self.server_mode && self.tree_lines.len() != self.last_refresh_line_count {
+            self.last_refresh_line_count = self.tree_lines.len();
+            self.request_delta_refresh();
         }
     }
 
