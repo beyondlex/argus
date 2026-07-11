@@ -91,7 +91,6 @@ argus/
 - 文件始终展示真实大小（单次 `stat` 低成本）
 - 目录有扫描汇总大小时展示该值，否则展示 `"-"`
 - `...` 仅用于结构占位节点，表示深层元数据未持久化
-- 详见 `docs/plans/standalone-fs-navigation-refactor.md`
 
 #### 模式切换时序
 
@@ -154,8 +153,6 @@ enum ArgusRequest {
 |------|------|---------|
 | 核心扫描 | `ignore` (ripgrep 同款) | 多线程高性能，自动尊重 .gitignore |
 | 文件监控 | `notify` | 跨平台文件变动通知 (inotify/FSEvents) |
-| 快照序列化 | `serde` + `serde_json` | Phase 1 快照格式，便于 Debug |
-| IPC 编码 (Phase 3) | `serde` + `bincode` | 守护进程 RPC 传输编码，低开销；不影响快照 JSON 格式 |
 | 日志 | `tracing` + `tracing-subscriber` | 结构化 JSON + 终端彩色，支持 span 链路追踪 |
 | TUI 界面 | `ratatui` + `crossterm` | tui-rs 正统续作，事件驱动组件化 |
 | 异步运行时 | `tokio` | 全异步操作，保证 TUI 流畅 |
