@@ -10,37 +10,58 @@ use crate::handler;
 /// Main event loop
 pub async fn run(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut last_tick = Instant::now();
-    let tick_rate = Duration::from_millis(16); // ~60fps
     let spinner_rate = Duration::from_millis(120);
     let mut cursor_visible = true;
     let mut last_cursor_tick = Instant::now();
     let cursor_blink_rate = Duration::from_millis(500);
 
+    terminal.draw(|f| render(f, app, cursor_visible))?;
+
     loop {
-        // Advance scan spinner on a slower cadence so it feels steady instead of frantic.
-        if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
-            app.scan_spinner = (app.scan_spinner + 1) % 10;
-            app.scan_spinner_tick = Instant::now();
-        }
+        // Compute how long to sleep — just long enough for next pending timer
+        let time_to_spinner = if app.scanning {
+            let elapsed = app.scan_spinner_tick.elapsed();
+            spinner_rate.saturating_sub(elapsed)
+        } else {
+            Duration::MAX
+        };
 
-        terminal.draw(|f| render(f, app, cursor_visible))?;
+        let time_to_cursor = if app.filter_mode == FilterMode::Input {
+            let elapsed = last_cursor_tick.elapsed();
+            cursor_blink_rate.saturating_sub(elapsed)
+        } else {
+            Duration::MAX
+        };
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_default();
+        let time_to_error = app
+            .error_clear_at
+            .map(|clear_at| clear_at.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::MAX);
 
-        if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) => handler::handle_key(key, app),
-                Event::Resize(..) => {}
-                _ => {}
+        let poll_timeout = time_to_spinner
+            .min(time_to_cursor)
+            .min(time_to_error)
+            .min(Duration::from_millis(100)); // cap idle wakeup
+
+        if event::poll(poll_timeout)? {
+            if let Event::Key(key) = event::read()? {
+                handler::handle_key(key, app);
             }
         }
+
+        let mut dirty = false;
 
         // Process background messages
         while let Ok(msg) = app.rx.try_recv() {
             app.handle_message(msg);
+            dirty = true;
+        }
+
+        // Advance scan spinner
+        if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
+            app.scan_spinner = (app.scan_spinner + 1) % 10;
+            app.scan_spinner_tick = Instant::now();
+            dirty = true;
         }
 
         // Clear transient errors
@@ -48,6 +69,7 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             if Instant::now() >= clear_at {
                 app.last_error = None;
                 app.error_clear_at = None;
+                dirty = true;
             }
         }
 
@@ -55,13 +77,14 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
         if app.filter_mode == FilterMode::Input && last_cursor_tick.elapsed() >= cursor_blink_rate {
             cursor_visible = !cursor_visible;
             last_cursor_tick = Instant::now();
+            dirty = true;
         }
         if app.filter_mode != FilterMode::Input {
             cursor_visible = true;
         }
 
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = Instant::now();
+        if dirty {
+            terminal.draw(|f| render(f, app, cursor_visible))?;
         }
 
         if app.should_quit {
