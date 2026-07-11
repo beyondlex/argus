@@ -7,6 +7,8 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+use crate::SHOULD_QUIT;
+
 use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
@@ -200,7 +202,7 @@ pub fn start_watcher(
 
         let mut state = WatcherState::new();
 
-        while running_clone.load(Ordering::Relaxed) {
+        while running_clone.load(Ordering::Relaxed) && !SHOULD_QUIT.load(Ordering::Relaxed) {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(Ok(event)) => {
                     let timestamp = std::time::SystemTime::now()

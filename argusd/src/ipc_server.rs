@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -37,20 +38,30 @@ async fn run_ipc_server(
     info!("IPC server listening on {uds_path}");
 
     loop {
-        match listener.accept().await {
-            Ok((mut stream, _addr)) => {
-                let db = db.clone();
-                let start = start_time;
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(&mut stream, db, start).await {
-                        warn!("connection error: {e}");
+        tokio::select! {
+                    result = listener.accept() => {
+                        match result {
+                            Ok((mut stream, _addr)) => {
+                                let db = db.clone();
+                                let start = start_time;
+                                tokio::spawn(async move {
+                                    if let Err(e) = handle_connection(&mut stream, db, start).await {
+                                        warn!("connection error: {e}");
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                error!("accept error: {e}");
+                            }
+                        }
                     }
-                });
-            }
-            Err(e) => {
-                error!("accept error: {e}");
-            }
-        }
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                        if crate::SHOULD_QUIT.load(Ordering::Relaxed) {
+                            info!("IPC server shutting down");
+        break Ok(());
+                        }
+                    }
+                }
     }
 }
 

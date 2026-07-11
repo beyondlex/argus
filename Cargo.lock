@@ -160,6 +160,7 @@ version = "0.1.0"
 dependencies = [
  "argus-core",
  "bincode",
+ "ctrlc",
  "notify",
  "rusqlite",
  "serde",

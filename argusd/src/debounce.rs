@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,11 @@ impl DebounceEngine {
                 }
                 _ = tick.tick() => {
                     self.flush_expired().await;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    if crate::SHOULD_QUIT.load(Ordering::Relaxed) {
+                        break;
+                    }
                 }
                 else => {
                     break;

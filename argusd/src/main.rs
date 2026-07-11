@@ -3,13 +3,16 @@ mod debounce;
 mod ipc_server;
 mod watcher;
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::EnvFilter;
 
 use argus_core::{init_db, open_db, DeltaEvent};
+
+pub(crate) static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
 
 #[tokio::main]
 async fn main() {
@@ -17,6 +20,11 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .with_target(false)
         .init();
+
+    ctrlc::set_handler(|| {
+        SHOULD_QUIT.store(true, Ordering::Relaxed);
+    })
+    .expect("failed to set ctrl-c handler");
 
     let config = config::load_config();
     tracing::info!("argusd starting, watching {:?}", config.watch_dirs);
@@ -34,7 +42,7 @@ async fn main() {
     let debounce_handle = debounce::start_debounce(
         event_rx,
         debounce_db,
-        std::time::Duration::from_secs(config.debounce_seconds),
+        Duration::from_secs(config.debounce_seconds),
     );
 
     let ipc_db = db.clone();
@@ -48,11 +56,10 @@ async fn main() {
     debounce_handle.await.expect("debounce engine failed");
     ipc_handle.abort();
     tracing::info!("argusd stopped");
-    tracing::info!("argusd stopped");
 }
 
 async fn wait_for_shutdown() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install signal handler");
+    while !SHOULD_QUIT.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
