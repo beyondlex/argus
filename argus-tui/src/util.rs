@@ -33,16 +33,8 @@ pub fn format_delta(delta: i64) -> String {
 /// Rules:
 /// - Files always show real size.
 /// - Ordinary directories without scan data show `-`.
-/// - Structural placeholders show `...`.
-pub fn display_size_label(
-    has_metadata: bool,
-    is_dir: bool,
-    has_scan_data: bool,
-    current_size: u64,
-) -> String {
-    if !has_metadata {
-        "...".to_string()
-    } else if is_dir && !has_scan_data {
+pub fn display_size_label(is_dir: bool, has_scan_data: bool, current_size: u64) -> String {
+    if is_dir && !has_scan_data {
         "-".to_string()
     } else {
         format_size(current_size)
@@ -138,17 +130,17 @@ mod tests {
 
     #[test]
     fn test_display_size_label_file_shows_real_size() {
-        assert_eq!(display_size_label(true, false, false, 1024), "1.00 KB");
+        assert_eq!(display_size_label(false, false, 1024), "1.00 KB");
     }
 
     #[test]
     fn test_display_size_label_unscanned_dir_shows_dash() {
-        assert_eq!(display_size_label(true, true, false, 0), "-");
+        assert_eq!(display_size_label(true, false, 0), "-");
     }
 
     #[test]
-    fn test_display_size_label_placeholder_shows_ellipsis() {
-        assert_eq!(display_size_label(false, true, false, 0), "...");
+    fn test_display_size_label_scanned_dir_shows_size() {
+        assert_eq!(display_size_label(true, true, 2048), "2.00 KB");
     }
 
     #[test]

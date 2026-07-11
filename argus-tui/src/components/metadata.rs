@@ -1,172 +1,111 @@
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 
 use ratatui::{
     layout::Rect,
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
-use crate::app::TreeLine;
+use crate::components::help_popup::centered_rect;
 use crate::util;
 
-/// Render the metadata panel
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    selected: Option<&TreeLine>,
-    has_scan: bool,
-    last_scan: Option<DateTime<Utc>>,
-    file_tree_focused: bool,
-) {
-    let title_style = Style::default().fg(if file_tree_focused {
-        Color::Magenta
-    } else {
-        Color::Gray
-    });
-    let border_style = Style::default().fg(if file_tree_focused {
-        Color::Magenta
-    } else {
-        Color::DarkGray
-    });
+/// Render a centered popup with file metadata
+pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metadata) {
+    let popup_area = centered_rect(60, 40, area);
 
     let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(border_style)
-        .title(" Metadata ")
-        .title_style(title_style)
-        .title_alignment(ratatui::layout::Alignment::Left);
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(" File Info ")
+        .title_alignment(ratatui::layout::Alignment::Center);
 
-    let inner = block.inner(area);
-    let content_width = inner.width as usize;
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    if let Some(line) = selected {
-        let node = &line.node;
-
-        // Path
-        push_kv_line(
-            &mut lines,
-            content_width,
-            "Path:",
-            node.name().to_string(),
-            Style::default().fg(Color::Gray).bold(),
-            Style::default().fg(Color::White),
-        );
-        lines.push(Line::from(vec![Span::raw("")]));
-
-        // Current Size
-        let size_display = util::display_size_label(
-            node.has_metadata(),
-            node.is_dir(),
-            line.has_scan_data,
-            node.current_size(),
-        );
-        push_kv_line(
-            &mut lines,
-            content_width,
-            "Size:",
-            size_display,
-            Style::default().fg(Color::Gray).bold(),
-            Style::default().fg(Color::Yellow),
-        );
-
-        // Modified Time
-        if let Some(modified) = node.modified() {
-            push_kv_line(
-                &mut lines,
-                content_width,
-                "Modified:",
-                modified.format("%Y-%m-%d %H:%M:%S").to_string(),
-                Style::default().fg(Color::Gray).bold(),
-                Style::default().fg(Color::White),
-            );
-        }
-
-        // Created Time
-        if let Some(created) = node.created() {
-            push_kv_line(
-                &mut lines,
-                content_width,
-                "Created:",
-                created.format("%Y-%m-%d %H:%M:%S").to_string(),
-                Style::default().fg(Color::Gray).bold(),
-                Style::default().fg(Color::White),
-            );
-        }
-
-        // Type
-        let type_str = match node.file_type() {
-            argus_core::FileType::Directory => "Directory",
-            argus_core::FileType::Symlink => "Symlink",
-            argus_core::FileType::Fifo => "FIFO",
-            argus_core::FileType::Socket => "Socket",
-            argus_core::FileType::Device => "Device",
-            argus_core::FileType::Other => "Other",
-            argus_core::FileType::File => "File",
-        };
-        push_kv_line(
-            &mut lines,
-            content_width,
-            "Type:",
-            type_str.to_string(),
-            Style::default().fg(Color::Gray).bold(),
-            Style::default().fg(Color::White),
-        );
+    let type_str = if metadata.is_dir() {
+        "Directory"
+    } else if metadata.is_symlink() {
+        "Symlink"
+    } else if metadata.is_file() {
+        "File"
     } else {
-        lines.push(Line::from(vec![Span::styled(
-            "No selection",
-            Style::default().fg(Color::Gray),
-        )]));
-    }
+        "Other"
+    };
 
-    // Scan status
-    lines.push(Line::from(vec![Span::raw("")]));
-    if has_scan {
-        if let Some(ts) = last_scan {
-            push_kv_line(
-                &mut lines,
-                content_width,
-                "Scanned:",
-                ts.format("%Y-%m-%d %H:%M:%S").to_string(),
-                Style::default().fg(Color::Green).bold(),
+    let modified: DateTime<Utc> = metadata
+        .modified()
+        .ok()
+        .map(|t| t.into())
+        .unwrap_or_default();
+    let created: DateTime<Utc> = metadata
+        .created()
+        .ok()
+        .map(|t| t.into())
+        .unwrap_or_default();
+
+    let mode = metadata.permissions().mode();
+    let perm_str = unix_mode_string(mode);
+
+    let path_str = path.to_string_lossy();
+    let size_str = util::format_size(metadata.len());
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Path:    ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(path_str, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Size:    ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(size_str, Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![
+            Span::styled("Type:    ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(type_str, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Modified:", Style::default().fg(Color::Gray).bold()),
+            Span::styled(
+                format!(" {}", modified.format("%Y-%m-%d %H:%M:%S")),
                 Style::default().fg(Color::White),
-            );
-        }
-    } else {
-        push_kv_line(
-            &mut lines,
-            content_width,
-            "Scanned:",
-            "Press s to scan".to_string(),
-            Style::default().fg(Color::Gray).bold(),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Created: ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(
+                format!(" {}", created.format("%Y-%m-%d %H:%M:%S")),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Perms:   ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(perm_str, Style::default().fg(Color::White)),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "[Esc] Close",
             Style::default().fg(Color::DarkGray),
-        );
-    }
+        )),
+    ];
 
-    let text = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(text, area);
+    let text = Paragraph::new(lines).block(block);
+
+    f.render_widget(Clear, popup_area);
+    f.render_widget(text, popup_area);
 }
 
-fn push_kv_line(
-    lines: &mut Vec<Line>,
-    width: usize,
-    label: &str,
-    value: String,
-    label_style: Style,
-    value_style: Style,
-) {
-    let label_width = label.chars().count();
-    let value_width = value.chars().count();
-    let padding = width.saturating_sub(label_width + value_width).max(1);
-
-    lines.push(Line::from(vec![
-        Span::styled(label.to_string(), label_style),
-        Span::raw(" ".repeat(padding)),
-        Span::styled(value, value_style),
-    ]));
+fn unix_mode_string(mode: u32) -> String {
+    let chars = [
+        if mode & 0o400 != 0 { 'r' } else { '-' },
+        if mode & 0o200 != 0 { 'w' } else { '-' },
+        if mode & 0o100 != 0 { 'x' } else { '-' },
+        if mode & 0o040 != 0 { 'r' } else { '-' },
+        if mode & 0o020 != 0 { 'w' } else { '-' },
+        if mode & 0o010 != 0 { 'x' } else { '-' },
+        if mode & 0o004 != 0 { 'r' } else { '-' },
+        if mode & 0o002 != 0 { 'w' } else { '-' },
+        if mode & 0o001 != 0 { 'x' } else { '-' },
+    ];
+    chars.iter().collect()
 }

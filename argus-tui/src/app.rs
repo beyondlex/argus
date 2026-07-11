@@ -5,10 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
-use argus_core::{FileNode, FileType, Snapshot};
+use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
@@ -76,56 +75,30 @@ impl SortMode {
 /// Unified tree node for rendering (currently only Snapshot variant, Diff reserved for future daemon mode)
 #[derive(Debug, Clone)]
 pub enum TreeNode {
-    Snapshot(FileNode),
+    Snapshot(Arc<Snapshot>, NodeIndex),
 }
 
 impl TreeNode {
-    pub fn name(&self) -> &str {
+    pub fn node(&self) -> &FileNode {
         match self {
-            TreeNode::Snapshot(n) => &n.name,
+            TreeNode::Snapshot(snap, idx) => snap.node(*idx),
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.node().name
     }
 
     pub fn is_dir(&self) -> bool {
-        match self {
-            TreeNode::Snapshot(n) => n.is_dir,
-        }
+        self.node().is_dir
     }
 
     pub fn file_type(&self) -> FileType {
-        match self {
-            TreeNode::Snapshot(n) => n.file_type,
-        }
+        self.node().file_type
     }
 
     pub fn current_size(&self) -> u64 {
-        match self {
-            TreeNode::Snapshot(n) => n.size,
-        }
-    }
-
-    pub fn children_snapshot(&self) -> Option<&HashMap<String, FileNode>> {
-        match self {
-            TreeNode::Snapshot(n) => Some(&n.children),
-        }
-    }
-
-    pub fn modified(&self) -> Option<DateTime<Utc>> {
-        match self {
-            TreeNode::Snapshot(n) => n.modified,
-        }
-    }
-
-    pub fn created(&self) -> Option<DateTime<Utc>> {
-        match self {
-            TreeNode::Snapshot(n) => n.created,
-        }
-    }
-
-    pub fn has_metadata(&self) -> bool {
-        match self {
-            TreeNode::Snapshot(n) => n.has_metadata,
-        }
+        self.node().size
     }
 }
 
@@ -199,6 +172,9 @@ pub struct App {
     // Log file path (~/.config/argus/argus.log)
     pub log_path: PathBuf,
 
+    // Info popup
+    pub info_data: Option<(std::path::PathBuf, std::fs::Metadata)>,
+
     // Quit
     pub should_quit: bool,
 }
@@ -239,6 +215,7 @@ impl App {
             last_scan_summary: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
+            info_data: None,
             rx,
             last_error: None,
             error_clear_at: None,
@@ -255,17 +232,17 @@ impl App {
 
     fn build_current_tree(&mut self) {
         match argus_core::list_dir(&self.view_root_path) {
-            Ok(node) => {
-                let mut enriched = node;
+            Ok(mut snap) => {
                 let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
                 enrich_snapshot_sizes(
-                    &mut enriched,
+                    &mut snap,
+                    ROOT_NODE,
                     &self.scan_cache,
                     &self.view_root_path,
                     root_scan_tree,
                     &mut Vec::new(),
                 );
-                self.tree_root = Some(TreeNode::Snapshot(enriched));
+                self.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
             }
             Err(e) => {
                 self.set_error(format!("failed to list directory: {}", e), 3);
@@ -282,11 +259,12 @@ impl App {
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
         let lines = match &self.tree_root {
-            Some(TreeNode::Snapshot(root)) => {
+            Some(TreeNode::Snapshot(snap_arc, idx)) => {
                 let mut lines = Vec::new();
                 let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
                 flatten_snapshot_tree(
-                    root,
+                    snap_arc,
+                    *idx,
                     0,
                     expanded,
                     sort_mode,
@@ -359,7 +337,7 @@ impl App {
             return;
         }
 
-        let Some(TreeNode::Snapshot(root)) = &self.tree_root else {
+        let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &self.tree_root else {
             return;
         };
 
@@ -370,9 +348,10 @@ impl App {
         let mut matches = Vec::new();
         let mut walk_index = 0usize;
         let mut visible_count = 0usize;
-        let mut current_path = vec![root.name.clone()];
+        let mut current_path = vec![snap_arc.node(*root_idx).name.clone()];
         collect_matches_in_order(
-            root,
+            snap_arc,
+            *root_idx,
             query,
             expanded,
             sort_mode,
@@ -447,16 +426,18 @@ impl App {
 // ── Tree flattening ─────────────────────────────────────────────────────────
 
 fn flatten_snapshot_tree(
-    node: &FileNode,
+    snap_arc: &Arc<Snapshot>,
+    idx: NodeIndex,
     depth: usize,
     expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
     scan_cache: &HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
-    root_scan_tree: Option<&FileNode>,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path: &mut Vec<String>,
 ) {
+    let node = snap_arc.node(idx);
     path.push(node.name.clone());
     let path_key = path.clone();
     let is_expanded = depth == 0 || expanded.contains(&path_key);
@@ -466,17 +447,19 @@ fn flatten_snapshot_tree(
 
     lines.push(TreeLine {
         depth,
-        node: TreeNode::Snapshot(node.clone()),
+        node: TreeNode::Snapshot(Arc::clone(snap_arc), idx),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
         has_scan_data: node_has_scan || !node.is_dir,
     });
 
     if is_expanded && node.is_dir {
-        let mut children: Vec<&FileNode> = node.children.values().collect();
-        sort_children_snapshot(&mut children, sort_mode);
-        for child in children {
+        let mut children: Vec<(&String, NodeIndex)> =
+            node.children.iter().map(|(n, i)| (n, *i)).collect();
+        sort_children_snapshot(&mut children, snap_arc, sort_mode);
+        for (_name, child_idx) in children {
             flatten_snapshot_tree(
-                child,
+                snap_arc,
+                child_idx,
                 depth + 1,
                 expanded,
                 sort_mode,
@@ -493,21 +476,36 @@ fn flatten_snapshot_tree(
 }
 
 fn enrich_snapshot_sizes(
-    node: &mut FileNode,
+    snap: &mut Snapshot,
+    idx: NodeIndex,
     scan_cache: &HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
-    root_scan_tree: Option<&FileNode>,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path: &mut Vec<String>,
 ) {
-    path.push(node.name.clone());
+    let name = snap.node(idx).name.clone();
+    path.push(name);
 
     if let Some(size) = size_for_path(scan_cache, view_root_path, root_scan_tree, path) {
-        node.size = size;
+        snap.node_mut(idx).size = size;
     }
 
-    if node.is_dir {
-        for child in node.children.values_mut() {
-            enrich_snapshot_sizes(child, scan_cache, view_root_path, root_scan_tree, path);
+    if snap.node(idx).is_dir {
+        let children: Vec<NodeIndex> = snap
+            .node(idx)
+            .children
+            .iter()
+            .map(|(_, idx)| *idx)
+            .collect();
+        for child_idx in children {
+            enrich_snapshot_sizes(
+                snap,
+                child_idx,
+                scan_cache,
+                view_root_path,
+                root_scan_tree,
+                path,
+            );
         }
     }
 
@@ -517,7 +515,7 @@ fn enrich_snapshot_sizes(
 fn size_for_path(
     scan_cache: &HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
-    root_scan_tree: Option<&FileNode>,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path_key: &[String],
 ) -> Option<u64> {
     if path_key.is_empty() {
@@ -530,17 +528,18 @@ fn size_for_path(
     }
 
     if let Some(snapshot) = scan_cache.get(&path) {
-        return Some(snapshot.root_node.size);
+        return Some(snapshot.node(ROOT_NODE).size);
     }
 
-    root_scan_tree
-        .and_then(|root_scan| find_snapshot_node(root_scan, path_key).map(|node| node.size))
+    root_scan_tree.and_then(|(snap, idx)| {
+        find_snapshot_node(snap, idx, path_key).map(|found_idx| snap.node(found_idx).size)
+    })
 }
 
 fn has_snapshot_for_path(
     scan_cache: &HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
-    root_scan_tree: Option<&FileNode>,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path_key: &[String],
 ) -> bool {
     if path_key.is_empty() {
@@ -556,13 +555,9 @@ fn has_snapshot_for_path(
         return true;
     }
 
-    if let Some(root_scan) = root_scan_tree {
-        return find_snapshot_node(root_scan, path_key)
-            .map(|node| node.has_metadata)
-            .unwrap_or(false);
-    }
-
-    false
+    root_scan_tree
+        .and_then(|(snap, idx)| find_snapshot_node(snap, idx, path_key))
+        .is_some()
 }
 
 /// Find the best-available scan tree node for a view path.
@@ -573,43 +568,56 @@ fn has_snapshot_for_path(
 pub(crate) fn resolve_scan_tree<'a>(
     scan_cache: &'a HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
-) -> Option<&'a FileNode> {
+) -> Option<(&'a Snapshot, NodeIndex)> {
     if let Some(snapshot) = scan_cache.get(view_root_path) {
-        return Some(&snapshot.root_node);
+        return Some((snapshot, ROOT_NODE));
     }
 
     let mut parent = view_root_path.parent()?;
     loop {
         if let Some(snapshot) = scan_cache.get(parent) {
             let relative = view_root_path.strip_prefix(parent).ok()?;
-            let mut node = &snapshot.root_node;
+            let mut idx = ROOT_NODE;
             for component in relative.components() {
                 let name = component.as_os_str().to_str()?;
-                node = node.children.get(name)?;
+                idx = snapshot.node(idx).child_idx(name)?;
             }
-            return Some(node);
+            return Some((snapshot, idx));
         }
         parent = parent.parent()?;
     }
 }
 
-fn find_snapshot_node<'a>(node: &'a FileNode, target_path: &[String]) -> Option<&'a FileNode> {
+fn find_snapshot_node(
+    snap: &Snapshot,
+    idx: NodeIndex,
+    target_path: &[String],
+) -> Option<NodeIndex> {
+    let node = snap.node(idx);
     let (head, tail) = target_path.split_first()?;
     if node.name != *head {
         return None;
     }
     if tail.is_empty() {
-        return Some(node);
+        return Some(idx);
     }
 
-    let child = node.children.get(&tail[0])?;
-    find_snapshot_node(child, tail)
+    let child_idx = node.child_idx(&tail[0])?;
+    find_snapshot_node(snap, child_idx, tail)
 }
 
-fn sort_children_snapshot(children: &mut Vec<&FileNode>, mode: SortMode) {
+fn sort_children_snapshot(
+    children: &mut Vec<(&String, NodeIndex)>,
+    snap: &Snapshot,
+    mode: SortMode,
+) {
     match mode {
-        SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
-        SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
+        SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
+        SortMode::Size => children.sort_by(|a, b| {
+            let a_size = snap.node(a.1).size;
+            let b_size = snap.node(b.1).size;
+            b_size.cmp(&a_size)
+        }),
     }
 }
 
@@ -644,7 +652,8 @@ pub fn default_log_path() -> PathBuf {
 /// - Visible matches get `tree_idx = Some(pos)`, collapsed matches get `None`
 #[allow(clippy::too_many_arguments)]
 fn collect_matches_in_order(
-    node: &FileNode,
+    snap: &Snapshot,
+    idx: NodeIndex,
     query: &str,
     expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
@@ -653,6 +662,7 @@ fn collect_matches_in_order(
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
 ) {
+    let node = snap.node(idx);
     let is_visible = path_is_visible(path, expanded);
 
     if fuzzy_match_indices(query, &node.name).is_some() {
@@ -673,12 +683,14 @@ fn collect_matches_in_order(
     *walk_index += 1;
 
     if node.is_dir {
-        let mut children: Vec<&FileNode> = node.children.values().collect();
-        sort_children_snapshot(&mut children, sort_mode);
-        for child in children {
-            path.push(child.name.clone());
+        let mut children: Vec<(&String, NodeIndex)> =
+            node.children.iter().map(|(n, i)| (n, *i)).collect();
+        sort_children_snapshot(&mut children, snap, sort_mode);
+        for (name, child_idx) in children {
+            path.push(name.clone());
             collect_matches_in_order(
-                child,
+                snap,
+                child_idx,
                 query,
                 expanded,
                 sort_mode,
@@ -703,154 +715,99 @@ fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TreeNode;
     use crate::config::TuiConfig;
-    use argus_core::{FileNode, FileType, Snapshot};
+    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tokio::sync::mpsc;
 
-    fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
-        let mut map = HashMap::new();
-        for child in children {
-            map.insert(child.name.clone(), child);
-        }
-        let size = map.values().map(|child| child.size).sum();
+    fn node(name: &str, is_dir: bool, size: u64, children: Vec<(&str, NodeIndex)>) -> FileNode {
         FileNode {
             name: name.to_string(),
-            is_dir: true,
-            file_type: FileType::Directory,
+            parent: None,
+            is_dir,
+            file_type: if is_dir {
+                FileType::Directory
+            } else {
+                FileType::File
+            },
             size,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: map,
+            children: children
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
         }
-    }
-
-    fn make_live_dir(name: &str, children: Vec<FileNode>) -> FileNode {
-        let mut map = HashMap::new();
-        for child in children {
-            map.insert(child.name.clone(), child);
-        }
-        FileNode {
-            name: name.to_string(),
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: map,
-        }
-    }
-
-    fn make_file(name: &str, size: u64) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            is_dir: false,
-            file_type: FileType::File,
-            size,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: HashMap::new(),
-        }
-    }
-
-    fn make_app(root: FileNode, root_path: PathBuf) -> App {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, rx);
-        app.view_root_path = root_path.clone();
-        app.tree_root = Some(TreeNode::Snapshot(root));
-        let snapshot = Snapshot::new(root_path, make_dir("test", vec![]), 0);
-        app.scan_cache.insert(app.view_root_path.clone(), snapshot);
-        app
     }
 
     #[test]
     fn test_enrich_snapshot_sizes_recurses_into_deep_children() {
         let root_path = PathBuf::from("/tmp/test");
-        let mut live_root = make_live_dir(
-            "test",
-            vec![make_live_dir(
-                "target",
-                vec![make_live_dir(
-                    "debug",
-                    vec![make_live_dir(
-                        "build",
-                        vec![make_file("build-script-build", 475_880)],
-                    )],
-                )],
-            )],
-        );
 
-        let snapshot_root = make_dir(
-            "test",
-            vec![make_dir(
-                "target",
-                vec![make_dir(
-                    "debug",
-                    vec![make_dir(
-                        "build",
-                        vec![make_file("build-script-build", 475_880)],
-                    )],
-                )],
-            )],
-        );
-        let snapshot = Snapshot::new(root_path.clone(), snapshot_root, 475_880);
+        // Live tree arena (simulating list_dir output — dirs have 0 size)
+        let live_arena = vec![
+            node("test", true, 0, vec![("target", 1)]),
+            node("target", true, 0, vec![("debug", 2)]),
+            node("debug", true, 0, vec![("build", 3)]),
+            node("build", true, 0, vec![("build-script-build", 4)]),
+            node("build-script-build", false, 475_880, vec![]),
+        ];
+        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
+
+        // Scan snapshot arena (has proper sizes from a real scan)
+        let scan_arena = vec![
+            node("test", true, 475_880, vec![("target", 1)]),
+            node("target", true, 475_880, vec![("debug", 2)]),
+            node("debug", true, 475_880, vec![("build", 3)]),
+            node("build", true, 475_880, vec![("build-script-build", 4)]),
+            node("build-script-build", false, 475_880, vec![]),
+        ];
+        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880);
         let mut scan_cache = HashMap::new();
-        scan_cache.insert(root_path.clone(), snapshot);
-        let root_scan_tree = scan_cache.get(&root_path).map(|s| &s.root_node);
+        scan_cache.insert(root_path.clone(), scan_snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
 
         enrich_snapshot_sizes(
-            &mut live_root,
+            &mut live_snap,
+            ROOT_NODE,
             &scan_cache,
             &root_path,
             root_scan_tree,
             &mut Vec::new(),
         );
 
-        let build = &live_root.children["target"].children["debug"].children["build"];
-        assert_eq!(build.size, 475_880);
+        // build dir (index 3) should now have the file's size
+        assert_eq!(live_snap.node(3).size, 475_880);
     }
 
     #[test]
     fn test_unlisted_child_dir_keeps_dash_even_when_root_is_scanned() {
         let root_path = PathBuf::from("/tmp/test");
-        let root = make_dir(
-            "test",
-            vec![make_dir("target", vec![make_dir("debug", vec![])])],
-        );
-        let mut app = make_app(root, root_path);
+
+        // Live tree: test/target/{debug, build}  — "build" is NOT in the scan
+        let live_arena = vec![
+            node("test", true, 0, vec![("target", 1)]),
+            node("target", true, 0, vec![("debug", 2), ("build", 3)]),
+            node("debug", true, 0, vec![]),
+            node("build", true, 0, vec![]),
+        ];
+        let live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
+
+        // Scan cache: test/target/debug only
+        let scan_arena = vec![
+            node("test", true, 0, vec![("target", 1)]),
+            node("target", true, 0, vec![("debug", 2)]),
+            node("debug", true, 0, vec![]),
+        ];
+        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 0);
+
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, rx);
+        app.view_root_path = root_path.clone();
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(live_snap), ROOT_NODE));
+        app.scan_cache.insert(root_path.clone(), scan_snap);
+
         app.expanded
             .insert(vec!["test".to_string(), "target".to_string()]);
-
-        let TreeNode::Snapshot(node) = app.tree_root.as_mut().unwrap() else {
-            unreachable!();
-        };
-        let target = node.children.get_mut("target").unwrap();
-        target.children.insert(
-            "build".to_string(),
-            FileNode {
-                name: "build".to_string(),
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 0,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: true,
-                children: HashMap::new(),
-            },
-        );
 
         app.update_tree_lines();
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use argus_core::{scan_path, FileNode};
+use argus_core::{scan_path, NodeIndex, ROOT_NODE};
 
 fn main() {
     let cli = Cli::parse();
@@ -53,19 +53,20 @@ fn cmd_scan(path: &PathBuf) -> Result<i32> {
         scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
 
     println!("scan path: {}", path.display());
-    println!("total files: {}", count_files(&snapshot.root_node));
+    println!("total files: {}", count_files(&snapshot, ROOT_NODE));
     println!("total size: {}", format_size(snapshot.total_size));
 
     Ok(0)
 }
 
-fn count_files(node: &FileNode) -> u64 {
+fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {
+    let node = snap.node(idx);
     let mut count = 0u64;
     if !node.is_dir {
         count += 1;
     }
-    for child in node.children.values() {
-        count += count_files(child);
+    for (_, child_idx) in node.children.iter() {
+        count += count_files(snap, *child_idx);
     }
     count
 }

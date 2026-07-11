@@ -202,7 +202,6 @@ fn render_tree_line<'a>(
     let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
 
     let size_str = util::display_size_label(
-        line.node.has_metadata(),
         line.node.is_dir(),
         line.has_scan_data,
         line.node.current_size(),
@@ -221,7 +220,7 @@ fn render_tree_line<'a>(
         },
     );
 
-    let size_style = if !line.node.has_metadata() || (line.node.is_dir() && !line.has_scan_data) {
+    let size_style = if line.node.is_dir() && !line.has_scan_data {
         base.fg(Color::DarkGray).bg(Color::Reset)
     } else {
         base.fg(Color::Yellow).bg(Color::Reset)

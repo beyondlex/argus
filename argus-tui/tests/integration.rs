@@ -1,48 +1,36 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use argus_core::{FileNode, FileType, Snapshot};
+use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 
-/// Helper: create a mock FileNode for testing
 fn make_file(name: &str, size: u64) -> FileNode {
     FileNode {
         name: name.to_string(),
+        parent: None,
         is_dir: false,
         file_type: FileType::File,
         size,
-        modified: None,
-        created: None,
-        inode: None,
-        device: None,
-        has_metadata: true,
-        children: HashMap::new(),
+        children: Vec::new(),
     }
 }
 
-fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
-    let mut map = HashMap::new();
-    for child in children {
-        map.insert(child.name.clone(), child);
-    }
-    let total: u64 = map.values().map(|c| c.size).sum();
+fn make_dir(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
     FileNode {
         name: name.to_string(),
+        parent: None,
         is_dir: true,
         file_type: FileType::Directory,
-        size: total,
-        modified: None,
-        created: None,
-        inode: None,
-        device: None,
-        has_metadata: true,
-        children: map,
+        size: 0,
+        children: children
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
     }
 }
 
-fn make_snapshot(path: &str, root: FileNode) -> Snapshot {
-    let size = root.size;
-    Snapshot::new(PathBuf::from(path), root, size)
+fn make_snapshot(path: &str, arena: Vec<FileNode>) -> Snapshot {
+    let size = arena[ROOT_NODE as usize].size;
+    Snapshot::new(PathBuf::from(path), arena, size)
 }
 
 // ── State logic tests ───────────────────────────────────────────────────────
@@ -61,11 +49,13 @@ fn test_scan_cancelled() {
 
 #[test]
 fn test_snapshot_serialization_roundtrip() {
-    let root = make_dir(
-        "test",
-        vec![make_file("a.txt", 100), make_file("b.txt", 200)],
-    );
-    let snap = make_snapshot("/tmp/test", root);
+    let mut arena = vec![
+        make_dir("test", vec![("a.txt", 1), ("b.txt", 2)]),
+        make_file("a.txt", 100),
+        make_file("b.txt", 200),
+    ];
+    arena[ROOT_NODE as usize].size = 300;
+    let snap = make_snapshot("/tmp/test", arena);
 
     let json = serde_json::to_string_pretty(&snap).unwrap();
     let deserialized: Snapshot = serde_json::from_str(&json).unwrap();
@@ -73,8 +63,8 @@ fn test_snapshot_serialization_roundtrip() {
     assert_eq!(snap.root_path, deserialized.root_path);
     assert_eq!(snap.total_size, deserialized.total_size);
     assert_eq!(
-        snap.root_node.children.len(),
-        deserialized.root_node.children.len()
+        snap.node(ROOT_NODE).children.len(),
+        deserialized.node(ROOT_NODE).children.len()
     );
 }
 

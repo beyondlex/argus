@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -8,6 +7,10 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+pub type NodeIndex = u32;
+
+pub const ROOT_NODE: NodeIndex = 0;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,27 +27,28 @@ pub enum FileType {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FileNode {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<NodeIndex>,
     pub is_dir: bool,
     pub file_type: FileType,
     pub size: u64,
-    pub modified: Option<DateTime<Utc>>,
-    pub created: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inode: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device: Option<u64>,
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub has_metadata: bool,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub children: HashMap<String, FileNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<(String, NodeIndex)>,
 }
 
-fn default_true() -> bool {
-    true
-}
+impl FileNode {
+    /// Look up child index by name (linear scan — children sets are small)
+    pub fn child_idx(&self, name: &str) -> Option<NodeIndex> {
+        self.children
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, idx)| *idx)
+    }
 
-fn is_true(b: &bool) -> bool {
-    *b
+    /// Sort children by name for binary-search compatible iteration
+    pub fn sort_children(&mut self) {
+        self.children.sort_by(|a, b| a.0.cmp(&b.0));
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -54,11 +58,11 @@ pub struct Snapshot {
     pub root_path: PathBuf,
     pub root_path_hash: String,
     pub total_size: u64,
-    pub root_node: FileNode,
+    pub arena: Vec<FileNode>,
 }
 
 impl Snapshot {
-    pub fn new(root_path: PathBuf, root_node: FileNode, total_size: u64) -> Self {
+    pub fn new(root_path: PathBuf, arena: Vec<FileNode>, total_size: u64) -> Self {
         let root_path_hash = hash_root_path(&root_path);
         Self {
             version: SNAPSHOT_VERSION,
@@ -66,8 +70,24 @@ impl Snapshot {
             root_path,
             root_path_hash,
             total_size,
-            root_node,
+            arena,
         }
+    }
+
+    pub fn root(&self) -> &FileNode {
+        &self.arena[ROOT_NODE as usize]
+    }
+
+    pub fn node(&self, idx: NodeIndex) -> &FileNode {
+        &self.arena[idx as usize]
+    }
+
+    pub fn node_mut(&mut self, idx: NodeIndex) -> &mut FileNode {
+        &mut self.arena[idx as usize]
+    }
+
+    pub fn root_mut(&mut self) -> &mut FileNode {
+        &mut self.arena[ROOT_NODE as usize]
     }
 
     /// Serialize to compact JSON and gzip-compress the result.
@@ -191,7 +211,6 @@ fn split_number_unit(s: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_hash_root_path() {
@@ -237,19 +256,15 @@ mod tests {
 
     #[test]
     fn test_snapshot_new() {
-        let root = FileNode {
+        let arena = vec![FileNode {
             name: "test".into(),
+            parent: None,
             is_dir: true,
             file_type: FileType::Directory,
             size: 100,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: HashMap::new(),
-        };
-        let snap = Snapshot::new(PathBuf::from("/tmp"), root, 100);
+            children: Vec::new(),
+        }];
+        let snap = Snapshot::new(PathBuf::from("/tmp"), arena, 100);
         assert_eq!(snap.version, SNAPSHOT_VERSION);
         assert_eq!(snap.root_path_hash.len(), 8);
     }
@@ -258,20 +273,15 @@ mod tests {
     fn test_file_node_serialization() {
         let node = FileNode {
             name: "test.txt".into(),
+            parent: None,
             is_dir: false,
             file_type: FileType::File,
             size: 1024,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: HashMap::new(),
+            children: Vec::new(),
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("test.txt"));
         let deserialized: FileNode = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "test.txt");
-        assert!(deserialized.has_metadata);
     }
 }

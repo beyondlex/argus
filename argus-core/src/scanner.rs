@@ -1,12 +1,11 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use chrono::{DateTime, Utc};
 use ignore::WalkBuilder;
 
-use crate::model::{FileNode, FileType, ScanError, Snapshot};
+use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, ROOT_NODE};
 
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
@@ -75,6 +74,114 @@ impl ProgressTracker {
     }
 }
 
+struct TreeBuilder {
+    arena: Vec<FileNode>,
+}
+
+impl TreeBuilder {
+    fn new(root_name: &str) -> Self {
+        Self {
+            arena: vec![FileNode {
+                name: root_name.to_string(),
+                parent: None,
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                children: Vec::new(),
+            }],
+        }
+    }
+
+    fn find_or_create_child(&mut self, parent: NodeIndex, name: &str) -> NodeIndex {
+        if let Some(&idx) = self.arena[parent as usize]
+            .children
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, idx)| idx)
+        {
+            return idx;
+        }
+        let new_idx = self.arena.len() as NodeIndex;
+        self.arena.push(FileNode {
+            name: name.to_string(),
+            parent: Some(parent),
+            is_dir: true,
+            file_type: FileType::Directory,
+            size: 0,
+            children: Vec::new(),
+        });
+        self.arena[parent as usize]
+            .children
+            .push((name.to_string(), new_idx));
+        new_idx
+    }
+
+    fn insert_file(&mut self, path: &Path, root_path: &Path, node: FileNode) {
+        let rel = path.strip_prefix(root_path).unwrap_or(path);
+        let components: Vec<_> = rel.components().collect();
+        if components.is_empty() {
+            return;
+        }
+        let parent = if components.len() > 1 {
+            let mut parent = ROOT_NODE;
+            for comp in components.iter().take(components.len() - 1) {
+                let name = comp.as_os_str().to_string_lossy();
+                parent = self.find_or_create_child(parent, &name);
+            }
+            parent
+        } else {
+            ROOT_NODE
+        };
+        let name = components.last().unwrap().as_os_str().to_string_lossy();
+        let new_idx = self.arena.len() as NodeIndex;
+        self.arena.push(node);
+        self.arena[parent as usize]
+            .children
+            .push((name.to_string(), new_idx));
+    }
+
+    fn ensure_path(&mut self, path: &Path, root_path: &Path) -> NodeIndex {
+        let rel = path.strip_prefix(root_path).unwrap_or(path);
+        let components: Vec<_> = rel.components().collect();
+        let mut idx = ROOT_NODE;
+        for comp in components.iter() {
+            let name = comp.as_os_str().to_string_lossy();
+            idx = self.find_or_create_child(idx, &name);
+        }
+        idx
+    }
+}
+
+fn skeleton_walk(arena: &mut Vec<FileNode>, parent_idx: NodeIndex, path: &Path) {
+    let Ok(read_dir) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let file_type = if is_dir {
+            FileType::Directory
+        } else {
+            dir_entry_file_type(&entry)
+        };
+
+        let new_idx = arena.len() as NodeIndex;
+        arena.push(FileNode {
+            name: name.clone(),
+            parent: Some(parent_idx),
+            is_dir,
+            file_type,
+            size: 0,
+            children: Vec::new(),
+        });
+        arena[parent_idx as usize].children.push((name, new_idx));
+
+        if is_dir {
+            skeleton_walk(arena, new_idx, &entry.path());
+        }
+    }
+}
+
 pub fn scan_path(
     path: &Path,
     cancel: &AtomicBool,
@@ -87,21 +194,16 @@ pub fn scan_path(
 
     let mut scan_items = 0u64;
     let mut scan_total_bytes = 0u64;
-    let mut entries: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
     let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
     let mut progress = ProgressTracker::new(progress_tx);
 
-    // Collect paths of directories matching skip patterns so we can
-    // walk them fully for size counting after the main walk (no tree
-    // expansion inside skipped directories — keeps memory low).
     let skipped = Arc::new(Mutex::new(Vec::new()));
     let skipped_clone = skipped.clone();
     let skip_patterns: Vec<String> = skip_dirs.to_vec();
 
     let walker = WalkBuilder::new(path)
         .follow_links(false)
-        .git_ignore(false) // Don't silently skip gitignored dirs; our
-        // filter_entry handles which to skip
+        .git_ignore(false)
         .filter_entry(move |entry| {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 let name = entry.file_name().to_string_lossy();
@@ -117,6 +219,13 @@ pub fn scan_path(
         })
         .build();
 
+    let root_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    let mut tree = TreeBuilder::new(&root_name);
+
     for result in walker {
         if cancel.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
@@ -124,23 +233,22 @@ pub fn scan_path(
 
         let entry = match result {
             Ok(e) => e,
-            Err(err) => {
-                if let Some(io_err) = err.io_error() {
-                    if io_err.kind() == std::io::ErrorKind::PermissionDenied {
-                        return Err(ScanError::PermissionDenied(path.to_path_buf()));
-                    }
-                }
-                continue;
-            }
+            Err(_) => continue,
         };
 
-        let entry_path = entry.path().to_path_buf();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or_else(|| {
+            std::fs::symlink_metadata(entry.path())
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+        });
+
+        if is_dir {
+            scan_items += 1;
+            continue;
+        }
 
         let meta = match std::fs::symlink_metadata(entry.path()) {
             Ok(m) => m,
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-                return Err(ScanError::PermissionDenied(entry_path));
-            }
             Err(_) => continue,
         };
 
@@ -158,53 +266,11 @@ pub fn scan_path(
             }
         }
 
+        let node = create_file_node(entry.path(), &meta);
+        tree.insert_file(entry.path(), path, node);
         scan_items += 1;
-        entries.push((entry_path, meta));
     }
 
-    entries.sort_by(|a, b| {
-        let depth_a = a.0.components().count();
-        let depth_b = b.0.components().count();
-        depth_b.cmp(&depth_a)
-    });
-
-    let root_name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
-
-    let mut root_node = FileNode {
-        name: root_name,
-        is_dir: true,
-        file_type: FileType::Directory,
-        size: 0,
-        modified: None,
-        created: None,
-        inode: None,
-        device: None,
-        has_metadata: true,
-        children: HashMap::new(),
-    };
-
-    for (entry_path, meta) in &entries {
-        if meta.is_dir() {
-            continue;
-        }
-
-        let rel_path = entry_path.strip_prefix(path).unwrap_or(entry_path);
-        let components: Vec<std::path::Component> = rel_path.components().collect();
-        if components.is_empty() {
-            continue;
-        }
-
-        let node = create_file_node(entry_path, meta);
-        insert_node(&mut root_node, &components, node);
-    }
-
-    // Walk skipped directories fully for accurate size counting. Also
-    // keep the directory skeleton so the UI can continue expanding it.
-    // Immediate children get real sizes; deeper descendants stay structural
-    // placeholders and are rendered as "..." in the UI.
     for skip_path in skipped.lock().unwrap().drain(..) {
         if cancel.load(Ordering::Relaxed) {
             return Err(ScanError::Cancelled);
@@ -214,58 +280,41 @@ pub fn scan_path(
         scan_items = scan_items.saturating_add(count);
         scan_total_bytes = scan_total_bytes.saturating_add(size);
 
-        let dir_name = skip_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let mut structure = walk_dir_structure(&skip_path);
+        let parent_idx = tree.ensure_path(&skip_path, path);
+        skeleton_walk(&mut tree.arena, parent_idx, &skip_path);
 
-        // Compute total sizes for each immediate child of the skipped dir
-        // (one level deep).  Uses a fresh inode set to avoid the parent
-        // walk_dir_size having already recorded these inodes.
+        {
+            let skip_node = &mut tree.arena[parent_idx as usize];
+            skip_node.size = size;
+        }
+
+        let child_ids = tree.arena[parent_idx as usize].children.clone();
+
         let mut child_seen_inodes: HashSet<(u64, u64)> = HashSet::new();
         if let Ok(read_dir) = std::fs::read_dir(&skip_path) {
             for entry in read_dir.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(child) = structure.get_mut(&name) {
+                if let Some(child_idx) = child_ids
+                    .iter()
+                    .find(|(n, _)| n == &name)
+                    .map(|(_, idx)| *idx)
+                {
+                    let child = &mut tree.arena[child_idx as usize];
                     if child.is_dir {
                         let (child_size, _) =
                             walk_dir_size_quiet(&entry.path(), cancel, &mut child_seen_inodes);
                         child.size = child_size;
-                        child.has_metadata = true;
-                    } else {
-                        if let Ok(meta) = entry.metadata() {
-                            child.size = meta.len();
-                            child.has_metadata = true;
-                        }
+                    } else if let Ok(meta) = entry.metadata() {
+                        child.size = meta.len();
                     }
                 }
             }
         }
-
-        let dir_node = FileNode {
-            name: dir_name,
-            is_dir: true,
-            file_type: FileType::Directory,
-            size,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: structure,
-        };
-
-        let rel_path = skip_path.strip_prefix(path).unwrap_or(&skip_path);
-        let components: Vec<std::path::Component> = rel_path.components().collect();
-        if !components.is_empty() {
-            insert_node(&mut root_node, &components, dir_node);
-        }
     }
 
-    let total_size = compute_size(&mut root_node);
-
-    let snapshot = Snapshot::new(path.to_path_buf(), root_node, total_size);
+    compute_size(&mut tree.arena, ROOT_NODE);
+    let total_size = tree.arena[ROOT_NODE as usize].size;
+    let snapshot = Snapshot::new(path.to_path_buf(), tree.arena, total_size);
 
     progress.finish_with(scan_items, total_size);
 
@@ -279,14 +328,8 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
     } else if meta.is_symlink() {
         FileType::Symlink
     } else {
-        detect_file_type(path)
+        detect_file_type(meta)
     };
-
-    let modified = meta.modified().ok().map(|t| {
-        let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
-            .unwrap_or_default()
-    });
 
     let name = path
         .file_name()
@@ -301,42 +344,64 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
 
     FileNode {
         name,
+        parent: None,
         is_dir,
         file_type,
         size,
-        modified,
-        created: get_created(meta),
-        inode: get_inode(meta).ok(),
-        device: get_device(meta).ok(),
-        has_metadata: true,
-        children: HashMap::new(),
+        children: Vec::new(),
     }
 }
 
-fn detect_file_type(path: &Path) -> FileType {
-    let Some(meta) = path.symlink_metadata().ok() else {
-        return FileType::File;
-    };
+fn detect_file_type(meta: &std::fs::Metadata) -> FileType {
+    let ft = meta.file_type();
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
-        if meta.file_type().is_fifo() {
+        if ft.is_fifo() {
             return FileType::Fifo;
         }
-        if meta.file_type().is_socket() {
+        if ft.is_socket() {
             return FileType::Socket;
         }
-        if meta.file_type().is_char_device() || meta.file_type().is_block_device() {
+        if ft.is_char_device() || ft.is_block_device() {
             return FileType::Device;
         }
     }
-    if meta.is_symlink() {
+    if ft.is_symlink() {
         return FileType::Symlink;
     }
-    if meta.is_dir() {
+    if ft.is_dir() {
         return FileType::Directory;
     }
     FileType::File
+}
+
+fn dir_entry_file_type(entry: &std::fs::DirEntry) -> FileType {
+    match entry.file_type() {
+        Ok(ft) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if ft.is_fifo() {
+                    return FileType::Fifo;
+                }
+                if ft.is_socket() {
+                    return FileType::Socket;
+                }
+                if ft.is_char_device() || ft.is_block_device() {
+                    return FileType::Device;
+                }
+            }
+            if ft.is_symlink() {
+                FileType::Symlink
+            } else if ft.is_dir() {
+                FileType::Directory
+            } else {
+                FileType::File
+            }
+        }
+        Err(_) => FileType::File,
+    }
 }
 
 #[cfg(unix)]
@@ -359,13 +424,6 @@ fn get_device(meta: &std::fs::Metadata) -> std::io::Result<u64> {
     Ok(meta.dev())
 }
 
-fn get_created(meta: &std::fs::Metadata) -> Option<DateTime<Utc>> {
-    meta.created().ok().and_then(|t| {
-        let duration = t.duration_since(std::time::UNIX_EPOCH).ok()?;
-        DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
-    })
-}
-
 #[cfg(not(unix))]
 fn get_device(_meta: &std::fs::Metadata) -> std::io::Result<u64> {
     Err(std::io::Error::new(
@@ -374,39 +432,7 @@ fn get_device(_meta: &std::fs::Metadata) -> std::io::Result<u64> {
     ))
 }
 
-fn insert_node(parent: &mut FileNode, components: &[std::path::Component], node: FileNode) {
-    if components.is_empty() {
-        return;
-    }
-
-    let comp_name = components[0].as_os_str().to_string_lossy().to_string();
-
-    if components.len() == 1 {
-        parent.children.insert(comp_name, node);
-    } else {
-        let entry = parent.children.entry(comp_name).or_insert_with(|| {
-            let name = components[0].as_os_str().to_string_lossy().to_string();
-            FileNode {
-                name,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 0,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: true,
-                children: HashMap::new(),
-            }
-        });
-        if !entry.is_dir {
-            return;
-        }
-        insert_node(entry, &components[1..], node);
-    }
-}
-
-pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
+pub fn list_dir(path: &Path) -> Result<Snapshot, ScanError> {
     if !path.exists() {
         return Err(ScanError::PathNotFound(path.to_path_buf()));
     }
@@ -427,7 +453,15 @@ pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
         Err(e) => return Err(ScanError::Io(e)),
     };
 
-    let mut children = HashMap::new();
+    let mut arena = vec![FileNode {
+        name,
+        parent: None,
+        is_dir: true,
+        file_type: FileType::Directory,
+        size: 0,
+        children: Vec::new(),
+    }];
+
     for entry in read_dir {
         let entry = match entry {
             Ok(e) => e,
@@ -437,47 +471,46 @@ pub fn list_dir(path: &Path) -> Result<FileNode, ScanError> {
             Ok(m) => m,
             Err(_) => continue,
         };
-        let node = create_file_node(&entry.path(), &meta);
-        children.insert(node.name.clone(), node);
+        let mut node = create_file_node(&entry.path(), &meta);
+        node.parent = Some(ROOT_NODE);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let new_idx = arena.len() as NodeIndex;
+        arena.push(node);
+        arena[ROOT_NODE as usize].children.push((name, new_idx));
     }
 
-    Ok(FileNode {
-        name,
-        is_dir: true,
-        file_type: FileType::Directory,
-        size: 0,
-        modified: None,
-        created: None,
-        inode: None,
-        device: None,
-        has_metadata: true,
-        children,
-    })
+    let total_size = arena[ROOT_NODE as usize]
+        .children
+        .iter()
+        .map(|(_, idx)| arena[*idx as usize].size)
+        .sum();
+
+    Ok(Snapshot::new(path.to_path_buf(), arena, total_size))
 }
 
-fn compute_size(node: &mut FileNode) -> u64 {
-    if node.children.is_empty() {
-        return node.size;
+fn compute_size(arena: &mut [FileNode], idx: NodeIndex) -> u64 {
+    if arena[idx as usize].children.is_empty() {
+        return arena[idx as usize].size;
     }
 
-    // If all direct children are placeholders, this node's size was
-    // pre-computed already (for example, a shallow-recorded skipped dir).
-    if node.children.values().all(|c| !c.has_metadata) {
-        return node.size;
+    // Nodes already sized by skeleton_walk (skip-dirs): don't recompute
+    if arena[idx as usize].size > 0 {
+        return arena[idx as usize].size;
     }
 
+    let child_ids: Vec<NodeIndex> = arena[idx as usize]
+        .children
+        .iter()
+        .map(|(_, idx)| *idx)
+        .collect();
     let mut total = 0u64;
-    for child in node.children.values_mut() {
-        total = total.saturating_add(compute_size(child));
+    for &child_idx in &child_ids {
+        total = total.saturating_add(compute_size(arena, child_idx));
     }
-    node.size = total;
+    arena[idx as usize].size = total;
     total
 }
 
-/// Walk a directory tree fully counting file sizes, without building a tree.
-/// Returns (total_bytes, file_count).  Inode dedup uses the same
-/// `seen_inodes` set as the parent scan to avoid double-counting across
-/// hard links shared between skipped and non-skipped parts of the tree.
 fn walk_dir_size(
     path: &Path,
     cancel: &AtomicBool,
@@ -532,60 +565,30 @@ fn walk_dir_size_impl(
             if let Some(progress) = progress.as_deref_mut() {
                 progress.record(1, meta.len());
             }
-        } else {
-            if let Some(progress) = progress.as_deref_mut() {
-                progress.record_files_only(1);
-            }
+        } else if let Some(progress) = progress.as_deref_mut() {
+            progress.record_files_only(1);
         }
     }
 
     (total, count)
 }
 
-/// Walk a directory tree recording its structure (names, directory nesting)
-/// without individual file sizes.  All returned nodes have `has_metadata: false`
-/// and `size: 0`, signalling to the UI that individual size data is unavailable.
-fn walk_dir_structure(path: &Path) -> HashMap<String, FileNode> {
-    let mut children = HashMap::new();
-    let Ok(read_dir) = std::fs::read_dir(path) else {
-        return children;
-    };
-    for entry in read_dir.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let file_type = if is_dir {
-            FileType::Directory
-        } else {
-            detect_file_type(&entry.path())
-        };
-
-        let node = FileNode {
-            name: name.clone(),
-            is_dir,
-            file_type,
-            size: 0,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: false,
-            children: if is_dir {
-                walk_dir_structure(&entry.path())
-            } else {
-                HashMap::new()
-            },
-        };
-        children.insert(name, node);
-    }
-    children
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use tempfile::TempDir;
+
+    fn child<'a>(snap: &'a Snapshot, parent: NodeIndex, name: &str) -> &'a FileNode {
+        let idx = snap.node(parent).child_idx(name).unwrap();
+        snap.node(idx)
+    }
+
+    fn child_idx(snap: &Snapshot, parent: NodeIndex, name: &str) -> NodeIndex {
+        snap.node(parent).child_idx(name).unwrap()
+    }
 
     #[test]
     fn test_scan_empty_directory() {
@@ -594,8 +597,8 @@ mod tests {
         let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(result.is_ok());
         let snapshot = result.unwrap();
-        assert!(snapshot.root_node.is_dir);
-        assert!(snapshot.root_node.children.is_empty());
+        assert!(snapshot.node(ROOT_NODE).is_dir);
+        assert!(snapshot.node(ROOT_NODE).children.is_empty());
         assert_eq!(snapshot.total_size, 0);
     }
 
@@ -609,10 +612,9 @@ mod tests {
         let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(result.is_ok());
         let snapshot = result.unwrap();
-        assert_eq!(snapshot.root_node.children.len(), 1);
-        let child = snapshot.root_node.children.get("test.txt").unwrap();
-        assert!(!child.is_dir);
-        assert_eq!(child.size, 11);
+        let node = child(&snapshot, ROOT_NODE, "test.txt");
+        assert!(!node.is_dir);
+        assert_eq!(node.size, 11);
     }
 
     #[test]
@@ -626,10 +628,13 @@ mod tests {
         assert!(result.is_ok());
         let snapshot = result.unwrap();
 
-        let a = snapshot.root_node.children.get("a").unwrap();
-        let b = a.children.get("b").unwrap();
-        let c = b.children.get("c").unwrap();
-        let file = c.children.get("file.txt").unwrap();
+        let a_idx = child_idx(&snapshot, ROOT_NODE, "a");
+        let b_idx = child_idx(&snapshot, a_idx, "b");
+        let c_idx = child_idx(&snapshot, b_idx, "c");
+        let a = child(&snapshot, ROOT_NODE, "a");
+        let b = child(&snapshot, a_idx, "b");
+        let c = child(&snapshot, b_idx, "c");
+        let file = child(&snapshot, c_idx, "file.txt");
         assert_eq!(file.size, 7);
         assert_eq!(c.size, 7);
         assert!(b.size >= 7);
@@ -649,7 +654,6 @@ mod tests {
         for i in 0..10 {
             fs::write(dir.path().join(format!("file_{}.txt", i)), "data").unwrap();
         }
-
         let cancel = AtomicBool::new(true);
         let result = scan_path(dir.path(), &cancel, None, &[]);
         assert!(matches!(result, Err(ScanError::Cancelled)));
@@ -661,7 +665,6 @@ mod tests {
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "data").unwrap();
         let meta = file_path.metadata().unwrap();
-
         let node = create_file_node(&file_path, &meta);
         assert_eq!(node.name, "test.txt");
         assert!(!node.is_dir);
@@ -671,54 +674,38 @@ mod tests {
 
     #[test]
     fn test_compute_size() {
-        let mut parent = FileNode {
-            name: "parent".into(),
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: HashMap::new(),
-        };
-
-        parent.children.insert(
-            "child1".into(),
+        let mut arena = vec![
+            FileNode {
+                name: "parent".into(),
+                parent: None,
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                children: Vec::new(),
+            },
             FileNode {
                 name: "child1".into(),
+                parent: Some(0),
                 is_dir: false,
                 file_type: FileType::File,
                 size: 100,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: true,
-                children: HashMap::new(),
+                children: Vec::new(),
             },
-        );
-
-        parent.children.insert(
-            "child2".into(),
             FileNode {
                 name: "child2".into(),
+                parent: Some(0),
                 is_dir: false,
                 file_type: FileType::File,
                 size: 200,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: true,
-                children: HashMap::new(),
+                children: Vec::new(),
             },
-        );
+        ];
+        arena[0].children.push(("child1".into(), 1));
+        arena[0].children.push(("child2".into(), 2));
 
-        let total = compute_size(&mut parent);
+        let total = compute_size(&mut arena, ROOT_NODE);
         assert_eq!(total, 300);
-        assert_eq!(parent.size, 300);
+        assert_eq!(arena[0].size, 300);
     }
 
     #[test]
@@ -726,9 +713,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = list_dir(dir.path());
         assert!(result.is_ok());
-        let node = result.unwrap();
-        assert!(node.is_dir);
-        assert!(node.children.is_empty());
+        let snapshot = result.unwrap();
+        assert!(snapshot.node(ROOT_NODE).is_dir);
+        assert!(snapshot.node(ROOT_NODE).children.is_empty());
     }
 
     #[test]
@@ -739,14 +726,11 @@ mod tests {
 
         let result = list_dir(dir.path());
         assert!(result.is_ok());
-        let node = result.unwrap();
-        assert_eq!(node.children.len(), 2);
-
-        let a = node.children.get("a.txt").unwrap();
+        let snapshot = result.unwrap();
+        let a = child(&snapshot, ROOT_NODE, "a.txt");
         assert!(!a.is_dir);
         assert_eq!(a.size, 5);
-
-        let b = node.children.get("b.txt").unwrap();
+        let b = child(&snapshot, ROOT_NODE, "b.txt");
         assert!(!b.is_dir);
         assert_eq!(b.size, 5);
     }
@@ -759,21 +743,17 @@ mod tests {
 
         let result = list_dir(dir.path());
         assert!(result.is_ok());
-        let node = result.unwrap();
-        assert_eq!(node.children.len(), 1);
-
-        let sub = node.children.get("sub").unwrap();
+        let snapshot = result.unwrap();
+        let sub = child(&snapshot, ROOT_NODE, "sub");
         assert!(sub.is_dir);
-        assert!(sub.has_metadata);
-        assert_eq!(sub.size, 0); // Not recursively summed
-        assert!(sub.children.is_empty()); // Not populated
+        assert_eq!(sub.size, 0);
+        assert!(sub.children.is_empty());
     }
 
     #[cfg(unix)]
     #[test]
     fn test_list_dir_preserves_symlink_type() {
         use std::os::unix::fs::symlink;
-
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("target.txt");
         let link = dir.path().join("linked.txt");
@@ -782,9 +762,8 @@ mod tests {
 
         let result = list_dir(dir.path());
         assert!(result.is_ok());
-        let node = result.unwrap();
-        let linked = node.children.get("linked.txt").unwrap();
-
+        let snapshot = result.unwrap();
+        let linked = child(&snapshot, ROOT_NODE, "linked.txt");
         assert_eq!(linked.file_type, FileType::Symlink);
         assert!(!linked.is_dir);
         assert_eq!(linked.size, 0);
@@ -794,7 +773,6 @@ mod tests {
     #[test]
     fn test_scan_preserves_symlink_type() {
         use std::os::unix::fs::symlink;
-
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("target.txt");
         let link = dir.path().join("linked.txt");
@@ -803,8 +781,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let snapshot = scan_path(dir.path(), &cancel, None, &[]).unwrap();
-        let node = snapshot.root_node.children.get("linked.txt").unwrap();
-
+        let node = child(&snapshot, ROOT_NODE, "linked.txt");
         assert_eq!(node.file_type, FileType::Symlink);
         assert_eq!(node.size, 0);
         assert!(node.children.is_empty());
@@ -836,7 +813,6 @@ mod tests {
     #[test]
     fn test_walk_dir_size_counts_nested_files() {
         let dir = TempDir::new().unwrap();
-        // Create nested structure inside a subdirectory
         let sub = dir.path().join("sub");
         fs::create_dir_all(sub.join("deep")).unwrap();
         fs::write(sub.join("a.txt"), "hello").unwrap();
@@ -846,7 +822,6 @@ mod tests {
         let mut seen = HashSet::new();
         let mut progress = ProgressTracker::new(None);
         let (size, count) = walk_dir_size(&sub, &cancel, &mut seen, &mut progress);
-        // "hello" = 5 bytes, "world!" = 6 bytes
         assert_eq!(size, 11);
         assert_eq!(count, 2);
     }
@@ -875,9 +850,7 @@ mod tests {
     #[test]
     fn test_scan_with_skip_dir_includes_full_size() {
         let dir = TempDir::new().unwrap();
-        // Normal file outside skip directory
         fs::write(dir.path().join("readme.md"), "project").unwrap();
-        // Create a "node_modules" dir with deeply nested content
         let nm = dir.path().join("node_modules");
         fs::create_dir_all(nm.join("pkg/src")).unwrap();
         fs::write(nm.join("pkg").join("index.js"), "module.exports = 1").unwrap();
@@ -887,47 +860,41 @@ mod tests {
         let skip = vec!["node_modules".to_string()];
         let snapshot = scan_path(dir.path(), &cancel, None, &skip).unwrap();
 
-        // "project" = 7 bytes, "module.exports = 1" = 18, "function f() {}" = 15
         assert_eq!(snapshot.total_size, 7 + 18 + 15);
 
-        let nm_node = snapshot.root_node.children.get("node_modules").unwrap();
+        let nm_idx = child_idx(&snapshot, ROOT_NODE, "node_modules");
+        let pkg_idx = child_idx(&snapshot, nm_idx, "pkg");
+        let nm_node = child(&snapshot, ROOT_NODE, "node_modules");
         assert!(nm_node.is_dir);
         assert!(!nm_node.children.is_empty());
-        assert!(nm_node.has_metadata);
-        // Immediate children get accurate sizes (one level deep)
-        let pkg = nm_node.children.get("pkg").unwrap();
-        assert!(pkg.has_metadata);
+
+        let pkg = child(&snapshot, nm_idx, "pkg");
         assert_eq!(pkg.size, 18 + 15);
-        // Deeper levels (pkg/src) have no metadata
-        let src = pkg.children.get("src").unwrap();
-        assert!(!src.has_metadata);
-        assert_eq!(nm_node.size, 18 + 15); // Full recursive size, not just one level
+
+        let _src = child(&snapshot, pkg_idx, "src");
+        assert_eq!(nm_node.size, 18 + 15);
     }
 
     #[test]
     fn test_scan_skip_gitignored_dirs() {
-        // Simulate a Rust project: "target" dir with files + .gitignore that
-        // ignores it.  Without git_ignore(false) the walker would silently skip
-        // "target" before filter_entry ever sees it.
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap(); // 12 bytes
+        fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
 
         let tg = dir.path().join("target");
         fs::create_dir_all(tg.join("debug")).unwrap();
-        fs::write(tg.join("debug").join("a.o"), "AAAA").unwrap(); // 4 bytes
-        fs::write(tg.join("b.o"), "BBBBBB").unwrap(); // 6 bytes
+        fs::write(tg.join("debug").join("a.o"), "AAAA").unwrap();
+        fs::write(tg.join("b.o"), "BBBBBB").unwrap();
 
         let cancel = AtomicBool::new(false);
         let skip = vec!["target".to_string()];
         let snapshot = scan_path(dir.path(), &cancel, None, &skip).unwrap();
 
-        // Total should include both: main.rs + inside target
         assert_eq!(snapshot.total_size, 12 + 4 + 6);
-        assert_eq!(snapshot.root_node.size, snapshot.total_size);
+        assert_eq!(snapshot.node(ROOT_NODE).size, snapshot.total_size);
 
-        let tg_node = snapshot.root_node.children.get("target").unwrap();
+        let tg_node = child(&snapshot, ROOT_NODE, "target");
         assert!(tg_node.is_dir);
-        assert_eq!(tg_node.size, 4 + 6); // Full recursive size
+        assert_eq!(tg_node.size, 4 + 6);
     }
 }

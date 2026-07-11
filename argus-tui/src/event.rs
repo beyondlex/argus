@@ -120,10 +120,10 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     // Header
     render_header(f, chunks[0]);
 
-    // Main content: split into tree (70%) and metadata (30%)
+    // Main content: tree takes full width
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .constraints([Constraint::Percentage(100)])
         .split(chunks[1]);
 
     // File tree
@@ -141,18 +141,6 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         &app.match_indices,
         app.current_match,
         cursor_visible,
-        file_tree_focused,
-    );
-
-    // Metadata panel
-    let has_scan = app.scan_cache.contains_key(&app.view_root_path);
-    let last_scan = app.scan_cache.get(&app.view_root_path).map(|s| s.timestamp);
-    metadata::render(
-        f,
-        main_chunks[1],
-        app.selected_line(),
-        has_scan,
-        last_scan,
         file_tree_focused,
     );
 
@@ -177,6 +165,11 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app),
         AppMode::Help => help_popup::render(f, area),
         AppMode::Browsing => {}
+    }
+
+    // Info popup (on top of everything, including overlays)
+    if let Some((path, meta)) = &app.info_data {
+        metadata::render(f, area, path, meta);
     }
 }
 

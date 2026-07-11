@@ -2,7 +2,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
+
+use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, TreeNode};
 
@@ -154,6 +157,18 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
+        KeyCode::Char('i') => {
+            if let Some(path) = app.selected_node_full_path() {
+                match std::fs::metadata(&path) {
+                    Ok(meta) => {
+                        app.info_data = Some((path, meta));
+                    }
+                    Err(e) => {
+                        app.set_error(format!("stat failed: {}", e), 3);
+                    }
+                }
+            }
+        }
         KeyCode::Char('q') => {
             app.should_quit = true;
         }
@@ -161,7 +176,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.should_quit = true;
         }
         KeyCode::Esc => {
-            // Esc is used by filter/delete/help modes, not for quit
+            app.info_data = None;
         }
 
         _ => {}
@@ -244,12 +259,13 @@ fn expand_node(app: &mut App) {
         return;
     }
 
-    // Lazy-load children from disk when the tree node has none, or when
-    // all existing children are structural placeholders from a shallow
-    // scan (they are the only nodes with has_metadata == false).
+    // Lazy-load children from disk when the tree node has no children.
     let needs_listing = match &app.tree_root {
-        Some(TreeNode::Snapshot(root)) => find_node(root, &path_key)
-            .map(|n| n.children.is_empty() || n.children.values().all(|c| !c.has_metadata))
+        Some(TreeNode::Snapshot(snap_arc, root_idx)) => find_node(snap_arc, *root_idx, &path_key)
+            .map(|found_idx| {
+                let node = snap_arc.node(found_idx);
+                node.children.is_empty()
+            })
             .unwrap_or(false),
         _ => false,
     };
@@ -258,44 +274,55 @@ fn expand_node(app: &mut App) {
         if let Some(dir_path) = app.selected_node_full_path() {
             match argus_core::list_dir(&dir_path) {
                 Ok(listed) => {
-                    // Pre-compute scanned sizes from root snapshot for dir
-                    // children before mutating the tree.
-                    let mut enrich: HashMap<String, (u64, bool)> = HashMap::new();
-                    if let Some(TreeNode::Snapshot(ref root)) = app.tree_root {
+                    // Pre-compute scanned sizes before mutating the tree
+                    let mut enrich: HashMap<String, u64> = HashMap::new();
+                    if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &app.tree_root {
                         let root_scan_tree =
                             crate::app::resolve_scan_tree(&app.scan_cache, &app.view_root_path);
-                        for (name, child) in &listed.children {
-                            if child.is_dir {
+                        for (name, child_idx) in &listed.node(ROOT_NODE).children {
+                            if listed.node(*child_idx).is_dir {
                                 let mut child_path = path_key.clone();
                                 child_path.push(name.clone());
                                 let scan_full_path = dir_path.join(name);
                                 let from_cache = app
                                     .scan_cache
                                     .get(&scan_full_path)
-                                    .map(|s| (s.root_node.size, s.root_node.has_metadata));
+                                    .map(|s| s.node(ROOT_NODE).size);
                                 if let Some(val) = from_cache {
                                     enrich.insert(name.clone(), val);
-                                } else if let Some(scanned) =
-                                    root_scan_tree.and_then(|tree| find_node(tree, &child_path))
+                                } else if let Some(scanned_idx) = root_scan_tree
+                                    .and_then(|(tree, idx)| find_node(tree, idx, &child_path))
                                 {
-                                    enrich
-                                        .insert(name.clone(), (scanned.size, scanned.has_metadata));
-                                } else if let Some(scanned) = find_node(root, &child_path) {
-                                    enrich
-                                        .insert(name.clone(), (scanned.size, scanned.has_metadata));
+                                    let (tree, _) = root_scan_tree.unwrap();
+                                    enrich.insert(name.clone(), tree.node(scanned_idx).size);
+                                } else if let Some(found_idx) =
+                                    find_node(snap_arc, *root_idx, &child_path)
+                                {
+                                    enrich.insert(name.clone(), snap_arc.node(found_idx).size);
                                 }
                             }
                         }
                     }
-                    // Now apply the listing and enrichment
-                    if let Some(TreeNode::Snapshot(ref mut file_node)) = app.tree_root {
-                        if let Some(target) = find_node_mut(file_node, &path_key) {
-                            target.children = listed.children;
-                            target.has_metadata = true;
-                            for child in target.children.values_mut() {
-                                if let Some(&(size, meta)) = enrich.get(&child.name) {
-                                    child.size = size;
-                                    child.has_metadata = meta;
+
+                    // Merge listed children into the tree root's arena
+                    if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &mut app.tree_root {
+                        let snap = Arc::make_mut(snap_arc);
+                        if let Some(target_idx) = find_node(snap, *root_idx, &path_key) {
+                            let child_nodes: Vec<(String, FileNode)> = listed
+                                .node(ROOT_NODE)
+                                .children
+                                .iter()
+                                .map(|(name, idx)| (name.clone(), listed.node(*idx).clone()))
+                                .collect();
+
+                            for (name, node) in child_nodes {
+                                let new_idx = snap.arena.len() as NodeIndex;
+                                snap.arena.push(node);
+                                snap.node_mut(target_idx)
+                                    .children
+                                    .push((name.clone(), new_idx));
+                                if let Some(&size) = enrich.get(&name) {
+                                    snap.node_mut(new_idx).size = size;
                                 }
                             }
                         }
@@ -312,35 +339,17 @@ fn expand_node(app: &mut App) {
     app.update_tree_lines();
 }
 
-fn find_node<'a>(
-    node: &'a argus_core::FileNode,
-    target_path: &[String],
-) -> Option<&'a argus_core::FileNode> {
+fn find_node(snap: &Snapshot, idx: NodeIndex, target_path: &[String]) -> Option<NodeIndex> {
+    let node = snap.node(idx);
     let (head, tail) = target_path.split_first()?;
     if node.name != *head {
         return None;
     }
     if tail.is_empty() {
-        return Some(node);
+        return Some(idx);
     }
-    let child = node.children.get(&tail[0])?;
-    find_node(child, tail)
-}
-
-fn find_node_mut<'a>(
-    node: &'a mut argus_core::FileNode,
-    target_path: &[String],
-) -> Option<&'a mut argus_core::FileNode> {
-    let (head, tail) = target_path.split_first()?;
-    if node.name != *head {
-        return None;
-    }
-    if tail.is_empty() {
-        return Some(node);
-    }
-
-    let child = node.children.get_mut(&tail[0])?;
-    find_node_mut(child, tail)
+    let child_idx = node.child_idx(&tail[0])?;
+    find_node(snap, child_idx, tail)
 }
 
 fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
@@ -362,12 +371,13 @@ fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
         }
     }
 
-    if let Some(crate::app::TreeNode::Snapshot(ref mut root)) = app.tree_root {
-        let _ = remove_path_from_tree(root, &app.view_root_path, deleted_path);
+    if let Some(crate::app::TreeNode::Snapshot(snap_arc, _)) = &mut app.tree_root {
+        let snap = Arc::make_mut(snap_arc);
+        let _ = remove_path_from_tree(snap, &app.view_root_path, deleted_path);
     }
 }
 
-fn remove_path_from_snapshot(snapshot: &mut argus_core::Snapshot, deleted_path: &Path) -> bool {
+fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bool {
     let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
         return false;
     };
@@ -378,18 +388,14 @@ fn remove_path_from_snapshot(snapshot: &mut argus_core::Snapshot, deleted_path: 
     if components.is_empty() {
         return false;
     }
-    let removed = prune_file_node(&mut snapshot.root_node, &components, 0);
+    let removed = prune_file_node(snapshot, ROOT_NODE, &components, 0);
     if removed {
-        snapshot.total_size = snapshot.root_node.size;
+        snapshot.total_size = snapshot.node(ROOT_NODE).size;
     }
     removed
 }
 
-fn remove_path_from_tree(
-    root: &mut argus_core::FileNode,
-    root_path: &Path,
-    deleted_path: &Path,
-) -> bool {
+fn remove_path_from_tree(snap: &mut Snapshot, root_path: &Path, deleted_path: &Path) -> bool {
     let Ok(relative) = deleted_path.strip_prefix(root_path) else {
         return false;
     };
@@ -400,11 +406,12 @@ fn remove_path_from_tree(
     if components.is_empty() {
         return false;
     }
-    prune_file_node(root, &components, 0)
+    prune_file_node(snap, ROOT_NODE, &components, 0)
 }
 
 fn prune_file_node(
-    current: &mut argus_core::FileNode,
+    snap: &mut Snapshot,
+    current_idx: NodeIndex,
     components: &[String],
     index: usize,
 ) -> bool {
@@ -413,11 +420,16 @@ fn prune_file_node(
     }
 
     let removed = if index + 1 == components.len() {
-        current.children.remove(&components[index]).is_some()
-    } else if let Some(child) = current.children.get_mut(&components[index]) {
-        let removed = prune_file_node(child, components, index + 1);
+        let node = snap.node_mut(current_idx);
+        let pos = node
+            .children
+            .iter()
+            .position(|(n, _)| n == &components[index]);
+        pos.map(|p| node.children.swap_remove(p)).is_some()
+    } else if let Some(child_idx) = snap.node(current_idx).child_idx(&components[index]) {
+        let removed = prune_file_node(snap, child_idx, components, index + 1);
         if removed {
-            recompute_file_node_size(child);
+            recompute_file_node_size(snap, current_idx);
         }
         removed
     } else {
@@ -425,25 +437,27 @@ fn prune_file_node(
     };
 
     if removed {
-        recompute_file_node_size(current);
+        recompute_file_node_size(snap, current_idx);
     }
     removed
 }
 
-fn recompute_file_node_size(node: &mut argus_core::FileNode) -> u64 {
-    if node.children.is_empty() {
-        return node.size;
+fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
+    if snap.node(idx).children.is_empty() {
+        return snap.node(idx).size;
     }
 
-    if node.children.values().all(|c| !c.has_metadata) {
-        return node.size;
-    }
-
+    let children: Vec<NodeIndex> = snap
+        .node(idx)
+        .children
+        .iter()
+        .map(|(_, idx)| *idx)
+        .collect();
     let mut total = 0u64;
-    for child in node.children.values_mut() {
-        total = total.saturating_add(recompute_file_node_size(child));
+    for child_idx in children {
+        total = total.saturating_add(recompute_file_node_size(snap, child_idx));
     }
-    node.size = total;
+    snap.node_mut(idx).size = total;
     total
 }
 
@@ -504,18 +518,26 @@ fn prev_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize)
 }
 
 fn current_cursor_walk_index(app: &App, target_path: &[String]) -> Option<usize> {
-    let root = match &app.tree_root {
-        Some(crate::app::TreeNode::Snapshot(root)) => root,
+    let (snap_arc, root_idx) = match &app.tree_root {
+        Some(crate::app::TreeNode::Snapshot(snap_arc, root_idx)) => (snap_arc, *root_idx),
         _ => return None,
     };
 
-    let mut path = vec![root.name.clone()];
+    let mut path = vec![snap_arc.node(root_idx).name.clone()];
     let mut walk_idx = 0usize;
-    walk_index_for_path(root, &mut path, target_path, app.sort_mode, &mut walk_idx)
+    walk_index_for_path(
+        snap_arc,
+        root_idx,
+        &mut path,
+        target_path,
+        app.sort_mode,
+        &mut walk_idx,
+    )
 }
 
 fn walk_index_for_path(
-    node: &argus_core::FileNode,
+    snap: &Snapshot,
+    idx: NodeIndex,
     path: &mut Vec<String>,
     target_path: &[String],
     sort_mode: crate::app::SortMode,
@@ -527,25 +549,41 @@ fn walk_index_for_path(
 
     *walk_idx += 1;
 
+    let node = snap.node(idx);
     if !node.is_dir {
         return None;
     }
 
-    let mut children: Vec<&argus_core::FileNode> = node.children.values().collect();
-    match sort_mode {
-        crate::app::SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
-        crate::app::SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
-    }
+    let mut children: Vec<(&String, NodeIndex)> =
+        node.children.iter().map(|(n, i)| (n, *i)).collect();
+    sort_children_by_mode(&mut children, snap, sort_mode);
 
-    for child in children {
-        path.push(child.name.clone());
-        if let Some(idx) = walk_index_for_path(child, path, target_path, sort_mode, walk_idx) {
-            return Some(idx);
+    for (name, child_idx) in children {
+        path.push(name.clone());
+        if let Some(result) =
+            walk_index_for_path(snap, child_idx, path, target_path, sort_mode, walk_idx)
+        {
+            return Some(result);
         }
         path.pop();
     }
 
     None
+}
+
+fn sort_children_by_mode(
+    children: &mut Vec<(&String, NodeIndex)>,
+    snap: &Snapshot,
+    mode: crate::app::SortMode,
+) {
+    match mode {
+        crate::app::SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
+        crate::app::SortMode::Size => children.sort_by(|a, b| {
+            let a_size = snap.node(a.1).size;
+            let b_size = snap.node(b.1).size;
+            b_size.cmp(&a_size)
+        }),
+    }
 }
 
 fn collapse_or_navigate_up(app: &mut App) {
@@ -673,72 +711,60 @@ fn expand_ancestor_prefixes(
 mod tests {
     use super::*;
     use crate::app::TreeNode;
-    use argus_core::{FileNode, FileType, Snapshot};
-    use std::collections::HashMap;
+    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    fn make_file(name: &str) -> FileNode {
+    fn file_node(name: &str, size: u64) -> FileNode {
         FileNode {
             name: name.to_string(),
+            parent: None,
             is_dir: false,
             file_type: FileType::File,
-            size: 1,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: HashMap::new(),
+            size,
+            children: Vec::new(),
         }
     }
 
-    fn make_dir(name: &str, children: Vec<FileNode>) -> FileNode {
-        let mut map = HashMap::new();
-        for child in children {
-            map.insert(child.name.clone(), child);
-        }
-
+    fn dir_node(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
         FileNode {
             name: name.to_string(),
+            parent: None,
             is_dir: true,
             file_type: FileType::Directory,
-            size: map.values().map(|child| child.size).sum(),
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children: map,
+            size: 0,
+            children: children
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
         }
     }
 
-    fn make_app(root: FileNode) -> App {
+    fn make_app(snap: Snapshot, scan_snap: Snapshot) -> App {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.view_root_path = std::path::PathBuf::from("/tmp/test");
-        let snapshot = Snapshot::new(std::path::PathBuf::from("/tmp/test"), root, 1);
-        app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
-        app.scan_cache
-            .insert(std::path::PathBuf::from("/tmp/test"), snapshot);
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+        app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
         app.update_tree_lines();
         app
     }
 
     #[test]
     fn test_jump_to_next_match_uses_full_path() {
-        // Root node name must match the last component of view_root_path (/tmp/test)
-        let root = make_dir(
-            "test",
-            vec![
-                make_dir("a", vec![make_file("target")]),
-                make_dir("b", vec![make_file("target")]),
-            ],
-        );
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1), ("b", 2)]),
+            dir_node("a", vec![("target", 3)]),
+            dir_node("b", vec![("target", 4)]),
+            file_node("target", 1),
+            file_node("target", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
 
-        let mut app = make_app(root);
+        let mut app = make_app(snap, scan_snap);
         app.sort_mode = crate::app::SortMode::Name;
         app.expanded
             .insert(vec!["test".to_string(), "a".to_string()]);
@@ -773,15 +799,20 @@ mod tests {
 
     #[test]
     fn test_expanded_is_path_scoped() {
-        let root = make_dir(
-            "root",
-            vec![
-                make_dir("left", vec![make_dir("common", vec![make_file("l.txt")])]),
-                make_dir("right", vec![make_dir("common", vec![make_file("r.txt")])]),
-            ],
-        );
+        let root_arena = vec![
+            dir_node("root", vec![("left", 1), ("right", 2)]),
+            dir_node("left", vec![("common", 3)]),
+            dir_node("right", vec![("common", 4)]),
+            dir_node("common", vec![("l.txt", 5)]),
+            dir_node("common", vec![("r.txt", 6)]),
+            file_node("l.txt", 1),
+            file_node("r.txt", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/root"), root_arena, 2);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/root"), vec![file_node("root", 0)], 0);
 
-        let mut app = make_app(root);
+        let mut app = make_app(snap, scan_snap);
+        app.view_root_path = PathBuf::from("/tmp/root");
         app.sort_mode = crate::app::SortMode::Name;
         app.expanded
             .insert(vec!["root".to_string(), "left".to_string()]);
@@ -818,48 +849,40 @@ mod tests {
         fs::create_dir_all(root_path.join("sub")).unwrap();
         fs::write(root_path.join("sub").join("file.txt"), "data").unwrap();
 
-        let mut children = HashMap::new();
-        children.insert(
-            "sub".to_string(),
+        // Root node in arena with a metadata-less child
+        let root_arena = vec![
             FileNode {
-                name: "sub".to_string(),
+                name: "root".to_string(),
+                parent: None,
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 0,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: false,
-                children: HashMap::new(),
+                children: [("sub".to_string(), 1)].into_iter().collect(),
             },
-        );
+            FileNode {
+                name: "sub".to_string(),
+                parent: None,
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                children: Vec::new(),
+            },
+        ];
+        let snap = Snapshot::new(root_path.clone(), root_arena, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), vec![dir_node("root", vec![])], 0);
 
-        let root = FileNode {
-            name: "root".to_string(),
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            modified: None,
-            created: None,
-            inode: None,
-            device: None,
-            has_metadata: true,
-            children,
-        };
-
-        let mut app = make_app(root);
-        app.view_root_path = root_path;
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = root_path.clone();
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+        app.scan_cache.insert(root_path.clone(), scan_snap);
         app.update_tree_lines();
         app.cursor = 1;
 
         expand_node(&mut app);
 
-        let TreeNode::Snapshot(root_node) = app.tree_root.as_ref().unwrap() else {
-            unreachable!();
-        };
-        let sub = root_node.children.get("sub").unwrap();
-        assert!(sub.has_metadata);
+        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
+        let sub = snap_arc.node(1);
         assert!(sub.is_dir);
     }
 
@@ -868,27 +891,28 @@ mod tests {
         fn sized_file(name: &str, size: u64) -> FileNode {
             FileNode {
                 name: name.to_string(),
+                parent: None,
                 is_dir: false,
                 file_type: FileType::File,
                 size,
-                modified: None,
-                created: None,
-                inode: None,
-                device: None,
-                has_metadata: true,
-                children: HashMap::new(),
+                children: Vec::new(),
             }
         }
 
-        let ignore_dir = make_dir(
-            "ignore",
-            vec![sized_file("keep.bin", 12), sized_file("delete.bin", 10)],
-        );
-        let root = make_dir("test", vec![ignore_dir]);
-        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), root.clone(), 22);
+        // Arena: test/ignore/{keep.bin, delete.bin}
+        let arena = vec![
+            dir_node("test", vec![("ignore", 1)]),
+            dir_node("ignore", vec![("keep.bin", 2), ("delete.bin", 3)]),
+            sized_file("keep.bin", 12),
+            sized_file("delete.bin", 10),
+        ];
+        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 22);
 
-        let mut app = make_app(root);
-        app.tree_root = Some(TreeNode::Snapshot(root_snapshot.root_node.clone()));
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 22);
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
         app.scan_cache
             .insert(PathBuf::from("/tmp/test"), root_snapshot);
         app.update_tree_lines();
@@ -896,17 +920,18 @@ mod tests {
         apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
         app.update_tree_lines();
 
-        let TreeNode::Snapshot(root_node) = app.tree_root.as_ref().unwrap() else {
-            unreachable!();
-        };
-        let ignore = root_node.children.get("ignore").unwrap();
+        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
+        let ignore = snap_arc.node(1);
         assert_eq!(ignore.size, 12);
-        assert_eq!(root_node.size, 12);
+        assert_eq!(snap_arc.node(ROOT_NODE).size, 12);
 
         let cached = app.scan_cache.get(&PathBuf::from("/tmp/test")).unwrap();
-        assert_eq!(cached.root_node.size, 12);
-        let cached_ignore = cached.root_node.children.get("ignore").unwrap();
+        assert_eq!(cached.node(ROOT_NODE).size, 12);
+        let cached_ignore = cached.node(1);
         assert_eq!(cached_ignore.size, 12);
-        assert!(!cached_ignore.children.contains_key("delete.bin"));
+        assert!(!cached_ignore
+            .children
+            .iter()
+            .any(|(n, _)| n == "delete.bin"));
     }
 }
