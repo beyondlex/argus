@@ -245,7 +245,7 @@ fn render_tree_line<'a>(
             Some(d) if d > 0 => format!(" +{}", util::format_size(d as u64)),
             Some(d) if d < 0 => format!(" -{}", util::format_size(d.unsigned_abs())),
             Some(_) => "  -".to_string(),
-            None => "  ?".to_string(),
+            None => "  -".to_string(),
         }
     } else {
         String::new()
