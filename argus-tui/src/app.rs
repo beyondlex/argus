@@ -560,15 +560,21 @@ impl App {
                 Ok(c) => c,
                 Err(_) => return,
             };
-            let mut deltas = HashMap::new();
+            let mut leaf_deltas: Vec<(Vec<String>, i64)> = Vec::new();
             for path in &paths {
-                // Build absolute path from view_root + relative path components (skip root name)
                 let mut full = view_root.clone();
                 for comp in path.iter().skip(1) {
                     full.push(comp);
                 }
                 if let Ok((total, _)) = client.get_delta(&full, from, to).await {
-                    deltas.insert(path.clone(), total);
+                    leaf_deltas.push((path.clone(), total));
+                }
+            }
+            let mut deltas: HashMap<Vec<String>, i64> = HashMap::new();
+            for (path, delta) in &leaf_deltas {
+                for i in 1..=path.len() {
+                    let ancestor = path[..i].to_vec();
+                    *deltas.entry(ancestor).or_insert(0) += delta;
                 }
             }
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
