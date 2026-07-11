@@ -231,22 +231,28 @@ impl App {
     }
 
     fn build_current_tree(&mut self) {
-        match argus_core::list_dir(&self.view_root_path) {
-            Ok(mut snap) => {
-                let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
-                enrich_snapshot_sizes(
-                    &mut snap,
-                    ROOT_NODE,
-                    &self.scan_cache,
-                    &self.view_root_path,
-                    root_scan_tree,
-                    &mut Vec::new(),
-                );
-                self.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-            }
-            Err(e) => {
-                self.set_error(format!("failed to list directory: {}", e), 3);
-                self.tree_root = None;
+        // Use full scan data when available, otherwise fall back to list_dir (one level)
+        if let Some(snapshot) = self.scan_cache.get(&self.view_root_path).cloned() {
+            self.tree_root = Some(TreeNode::Snapshot(Arc::new(snapshot), ROOT_NODE));
+        } else {
+            match argus_core::list_dir(&self.view_root_path) {
+                Ok(mut snap) => {
+                    let root_scan_tree =
+                        resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+                    enrich_snapshot_sizes(
+                        &mut snap,
+                        ROOT_NODE,
+                        &self.scan_cache,
+                        &self.view_root_path,
+                        root_scan_tree,
+                        &mut Vec::new(),
+                    );
+                    self.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+                }
+                Err(e) => {
+                    self.set_error(format!("failed to list directory: {}", e), 3);
+                    self.tree_root = None;
+                }
             }
         }
 
