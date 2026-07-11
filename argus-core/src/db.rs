@@ -61,10 +61,11 @@ pub fn query_delta_total(
     to_ms: u64,
 ) -> Result<i64, DbError> {
     let path_str = path.to_string_lossy();
+    let prefix = format!("{}/%", path_str);
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(delta_size), 0) FROM delta_events
-         WHERE path = ?1 AND timestamp >= ?2 AND timestamp <= ?3",
-        params![path_str.as_ref(), from_ms, to_ms],
+         WHERE (path = ?1 OR path LIKE ?2) AND timestamp >= ?3 AND timestamp <= ?4",
+        params![path_str.as_ref(), prefix, from_ms, to_ms],
         |row| row.get(0),
     )?;
     Ok(total)
@@ -77,14 +78,15 @@ pub fn query_delta_detail(
     to_ms: u64,
 ) -> Result<Vec<DeltaEntry>, DbError> {
     let path_str = path.to_string_lossy();
+    let prefix = format!("{}/%", path_str);
     let mut stmt = conn.prepare(
         "SELECT path, delta_size, event_type, timestamp FROM delta_events
-         WHERE path = ?1 AND timestamp >= ?2 AND timestamp <= ?3
+         WHERE (path = ?1 OR path LIKE ?2) AND timestamp >= ?3 AND timestamp <= ?4
          ORDER BY timestamp ASC",
     )?;
 
     let entries = stmt
-        .query_map(params![path_str.as_ref(), from_ms, to_ms], |row| {
+        .query_map(params![path_str.as_ref(), prefix, from_ms, to_ms], |row| {
             Ok(DeltaEntry {
                 path: PathBuf::from(row.get::<_, String>(0)?),
                 delta_size: row.get(1)?,
@@ -306,5 +308,38 @@ mod tests {
 
         let remaining = query_delta_detail(&conn, Path::new("/tmp/b.txt"), 0, 5000).unwrap();
         assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn test_query_delta_total_prefix_matches_children() {
+        let (conn, _) = setup_db();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/file_a.txt"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/sub/file_b.txt"),
+                delta_size: 200,
+                event_type: "create".into(),
+                timestamp: 2000,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/file_c.txt"),
+                delta_size: -50,
+                event_type: "delete".into(),
+                timestamp: 3000,
+            },
+        ];
+        insert_events(&conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 250);
+
+        let total_root = query_delta_total(&conn, Path::new("/tmp"), 0, 5000).unwrap();
+        assert_eq!(total_root, 250);
     }
 }
