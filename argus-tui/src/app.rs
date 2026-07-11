@@ -8,7 +8,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
-use argus_core::{filter_by_threshold, DiffNode, FileNode, FileType, Snapshot};
+use argus_core::{FileNode, FileType, Snapshot};
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
@@ -17,25 +17,7 @@ use argus_core::{filter_by_threshold, DiffNode, FileNode, FileType, Snapshot};
 pub enum AppMessage {
     ScanProgress { file_count: u64, total_bytes: u64 },
     ScanComplete(Snapshot),
-    DiffComplete(DiffNode),
     Error(String),
-}
-
-/// Commands from UI to background tasks
-#[allow(dead_code)]
-pub enum AppCommand {
-    Scan {
-        path: PathBuf,
-        cancel: Arc<AtomicBool>,
-        tx: mpsc::Sender<AppMessage>,
-    },
-    Diff {
-        old_hash: String,
-        old_ts: DateTime<Utc>,
-        new_hash: String,
-        new_ts: DateTime<Utc>,
-        tx: mpsc::Sender<AppMessage>,
-    },
 }
 
 /// Application mode
@@ -50,7 +32,6 @@ pub enum AppMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
     Tree,
-    FilterBar,
 }
 
 /// Tree filter mode
@@ -73,97 +54,77 @@ pub struct SearchMatch {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortMode {
     Name,
-    Delta,
     Size,
 }
 
 impl SortMode {
     pub fn toggle(self) -> Self {
         match self {
-            SortMode::Delta => SortMode::Size,
             SortMode::Size => SortMode::Name,
-            SortMode::Name => SortMode::Delta,
+            SortMode::Name => SortMode::Size,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            SortMode::Delta => "Δ",
             SortMode::Size => "Size",
             SortMode::Name => "Name",
         }
     }
 }
 
-/// Unified tree node for rendering
+/// Unified tree node for rendering (currently only Snapshot variant, Diff reserved for future daemon mode)
 #[derive(Debug, Clone)]
 pub enum TreeNode {
     Snapshot(FileNode),
-    Diff(DiffNode),
 }
 
 impl TreeNode {
     pub fn name(&self) -> &str {
         match self {
             TreeNode::Snapshot(n) => &n.name,
-            TreeNode::Diff(n) => &n.name,
         }
     }
 
     pub fn is_dir(&self) -> bool {
         match self {
             TreeNode::Snapshot(n) => n.is_dir,
-            TreeNode::Diff(n) => n.is_dir,
         }
     }
 
     pub fn file_type(&self) -> FileType {
         match self {
             TreeNode::Snapshot(n) => n.file_type,
-            TreeNode::Diff(_) => FileType::Other,
         }
     }
 
     pub fn current_size(&self) -> u64 {
         match self {
             TreeNode::Snapshot(n) => n.size,
-            TreeNode::Diff(n) => n.current_size,
         }
     }
 
-    #[allow(dead_code)]
     pub fn children_snapshot(&self) -> Option<&HashMap<String, FileNode>> {
         match self {
             TreeNode::Snapshot(n) => Some(&n.children),
-            _ => None,
-        }
-    }
-
-    pub fn children_diff(&self) -> Option<&HashMap<String, DiffNode>> {
-        match self {
-            TreeNode::Diff(n) => Some(&n.children),
-            _ => None,
         }
     }
 
     pub fn modified(&self) -> Option<DateTime<Utc>> {
         match self {
             TreeNode::Snapshot(n) => n.modified,
-            TreeNode::Diff(_) => None,
         }
     }
 
     pub fn created(&self) -> Option<DateTime<Utc>> {
         match self {
             TreeNode::Snapshot(n) => n.created,
-            TreeNode::Diff(_) => None,
         }
     }
 
     pub fn has_metadata(&self) -> bool {
         match self {
             TreeNode::Snapshot(n) => n.has_metadata,
-            TreeNode::Diff(_) => true,
         }
     }
 }
@@ -175,7 +136,6 @@ pub struct TreeLine {
     pub node: TreeNode,
     pub expanded: bool,
     pub has_scan_data: bool,
-    pub delta: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -184,69 +144,6 @@ pub struct ScanSummary {
     pub total_size: u64,
     pub total_files: u64,
     pub duration: Duration,
-}
-
-/// Snapshot metadata from SQLite scan_events
-#[derive(Debug, Clone)]
-pub struct SnapshotInfo {
-    pub scan_id: i64,
-    pub timestamp: DateTime<Utc>,
-    pub total_size: u64,
-    pub total_files: u64,
-}
-
-impl SnapshotInfo {
-    pub fn from_scan_timestamp_info(id: i64, ts: DateTime<Utc>, size: u64, files: u64) -> Self {
-        Self {
-            scan_id: id,
-            timestamp: ts,
-            total_size: size,
-            total_files: files,
-        }
-    }
-}
-
-/// Which field within the FilterBar is focused
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FilterFocus {
-    From,
-    To,
-    Threshold,
-}
-
-/// Filter bar state
-#[derive(Debug, Clone)]
-pub struct FilterState {
-    pub from_idx: Option<usize>,
-    pub to_idx: Option<usize>,
-    pub threshold: Option<u64>,
-    pub dirty: bool,
-    pub sub_focus: FilterFocus,
-}
-
-impl FilterState {
-    pub fn is_empty(&self) -> bool {
-        self.from_idx.is_none() && self.to_idx.is_none() && self.threshold.is_none()
-    }
-
-    pub fn should_diff(&self) -> bool {
-        self.from_idx.is_some() && self.to_idx.is_some()
-    }
-
-    pub fn clear(&mut self) {
-        self.from_idx = None;
-        self.to_idx = None;
-        self.threshold = None;
-        self.dirty = false;
-    }
-
-    pub fn cycle_focus(&mut self) {
-        self.sub_focus = match self.sub_focus {
-            FilterFocus::From => FilterFocus::To,
-            FilterFocus::To => FilterFocus::Threshold,
-            FilterFocus::Threshold => FilterFocus::From,
-        };
-    }
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -270,17 +167,8 @@ pub struct App {
     // Scan cache: path → full scanned snapshot
     pub scan_cache: HashMap<PathBuf, Snapshot>,
 
-    // Snapshots scoped to current view_root_path (loaded from SQLite)
-    pub available_snapshots: Vec<SnapshotInfo>,
-
     // Path to the SQLite database
     pub db_path: PathBuf,
-
-    // Diff filter state
-    pub filter_state: FilterState,
-
-    // Diff data overlaid on the snapshot tree (maps path → (current_size, delta))
-    pub diff_lookup: HashMap<Vec<String>, (u64, i64)>,
 
     // Tree filter (fuzzy search)
     pub filter_word: String,
@@ -334,7 +222,7 @@ impl App {
             tx,
             mode: AppMode::Browsing,
             focus: Focus::Tree,
-            sort_mode: SortMode::Delta,
+            sort_mode: SortMode::Size,
             view_root_path,
             tree_root: None,
             tree_lines: Vec::new(),
@@ -342,16 +230,7 @@ impl App {
             scroll_offset: 0,
             expanded: HashSet::new(),
             scan_cache: HashMap::new(),
-            available_snapshots: Vec::new(),
             db_path,
-            filter_state: FilterState {
-                from_idx: None,
-                to_idx: None,
-                threshold: None,
-                dirty: false,
-                sub_focus: FilterFocus::From,
-            },
-            diff_lookup: HashMap::new(),
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -373,78 +252,42 @@ impl App {
         }
     }
 
-    /// Load scan history from SQLite into scan_cache and available_snapshots
+    /// Load latest scan from SQLite into scan_cache
     pub fn load_from_db(&mut self) {
         let conn = match argus_core::open_db(&self.db_path) {
             Ok(c) => c,
             Err(_) => return,
         };
 
-        // Load available scan timestamps for current view root
-        if let Ok(scans) = argus_core::query_scan_timestamps(&conn, &self.view_root_path) {
-            self.available_snapshots = scans
-                .into_iter()
-                .map(|(id, ts, size, files)| {
-                    SnapshotInfo::from_scan_timestamp_info(id, ts, size, files)
-                })
-                .collect();
-        }
-
-        // Try to rebuild the latest snapshot for current view root
-        if let Ok(snapshot) = argus_core::rebuild_snapshot(&conn, &self.view_root_path) {
-            self.scan_cache
-                .insert(self.view_root_path.clone(), snapshot);
-        }
-    }
-
-    fn refresh_available_snapshots(&mut self) {
-        let conn = match argus_core::open_db(&self.db_path) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        if let Ok(scans) = argus_core::query_scan_timestamps(&conn, &self.view_root_path) {
-            self.available_snapshots = scans
-                .into_iter()
-                .map(|(id, ts, size, files)| {
-                    SnapshotInfo::from_scan_timestamp_info(id, ts, size, files)
-                })
-                .collect();
+        if !self.scan_cache.contains_key(&self.view_root_path) {
+            if let Ok(snapshot) = argus_core::rebuild_snapshot(&conn, &self.view_root_path) {
+                self.scan_cache
+                    .insert(self.view_root_path.clone(), snapshot);
+            }
         }
     }
 
     /// Build tree for current view_root_path from scan_cache or filesystem
     pub fn rebuild_tree(&mut self) {
-        self.rebuild_tree_internal(true);
+        self.rebuild_tree_internal();
     }
 
-    /// Build tree from scan_cache or FS listing, preserving filter state.
-    /// Used when from==to (show current FS tree without delta).
-    pub fn show_normal_tree(&mut self) {
-        self.rebuild_tree_internal(false);
-    }
-
-    fn rebuild_tree_internal(&mut self, clear_filter_state: bool) {
+    fn rebuild_tree_internal(&mut self) {
         self.load_from_db();
         self.build_current_tree();
-        if clear_filter_state {
-            self.filter_state.clear();
-        }
         self.update_tree_lines();
     }
 
     fn build_current_tree(&mut self) {
-        self.diff_lookup.clear();
-        // Always build tree from current FS listing.
-        // Scan cache only enriches sizes — never the tree structure.
         match argus_core::list_dir(&self.view_root_path) {
             Ok(node) => {
                 let mut enriched = node;
-                let root_scan = self.scan_cache.get(&self.view_root_path);
+                let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
                 enrich_snapshot_sizes(
                     &mut enriched,
                     &self.scan_cache,
                     &self.view_root_path,
-                    root_scan.map(|snapshot| &snapshot.root_node),
+                    root_scan_tree,
                     &mut Vec::new(),
                 );
                 self.tree_root = Some(TreeNode::Snapshot(enriched));
@@ -466,10 +309,7 @@ impl App {
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(root)) => {
                 let mut lines = Vec::new();
-                let root_scan_tree = self
-                    .scan_cache
-                    .get(&self.view_root_path)
-                    .map(|s| &s.root_node);
+                let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
                 flatten_snapshot_tree(
                     root,
                     0,
@@ -480,7 +320,6 @@ impl App {
                     &self.view_root_path,
                     root_scan_tree,
                     &mut Vec::new(),
-                    &self.diff_lookup,
                 );
                 lines
             }
@@ -522,30 +361,10 @@ impl App {
                 self.scan_cache
                     .insert(snapshot.root_path.clone(), snapshot.clone());
 
-                // Refresh available snapshots from DB
-                self.refresh_available_snapshots();
-
                 // Rebuild tree if scanned path matches current view
                 if snapshot.root_path == self.view_root_path {
                     self.rebuild_tree();
                 }
-            }
-            AppMessage::DiffComplete(diff) => {
-                // Apply threshold filter if set
-                let filtered = if let Some(thresh) = self.filter_state.threshold {
-                    filter_by_threshold(&diff, thresh)
-                } else {
-                    Some(diff)
-                };
-                // Build lookup map from diff tree instead of replacing tree_root.
-                // Tree always shows current FS state; diff only adds delta info.
-                self.diff_lookup.clear();
-                if let Some(diff) = filtered {
-                    build_diff_lookup(&diff, &mut Vec::new(), &mut self.diff_lookup);
-                }
-                self.cursor = 0;
-                self.expanded.clear();
-                self.update_tree_lines();
             }
             AppMessage::Error(e) => {
                 self.scanning = false;
@@ -565,7 +384,7 @@ impl App {
             return;
         }
 
-        let Some(TreeNode::Snapshot(ref root)) = self.tree_root else {
+        let Some(TreeNode::Snapshot(root)) = &self.tree_root else {
             return;
         };
 
@@ -597,11 +416,6 @@ impl App {
     /// Get the currently selected tree line
     pub fn selected_line(&self) -> Option<&TreeLine> {
         self.tree_lines.get(self.cursor)
-    }
-
-    /// Check if delta column should be shown
-    pub fn has_delta_column(&self) -> bool {
-        !self.diff_lookup.is_empty()
     }
 
     /// Set error message and log to file.
@@ -657,7 +471,6 @@ impl App {
 
 // ── Tree flattening ─────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn flatten_snapshot_tree(
     node: &FileNode,
     depth: usize,
@@ -668,16 +481,11 @@ fn flatten_snapshot_tree(
     view_root_path: &Path,
     root_scan_tree: Option<&FileNode>,
     path: &mut Vec<String>,
-    diff_lookup: &HashMap<Vec<String>, (u64, i64)>,
 ) {
     path.push(node.name.clone());
     let path_key = path.clone();
     let is_expanded = depth == 0 || expanded.contains(&path_key);
 
-    let delta = diff_lookup.get(&path_key).map(|&(_, d)| d).unwrap_or(0);
-
-    // Per-node scan data is derived from the exact node path, not from the
-    // fact that some ancestor root has a snapshot.
     let node_has_scan =
         has_snapshot_for_path(scan_cache, view_root_path, root_scan_tree, &path_key);
 
@@ -686,7 +494,6 @@ fn flatten_snapshot_tree(
         node: TreeNode::Snapshot(node.clone()),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
         has_scan_data: node_has_scan || !node.is_dir,
-        delta,
     });
 
     if is_expanded && node.is_dir {
@@ -703,7 +510,6 @@ fn flatten_snapshot_tree(
                 view_root_path,
                 root_scan_tree,
                 path,
-                diff_lookup,
             );
         }
     }
@@ -784,6 +590,34 @@ fn has_snapshot_for_path(
     false
 }
 
+/// Find the best-available scan tree node for a view path.
+///
+/// First tries an exact match in scan_cache. If not found, walks up
+/// the path hierarchy to find a parent-level scan, then walks down
+/// the scan tree to find the subtree matching the view root.
+pub(crate) fn resolve_scan_tree<'a>(
+    scan_cache: &'a HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+) -> Option<&'a FileNode> {
+    if let Some(snapshot) = scan_cache.get(view_root_path) {
+        return Some(&snapshot.root_node);
+    }
+
+    let mut parent = view_root_path.parent()?;
+    loop {
+        if let Some(snapshot) = scan_cache.get(parent) {
+            let relative = view_root_path.strip_prefix(parent).ok()?;
+            let mut node = &snapshot.root_node;
+            for component in relative.components() {
+                let name = component.as_os_str().to_str()?;
+                node = node.children.get(name)?;
+            }
+            return Some(node);
+        }
+        parent = parent.parent()?;
+    }
+}
+
 fn find_snapshot_node<'a>(node: &'a FileNode, target_path: &[String]) -> Option<&'a FileNode> {
     let (head, tail) = target_path.split_first()?;
     if node.name != *head {
@@ -801,21 +635,7 @@ fn sort_children_snapshot(children: &mut Vec<&FileNode>, mode: SortMode) {
     match mode {
         SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
         SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
-        SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
     }
-}
-
-fn build_diff_lookup(
-    node: &DiffNode,
-    path: &mut Vec<String>,
-    lookup: &mut HashMap<Vec<String>, (u64, i64)>,
-) {
-    path.push(node.name.clone());
-    lookup.insert(path.clone(), (node.current_size, node.size_delta));
-    for child in node.children.values() {
-        build_diff_lookup(child, path, lookup);
-    }
-    path.pop();
 }
 
 pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
@@ -1074,10 +894,10 @@ mod tests {
         app.expanded
             .insert(vec!["test".to_string(), "target".to_string()]);
 
-        let target = match app.tree_root.as_mut().unwrap() {
-            TreeNode::Snapshot(node) => node.children.get_mut("target").unwrap(),
-            _ => panic!("expected snapshot tree"),
+        let TreeNode::Snapshot(node) = app.tree_root.as_mut().unwrap() else {
+            unreachable!();
         };
+        let target = node.children.get_mut("target").unwrap();
         target.children.insert(
             "build".to_string(),
             FileNode {

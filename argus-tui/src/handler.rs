@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crate::app::{App, AppMessage, AppMode, FilterMode, Focus, TreeNode};
+use crate::app::{App, AppMessage, AppMode, FilterMode, TreeNode};
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
@@ -19,49 +19,6 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     if app.scanning {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
-        }
-        return;
-    }
-
-    // Focus-aware key routing: when FilterBar is focused
-    if app.focus == Focus::FilterBar {
-        match key.code {
-            KeyCode::Esc => {
-                app.focus = Focus::Tree;
-            }
-            KeyCode::Tab => {
-                app.filter_state.cycle_focus();
-            }
-            KeyCode::Char('1') if !app.available_snapshots.is_empty() => {
-                app.filter_state.from_idx = Some(0);
-                trigger_diff_if_ready(app);
-            }
-            KeyCode::Char('2') if app.available_snapshots.len() > 1 => {
-                app.filter_state.to_idx = Some(app.available_snapshots.len() - 1);
-                trigger_diff_if_ready(app);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                cycle_snapshot(app, -1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                cycle_snapshot(app, 1);
-            }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                adjust_threshold(app, true);
-            }
-            KeyCode::Char('-') => {
-                adjust_threshold(app, false);
-            }
-            KeyCode::Char('0') => {
-                app.filter_state.threshold = None;
-                trigger_diff_if_ready(app);
-            }
-            KeyCode::Char('c') => {
-                app.filter_state.clear();
-                app.focus = Focus::Tree;
-                app.rebuild_tree();
-            }
-            _ => {}
         }
         return;
     }
@@ -203,9 +160,6 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             app.should_quit = true;
         }
-        KeyCode::Char('f') => {
-            app.focus = Focus::FilterBar;
-        }
         KeyCode::Esc => {
             // Esc is used by filter/delete/help modes, not for quit
         }
@@ -308,10 +262,8 @@ fn expand_node(app: &mut App) {
                     // children before mutating the tree.
                     let mut enrich: HashMap<String, (u64, bool)> = HashMap::new();
                     if let Some(TreeNode::Snapshot(ref root)) = app.tree_root {
-                        let root_scan_tree = app
-                            .scan_cache
-                            .get(&app.view_root_path)
-                            .map(|s| &s.root_node);
+                        let root_scan_tree =
+                            crate::app::resolve_scan_tree(&app.scan_cache, &app.view_root_path);
                         for (name, child) in &listed.children {
                             if child.is_dir {
                                 let mut child_path = path_key.clone();
@@ -552,9 +504,9 @@ fn prev_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize)
 }
 
 fn current_cursor_walk_index(app: &App, target_path: &[String]) -> Option<usize> {
-    let root = match app.tree_root.as_ref()? {
-        crate::app::TreeNode::Snapshot(root) => root,
-        crate::app::TreeNode::Diff(_) => return None,
+    let root = match &app.tree_root {
+        Some(crate::app::TreeNode::Snapshot(root)) => root,
+        _ => return None,
     };
 
     let mut path = vec![root.name.clone()];
@@ -583,7 +535,6 @@ fn walk_index_for_path(
     match sort_mode {
         crate::app::SortMode::Name => children.sort_by(|a, b| a.name.cmp(&b.name)),
         crate::app::SortMode::Size => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
-        crate::app::SortMode::Delta => children.sort_by_key(|b| std::cmp::Reverse(b.size)),
     }
 
     for child in children {
@@ -711,64 +662,6 @@ pub fn start_scan(app: &mut App) {
     });
 }
 
-fn trigger_diff_if_ready(app: &mut App) {
-    if !app.filter_state.should_diff() {
-        return;
-    }
-
-    let from_idx = match app.filter_state.from_idx {
-        Some(i) => i,
-        None => return,
-    };
-    let to_idx = match app.filter_state.to_idx {
-        Some(i) => i,
-        None => return,
-    };
-
-    if from_idx >= app.available_snapshots.len() || to_idx >= app.available_snapshots.len() {
-        return;
-    }
-
-    // When from == to, show current FS tree (no delta info).
-    // File tree always shows current files like Finder; filter only affects delta display.
-    if from_idx == to_idx {
-        app.show_normal_tree();
-        return;
-    }
-
-    let from_info = app.available_snapshots[from_idx].clone();
-    let to_info = app.available_snapshots[to_idx].clone();
-
-    let tx = app.tx.clone();
-    let path = app.view_root_path.clone();
-    let db_path = app.db_path.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = match argus_core::open_db(&db_path) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ =
-                    tx.blocking_send(AppMessage::Error(format!("failed to open database: {}", e)));
-                return;
-            }
-        };
-
-        match argus_core::query_delta(&conn, &path, &from_info.timestamp, &to_info.timestamp) {
-            Ok(records) => {
-                let root_name = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.to_string_lossy().to_string());
-                let diff = argus_core::build_diff_tree(&records, &root_name);
-                let _ = tx.blocking_send(AppMessage::DiffComplete(diff));
-            }
-            Err(e) => {
-                let _ = tx.blocking_send(AppMessage::Error(format!("diff query failed: {}", e)));
-            }
-        }
-    });
-}
-
 fn expand_ancestor_prefixes(
     expanded: &mut std::collections::HashSet<Vec<String>>,
     path: &[String],
@@ -780,47 +673,6 @@ fn expand_ancestor_prefixes(
     for len in 2..=path.len() {
         expanded.insert(path[..len].to_vec());
     }
-}
-
-// ── FilterBar helpers ────────────────────────────────────────────────────────
-
-fn cycle_snapshot(app: &mut App, delta: isize) {
-    let snap_len = app.available_snapshots.len();
-    if snap_len == 0 {
-        return;
-    }
-    match app.filter_state.sub_focus {
-        crate::app::FilterFocus::From => {
-            let cur = app.filter_state.from_idx.unwrap_or(0);
-            let next = (cur as isize + delta).rem_euclid(snap_len as isize) as usize;
-            app.filter_state.from_idx = Some(next);
-            trigger_diff_if_ready(app);
-        }
-        crate::app::FilterFocus::To => {
-            let cur = app.filter_state.to_idx.unwrap_or(snap_len - 1);
-            let next = (cur as isize + delta).rem_euclid(snap_len as isize) as usize;
-            app.filter_state.to_idx = Some(next);
-            trigger_diff_if_ready(app);
-        }
-        _ => {}
-    }
-}
-
-fn adjust_threshold(app: &mut App, increase: bool) {
-    let cur = app.filter_state.threshold.unwrap_or(0);
-    let step = if cur < 1024 {
-        512
-    } else if cur < 1024 * 1024 {
-        1024 * 10
-    } else {
-        1024 * 1024
-    };
-    if increase {
-        app.filter_state.threshold = Some(cur + step);
-    } else {
-        app.filter_state.threshold = Some(cur.saturating_sub(step));
-    }
-    trigger_diff_if_ready(app);
 }
 
 #[cfg(test)]
@@ -879,7 +731,9 @@ mod tests {
         );
         app.view_root_path = std::path::PathBuf::from("/tmp/test");
         let snapshot = Snapshot::new(std::path::PathBuf::from("/tmp/test"), root, 1);
-        app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node));
+        app.tree_root = Some(TreeNode::Snapshot(snapshot.root_node.clone()));
+        app.scan_cache
+            .insert(std::path::PathBuf::from("/tmp/test"), snapshot);
         app.update_tree_lines();
         app
     }
@@ -1012,9 +866,8 @@ mod tests {
 
         expand_node(&mut app);
 
-        let root_node = match app.tree_root.as_ref().unwrap() {
-            TreeNode::Snapshot(node) => node,
-            _ => panic!("expected snapshot tree"),
+        let TreeNode::Snapshot(root_node) = app.tree_root.as_ref().unwrap() else {
+            unreachable!();
         };
         let sub = root_node.children.get("sub").unwrap();
         assert!(sub.has_metadata);
@@ -1054,9 +907,8 @@ mod tests {
         apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
         app.update_tree_lines();
 
-        let root_node = match app.tree_root.as_ref().unwrap() {
-            TreeNode::Snapshot(node) => node,
-            _ => panic!("expected snapshot tree"),
+        let TreeNode::Snapshot(root_node) = app.tree_root.as_ref().unwrap() else {
+            unreachable!();
         };
         let ignore = root_node.children.get("ignore").unwrap();
         assert_eq!(ignore.size, 12);

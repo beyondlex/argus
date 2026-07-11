@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{AppMode, Focus, ScanSummary};
+use crate::app::{AppMode, ScanSummary};
 use crate::util;
 use std::path::Path;
 use std::time::Duration;
@@ -18,7 +18,6 @@ pub fn render(
     f: &mut Frame,
     area: Rect,
     mode: AppMode,
-    focus: Focus,
     view_root_path: &Path,
     scanning: bool,
     scan_progress: Option<(u64, u64)>,
@@ -43,15 +42,6 @@ pub fn render(
             Style::default().fg(Color::Cyan).bg(Color::Black),
         ));
     }
-
-    let focus_str = match focus {
-        Focus::Tree => "[Tree]",
-        Focus::FilterBar => "[Filter]",
-    };
-    if !left_spans.is_empty() {
-        left_spans.push(Span::raw(" | "));
-    }
-    left_spans.push(Span::styled(focus_str, Style::default().fg(Color::Cyan)));
 
     if scanning {
         left_spans.push(Span::raw(" | "));

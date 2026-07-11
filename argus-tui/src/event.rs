@@ -4,7 +4,7 @@ use crossterm::event::{self, Event};
 use ratatui::Frame;
 
 use crate::app::{App, AppMode, FilterMode};
-use crate::components::{file_tree, filter_bar, help_popup, metadata, status_bar};
+use crate::components::{file_tree, help_popup, metadata, status_bar};
 use crate::handler;
 
 /// Main event loop
@@ -79,12 +79,10 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
     let area = f.area();
 
-    // Layout: Header(1) / FilterBar(1) / Main / StatusBar(1)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header
-            Constraint::Length(3), // Filter bar
             Constraint::Min(1),    // Main content
             Constraint::Length(1), // Status bar
         ])
@@ -93,26 +91,14 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     // Header
     render_header(f, chunks[0]);
 
-    // Filter bar
-    let has_enough = app.available_snapshots.len() >= 2;
-    let filter_focused = app.focus == crate::app::Focus::FilterBar && app.mode == AppMode::Browsing;
-    filter_bar::render(
-        f,
-        chunks[1],
-        &app.filter_state,
-        &app.available_snapshots,
-        filter_focused,
-        app.filter_state.sub_focus,
-        has_enough,
-    );
-
     // Main content: split into tree (70%) and metadata (30%)
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(chunks[2]);
+        .split(chunks[1]);
 
     // File tree
+    let file_tree_focused = app.focus == crate::app::Focus::Tree && app.mode == AppMode::Browsing;
     file_tree::render(
         f,
         main_chunks[0],
@@ -126,6 +112,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         &app.match_indices,
         app.current_match,
         cursor_visible,
+        file_tree_focused,
     );
 
     // Metadata panel
@@ -135,9 +122,9 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         f,
         main_chunks[1],
         app.selected_line(),
-        app.has_delta_column(),
         has_scan,
         last_scan,
+        file_tree_focused,
     );
 
     // Status bar
@@ -145,9 +132,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
-        chunks[3],
+        chunks[2],
         app.mode,
-        app.focus,
         &app.view_root_path,
         app.scanning,
         app.scan_progress,

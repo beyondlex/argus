@@ -29,9 +29,9 @@
 |                      核心引擎层 (Core Engine)                  |
 |  +---------------------------------------------------------+  |
 |  |                    argus-core                            |  |
-|  |  - FileTree & Diff 算法 (核心数据结构)                    |  |
-|  |  - 快照序列化 (JSON / 二进制)                             |  |
-|  |  - AI 特征提取器 (结构化 Prompt 组装)                    |  |
+|  |  - FileTree 算法 (核心数据结构)                           |  |
+|  |  - SQLite 扫描记录持久化                                  |  |
+|  |  - 快照序列化 (JSON)                                      |  |
 |  |  - 多线程并行扫描器 (基于 ignore 库)                      |  |
 |  +---------------------------------------------------------+  |
 +---------------------------------------------------------------+
@@ -50,8 +50,7 @@ argus/
 │       ├── lib.rs
 │       ├── model.rs        # 核心数据结构
 │       ├── scanner.rs      # 文件扫描引擎
-│       ├── diff.rs         # 时间差分算法
-│       └── ai_feature.rs   # AI 特征提取
+│       └── db.rs           # SQLite 存储层
 ├── argusd/                 # 守护进程 (bin)
 │   ├── Cargo.toml
 │   └── src/
@@ -77,7 +76,7 @@ argus/
 | 模式 | 适用场景 | 实现原理 |
 |------|---------|---------|
 | **独立模式 (Standalone)** | CLI 自动化测试、一次性扫描；TUI 默认启动模式 | Clients 直接调用 `argus-core`，扫描历史写入 SQLite，客户端在内存中 materialize 为 `scan_cache` |
-| **服务模式 (Client-Server)** | TUI/GUI 需要秒级历史 Diff | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
+| **服务模式 (Client-Server)** | TUI/GUI 需要实时增量监控 | 通过 Unix Domain Socket (UDS) 与 `argusd` 通信。Windows 使用 Named Pipes |
 
 **独立模式下的文件树**：TUI 始终以用户当前工作目录 (cwd) 为根展示可自由游走的文件树。
 所有行为均通过调用 `argus-core` 实现，不依赖外部服务。
@@ -92,7 +91,6 @@ argus/
 - 文件始终展示真实大小（单次 `stat` 低成本）
 - 目录有扫描汇总大小时展示该值，否则展示 `"-"`
 - `...` 仅用于结构占位节点，表示深层元数据未持久化
-- Delta 是 scan 层上的可选覆盖层（受顶部筛选栏控制）
 - 详见 `docs/plans/standalone-fs-navigation-refactor.md`
 
 #### 模式切换时序
@@ -110,9 +108,9 @@ sequenceDiagram
     User->>Client: 启动客户端
 
     alt 无 daemon 可连接
-        Client->>Core: 直接调用扫描 / diff / explain
+        Client->>Core: 直接调用扫描 / 浏览
         Core->>FS: 读写 SQLite / snapshot 视图
-        Core-->>Client: 返回 Snapshot / DiffNode
+        Core-->>Client: 返回 Snapshot / FileNode
         Client-->>User: 独立模式可用
     else daemon 可连接
         Client->>Daemon: 连接 UDS
@@ -120,7 +118,7 @@ sequenceDiagram
         Client->>Daemon: 请求当前树 / 历史 delta
         Daemon->>DB: 查询时序数据
         DB-->>Daemon: 返回聚合结果
-        Daemon-->>Client: 返回 DiffNode / Tree 数据
+        Daemon-->>Client: 返回聚合数据
         Client-->>User: Server 模式可用
     end
 
@@ -134,7 +132,7 @@ sequenceDiagram
 
     opt daemon 断开或不可用
         Client-->>User: 自动降级回独立模式
-        Client->>Core: 回退为本地快照模式
+        Client->>Core: 回退为本地 SQLite 模式
     end
 ```
 
@@ -143,9 +141,9 @@ sequenceDiagram
 Phase 3 守护进程通信使用基于 `serde` 的 RPC 消息体；传输编码优先采用 `bincode`，与 Phase 1 快照 JSON 格式相互独立：
 
 ```rust
+// FUTURE: Phase 3 daemon IPC request types
 enum ArgusRequest {
-    GetDiff { from_timestamp: u64, to_timestamp: u64, threshold_bytes: u64 },
-    GetAIContext { path: PathBuf },
+    GetDelta { path: PathBuf, from: u64, to: u64 },
     TriggerDelete { path: PathBuf, secure: bool },
 }
 ```

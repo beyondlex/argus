@@ -16,13 +16,26 @@ pub fn render(
     f: &mut Frame,
     area: Rect,
     selected: Option<&TreeLine>,
-    has_delta: bool,
     has_scan: bool,
     last_scan: Option<DateTime<Utc>>,
+    file_tree_focused: bool,
 ) {
+    let title_style = Style::default().fg(if file_tree_focused {
+        Color::Magenta
+    } else {
+        Color::Gray
+    });
+    let border_style = Style::default().fg(if file_tree_focused {
+        Color::Magenta
+    } else {
+        Color::DarkGray
+    });
+
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
+        .border_style(border_style)
         .title(" Metadata ")
+        .title_style(title_style)
         .title_alignment(ratatui::layout::Alignment::Left);
 
     let inner = block.inner(area);
@@ -59,28 +72,6 @@ pub fn render(
             Style::default().fg(Color::Gray).bold(),
             Style::default().fg(Color::Yellow),
         );
-
-        // Size Delta
-        if has_delta {
-            // Use the flattened tree overlay delta so metadata matches the tree view.
-            let delta = line.delta;
-            let delta_str = util::format_delta(delta);
-            let delta_color = if delta > 0 {
-                Color::Red
-            } else if delta < 0 {
-                Color::Green
-            } else {
-                Color::Gray
-            };
-            push_kv_line(
-                &mut lines,
-                content_width,
-                "Delta:",
-                delta_str,
-                Style::default().fg(Color::Gray).bold(),
-                Style::default().fg(delta_color),
-            );
-        }
 
         // Modified Time
         if let Some(modified) = node.modified() {

@@ -34,7 +34,7 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
   - total size
   - item count
   - duration
-- The status bar only keeps `[Tree]` / `[Filter]` as the focus label.
+- The status bar keeps `[Tree]` as the focus label.
 
 ## UI Consistency Rules
 

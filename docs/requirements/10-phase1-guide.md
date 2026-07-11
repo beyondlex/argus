@@ -62,16 +62,15 @@ sha2 = "=0.10"
 ```
 argus-core/src/
 ├── lib.rs
-├── model.rs         # FileNode, Snapshot, DiffNode
+├── model.rs         # FileNode, Snapshot
 ├── scanner.rs       # Scanner 扫描引擎
-├── diff.rs          # compare_trees Diff 算法
-└── ai_feature.rs   # AiContext, extract_feature, generate_prompt
+└── db.rs            # SQLite 存储层
 ```
 
 ### 2.3 核心模块说明
 
 #### model.rs
-定义 `FileNode`、`Snapshot`、`DiffNode` 三个核心结构体，全部派生 `Serialize/Deserialize`（DiffNode 除外，它仅用于展示）。
+定义 `FileNode`、`Snapshot` 核心结构体，全部派生 `Serialize/Deserialize`。
 
 #### scanner.rs
 使用 `ignore::WalkBuilder` 实现扫描。Phase 1 优先选择同步 `Walk`，保证行为简单可测；`WalkParallel` 留到大目录性能优化时引入。
@@ -81,18 +80,11 @@ argus-core/src/
 4. **取消机制**：使用 `AtomicBool` 共享取消标志。在 `Walk::filter_entry` 回调中定期检查（每 1000 个文件）。扫描函数签名 `scan(path, cancel: &AtomicBool) -> Result<Snapshot, ScanError>`。收到取消信号时返回 `Err(ScanError::Cancelled)`，不返回部分快照。
 5. **进度感知**：扫描 30 秒后自动启用进度指示器。每扫描 10,000 个文件通过 `mpsc::Sender` 推送一次进度更新 `(file_count, total_bytes)`，上层 CLI/TUI 可选择监听渲染。
 
-#### diff.rs
-实现 `compare_trees` 递归函数：
-1. 处理四种状态（都存在/仅A/仅B/都不存在）。
-2. 目录节点递归合并子节点。
-3. 自底向上聚合 size_delta。
-4. 支持阈值过滤。
-
-#### ai_feature.rs
-实现 `extract_feature` 和 `generate_prompt`：
-- 从 Diff 树中按路径提取子树。
-- 统计 Top 5 大文件和后缀分布。
-- 组装结构化 Prompt 文本。
+#### db.rs
+实现 SQLite 存储层：
+1. `store_scan` — 写入扫描记录 (Snapshot) 到 SQLite。
+2. `load_scan` — 按 path_hash 加载最新扫描记录。
+3. `list_scans` — 列出所有扫描记录或按 path_hash 筛选。
 
 ### 2.4 补充模块
 
@@ -144,9 +136,8 @@ anyhow = "1.0"
 
 | 命令 | 参数 | 功能 |
 |------|------|------|
-| `scan` | `--path <PATH> --output <FILE>` | 扫描目录并保存快照 |
-| `diff` | `--old <FILE> --new <FILE> [--threshold <SIZE>] [--format <FMT>]` | 对比两个快照。`--threshold` 支持人类可读格式（`50MB`, `2.5GB`），默认 `0`。`--format` 支持 `text`（默认）/ `json` / `markdown` |
-| `explain` | `--old <FILE> --new <FILE> --target-path <PATH>` | 模拟 AI 诊断（仅打印 Prompt，不调用任何 API） |
+| `scan` | `--path <PATH>` | 扫描目录并写入 SQLite |
+| `list-scans` | `[--path <PATH>]` | 列出扫描记录，可选按路径筛选 |
 
 **阈值解析说明**（`argus-core` 提供工具函数）：
 ```rust
@@ -158,7 +149,7 @@ fn parse_human_size(input: &str) -> Result<u64, ParseSizeError>;
 ### 3.3 main.rs 结构
 
 ```rust
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -168,43 +159,21 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(ValueEnum, Clone, Default)]
-enum OutputFormat {
-    #[default]
-    Text,
-    Json,
-    Markdown,
-}
-
 #[derive(Subcommand)]
 enum Commands {
-    Scan { path: PathBuf, output: PathBuf },
-    Diff {
-        old: PathBuf,
-        new: PathBuf,
-        #[arg(long = "threshold", default_value = "0")]
-        threshold: String,
-        #[arg(long = "format", default_value = "text")]
-        format: OutputFormat,
-    },
-    Explain { old: PathBuf, new: PathBuf, target_path: PathBuf },
+    Scan { path: PathBuf },
+    ListScans { path: Option<PathBuf> },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Scan { path, output } => {
+        Commands::Scan { path } => {
             // 调用 Scanner::scan(path, &AtomicBool::new(false))
-            // 写入 Snapshot 到 output 文件
+            // 写入 Snapshot 到 SQLite
         }
-        Commands::Diff { old, new, threshold, format } => {
-            // 1. 读取两个 Snapshot 文件
-            // 2. 调用 diff::compare_trees()
-            // 3. 根据 format 打印结果
-            // 4. 退出码：无超阈值变动 → 0，有 → 1
-        }
-        Commands::Explain { old, new, target_path } => {
-            // 计算 Diff 树，提取特征并 println!(Prompt)
+        Commands::ListScans { path } => {
+            // 查询 SQLite 中的扫描记录
         }
     }
     Ok(())
@@ -215,58 +184,32 @@ fn main() -> anyhow::Result<()> {
 
 | 退出码 | 含义 |
 |--------|------|
-| `0` | 成功，无超阈值变动（scan 完成 / diff 无显著差异） |
-| `1` | 发现超阈值变动（diff 存在 `size_delta >= threshold` 的条目） |
+| `0` | 成功 |
 | `2` | 参数错误（clap 自动处理非法参数） |
-| `3` | IO 错误（快照文件不存在、权限不足） |
+| `3` | IO 错误（文件不存在、权限不足） |
 | `4` | 内部错误（快照损坏、反序列化失败） |
-
-```rust
-// Phase 1：简易实现，可直接在 main 中 match 退出
-fn exit_with_code(result: &DiffResult, threshold: u64) -> i32 {
-    if result.has_significant_changes(threshold) { 1 } else { 0 }
-}
-```
 
 ## 4. 验收标准 (Definition of Done)
 
 ### 4.1 测试全盘扫描与持久化
 
 ```bash
-cargo run -p argus-cli -- scan --path ~/Downloads --output ./snap_old.json
+cargo run -p argus-cli -- scan --path ~/Downloads
 ```
 
-**验证点**：检查 `./snap_old.json` 是否生成，内含合规的树状 JSON 数据。
+**验证点**：检查 SQLite 文件 `~/.config/argus/argus.db` 是否生成，内含合规的扫描记录。
 
-### 4.2 测试空间变动制造
-
-在 `~/Downloads` 中手动创建一个 50MB 临时文件，或向某个 log 追加大量文本。
-
-### 4.3 测试第二次扫描
+### 4.2 测试扫描记录查询
 
 ```bash
-cargo run -p argus-cli -- scan --path ~/Downloads --output ./snap_new.json
+cargo run -p argus-cli -- list-scans --path ~/Downloads
 ```
 
-### 4.4 测试时间差分输出
-
-```bash
-cargo run -p argus-cli -- diff --old ./snap_old.json --new ./snap_new.json --threshold 5MB
-```
-
-**验证点**：终端应清晰打印出制造的 50MB 变动文件及其父目录路径，变动量为正。
-
-### 4.5 测试 AI Prompt 组装
-
-```bash
-cargo run -p argus-cli -- explain --old ./snap_old.json --new ./snap_new.json --target-path ~/Downloads
-```
-
-**验证点**：拷贝终端打印的完整 Prompt 贴给大模型，检查回答是否契合"打消用户不敢删的恐惧"这一核心诉求。
+**验证点**：终端应显示该路径的扫描时间、总大小、文件数。
 
 ### 4.6 单元测试要求
 
-- 优先编写 `compare_trees` 的单元测试（`#[cfg(test)]`）。
+- 优先编写 `scanner` 和 `db` 层的单元测试（`#[cfg(test)]`）。
 - 使用 mock 的简易 `FileNode` 树进行断言。
 - 通过单元测试可发现 80% 的算法 Debug 问题。
 
@@ -299,21 +242,19 @@ let tree = file_tree! {
 
 | 场景 | 输入 | 预期 |
 |------|------|------|
-| 两空树 | `A = {}, B = {}` | `None` |
-| 单文件新增 | `A = {}`, `B = {file: 100}` | `size_delta = +100` |
-| 单文件删除 | `A = {file: 100}`, `B = {}` | `size_delta = -100` |
-| 目录新增 | `A = {}`, `B = {dir: {file: 200}}` | `size_delta = +200` |
-| 目录缩小 | `A = {dir: {f1: 100, f2: 200}}`, `B = {dir: {f1: 100}}` | `size_delta = -200` |
-| 深层嵌套 | 3 级目录树，中间节点有变动 | 子节点 delta 累加到所有祖先 |
-| 阈值过滤 | delta < 50 的节点 | 结果中不包含小变动节点 |
+| 空目录 | 空目录路径 | `Snapshot` 含根节点，无子节点 |
+| 单文件 | 含一个文件的目录 | `Snapshot` 含一个文件节点 |
+| 嵌套目录 | 3 级目录树，含多个文件 | 正确的树结构，汇总 size 等于子节点之和 |
+| 硬链接去重 | 同一 inode 出现两次 | size 只计一次 |
+| 取消扫描 | 触发 `AtomicBool` true | 返回 `Err(ScanError::Cancelled)` |
+| SQLite 读写 | 存入 Snapshot 再加载 | 取出内容与存入一致 |
 
 ## 5. 开发顺序建议
 
 ```
 第 1 步：model.rs — 数据结构定义
 第 2 步：scanner.rs — 扫描引擎（含单元测试）
-第 3 步：diff.rs — Diff 算法（含单元测试）
-第 4 步：ai_feature.rs — 特征提取 + Prompt 生成
-第 5 步：argus-cli/main.rs — CLI 命令解析与调用
-第 6 步：手动验收测试（按 4.1-4.5 执行）
+第 3 步：db.rs — SQLite 存储层（含单元测试）
+第 4 步：argus-cli/main.rs — CLI 命令解析与调用
+第 5 步：手动验收测试（按 4.1-4.5 执行）
 ```

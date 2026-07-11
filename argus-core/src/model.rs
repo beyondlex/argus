@@ -94,45 +94,6 @@ impl Snapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct DiffNode {
-    pub name: String,
-    pub is_dir: bool,
-    pub current_size: u64,
-    pub size_delta: i64,
-    pub children: HashMap<String, DiffNode>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum RiskLevel {
-    Safe,
-    Low,
-    Medium,
-    High,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiContext {
-    pub target_path: String,
-    pub size_delta_mb: f64,
-    pub current_size_mb: f64,
-    pub top_large_files: Vec<(String, u64)>,
-    pub primary_extensions: Vec<(String, f32)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiResult {
-    pub path: PathBuf,
-    pub label: String,
-    pub description: String,
-    pub risk_level: RiskLevel,
-    pub suggestion: String,
-    pub deletable: bool,
-    pub confidence: f32,
-}
-
-pub type AiCache = HashMap<PathBuf, AiResult>;
-
 #[derive(thiserror::Error, Debug)]
 pub enum ScanError {
     #[error("path not found: {0}")]
@@ -164,15 +125,6 @@ pub enum SnapshotError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum DiffError {
-    #[error("snapshot root path mismatch: {0} vs {1}")]
-    RootPathMismatch(PathBuf, PathBuf),
-
-    #[error("internal error: {0}")]
-    Internal(String),
 }
 
 #[derive(thiserror::Error, Debug)]

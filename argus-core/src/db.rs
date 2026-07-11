@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::model::{hash_root_path, DiffNode, FileNode, FileType, Snapshot};
+use crate::model::{hash_root_path, FileNode, FileType, Snapshot};
 
 #[derive(Debug, Clone)]
 pub struct PathRecord {
@@ -16,18 +16,6 @@ pub struct PathRecord {
     pub modified: Option<String>,
     pub inode: Option<u64>,
     pub device: Option<u64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PathDelta {
-    pub path: String,
-    pub size_from: u64,
-    pub size_to: u64,
-    pub delta: i64,
-    pub is_dir: bool,
-    pub file_type: FileType,
-    pub exists_from: bool,
-    pub exists_to: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,62 +127,6 @@ pub fn write_scan(conn: &mut Connection, snapshot: &Snapshot) -> Result<i64, DbE
     Ok(scan_id)
 }
 
-pub fn query_delta(
-    conn: &Connection,
-    root_path: &Path,
-    from_time: &DateTime<Utc>,
-    to_time: &DateTime<Utc>,
-) -> Result<Vec<PathDelta>, DbError> {
-    let root_scan = root_path.to_string_lossy().to_string();
-    let root_path_hash = hash_root_path(root_path);
-    let from_scan_id = resolve_scan_id(conn, &root_path_hash, from_time)?;
-    let to_scan_id = resolve_scan_id(conn, &root_path_hash, to_time)?;
-
-    let from_records = load_scoped_records(conn, from_scan_id, &root_scan)?;
-    let to_records = load_scoped_records(conn, to_scan_id, &root_scan)?;
-
-    let mut from_map: HashMap<String, PathRecord> = HashMap::new();
-    for record in from_records {
-        from_map.insert(relative_record_path(root_path, &record.path), record);
-    }
-
-    let mut to_map: HashMap<String, PathRecord> = HashMap::new();
-    for record in to_records {
-        to_map.insert(relative_record_path(root_path, &record.path), record);
-    }
-
-    let mut keys: Vec<String> = from_map.keys().chain(to_map.keys()).cloned().collect();
-    keys.sort();
-    keys.dedup();
-
-    let mut deltas = Vec::with_capacity(keys.len());
-    for key in keys {
-        let from = from_map.get(&key);
-        let to = to_map.get(&key);
-        let size_from = from.map(|r| r.size).unwrap_or(0);
-        let size_to = to.map(|r| r.size).unwrap_or(0);
-        let file_type = to
-            .map(|r| r.file_type)
-            .or_else(|| from.map(|r| r.file_type))
-            .unwrap_or(FileType::Other);
-
-        deltas.push(PathDelta {
-            path: key,
-            size_from,
-            size_to,
-            delta: i64_from_u64(size_to)? - i64_from_u64(size_from)?,
-            is_dir: to
-                .map(|r| r.is_dir)
-                .unwrap_or_else(|| from.map(|r| r.is_dir).unwrap_or(false)),
-            file_type,
-            exists_from: from.is_some(),
-            exists_to: to.is_some(),
-        });
-    }
-
-    Ok(deltas)
-}
-
 pub fn query_scan_timestamps(
     conn: &Connection,
     root_path: &Path,
@@ -299,28 +231,6 @@ pub fn rebuild_snapshot_by_id(
     })
 }
 
-pub fn build_diff_tree(records: &[PathDelta], root_name: &str) -> DiffNode {
-    let mut root = DiffNode {
-        name: root_name.to_string(),
-        is_dir: true,
-        current_size: 0,
-        size_delta: 0,
-        children: HashMap::new(),
-    };
-
-    for record in records {
-        if record.path.is_empty() {
-            root.current_size = record.size_to;
-            root.size_delta = record.delta;
-            continue;
-        }
-        insert_delta(&mut root, &record.path, record);
-    }
-
-    aggregate_diff(&mut root);
-    root
-}
-
 fn init_db(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "
@@ -353,39 +263,6 @@ fn init_db(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-fn resolve_scan_id(
-    conn: &Connection,
-    root_path_hash: &str,
-    requested_time: &DateTime<Utc>,
-) -> Result<i64, DbError> {
-    if let Some(id) = conn
-        .query_row(
-            "SELECT id
-             FROM scan_events
-             WHERE root_path_hash = ?1 AND timestamp <= ?2
-             ORDER BY timestamp DESC
-             LIMIT 1",
-            params![root_path_hash, requested_time.to_rfc3339()],
-            |row| row.get(0),
-        )
-        .optional()?
-    {
-        return Ok(id);
-    }
-
-    conn.query_row(
-        "SELECT id
-         FROM scan_events
-         WHERE root_path_hash = ?1 AND timestamp >= ?2
-         ORDER BY timestamp ASC
-         LIMIT 1",
-        params![root_path_hash, requested_time.to_rfc3339()],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or_else(|| DbError::NoScanFound(root_path_hash.to_string()))
-}
-
 fn latest_scan_id(conn: &Connection, root_path_hash: &str) -> Result<Option<i64>, DbError> {
     Ok(conn
         .query_row(
@@ -408,31 +285,6 @@ fn load_scan_records(conn: &Connection, scan_id: i64) -> Result<Vec<PathRecord>,
          ORDER BY path ASC",
     )?;
     let mut rows = stmt.query(params![scan_id])?;
-    let mut records = Vec::new();
-    while let Some(row) = rows.next()? {
-        records.push(path_record_from_row(row)?);
-    }
-    Ok(records)
-}
-
-fn load_scoped_records(
-    conn: &Connection,
-    scan_id: i64,
-    root_path: &str,
-) -> Result<Vec<PathRecord>, DbError> {
-    let query = if root_path == "/" {
-        "SELECT path, size, is_dir, file_type, modified, inode, device
-         FROM path_records
-         WHERE scan_id = ?1 AND (path = ?2 OR path LIKE '/%')
-         ORDER BY path ASC"
-    } else {
-        "SELECT path, size, is_dir, file_type, modified, inode, device
-         FROM path_records
-         WHERE scan_id = ?1 AND (path = ?2 OR path >= ?2 || '/' AND path < ?2 || '0')
-         ORDER BY path ASC"
-    };
-    let mut stmt = conn.prepare(query)?;
-    let mut rows = stmt.query(params![scan_id, root_path])?;
     let mut records = Vec::new();
     while let Some(row) = rows.next()? {
         records.push(path_record_from_row(row)?);
@@ -551,65 +403,6 @@ fn insert_record_recursive(
     insert_record_recursive(child, components, index + 1, record);
 }
 
-fn insert_delta(root: &mut DiffNode, path: &str, record: &PathDelta) {
-    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if components.is_empty() {
-        return;
-    }
-    insert_delta_recursive(root, &components, 0, record);
-}
-
-fn insert_delta_recursive(
-    current: &mut DiffNode,
-    components: &[&str],
-    index: usize,
-    record: &PathDelta,
-) {
-    let name = components[index];
-    if index + 1 == components.len() {
-        current.children.insert(
-            name.to_string(),
-            DiffNode {
-                name: name.to_string(),
-                is_dir: record.is_dir,
-                current_size: record.size_to,
-                size_delta: record.delta,
-                children: HashMap::new(),
-            },
-        );
-        return;
-    }
-
-    let child = current
-        .children
-        .entry(name.to_string())
-        .or_insert_with(|| DiffNode {
-            name: name.to_string(),
-            is_dir: true,
-            current_size: 0,
-            size_delta: 0,
-            children: HashMap::new(),
-        });
-    insert_delta_recursive(child, components, index + 1, record);
-}
-
-fn aggregate_diff(node: &mut DiffNode) -> (u64, i64) {
-    let mut total_size = node.current_size;
-    let mut total_delta = node.size_delta;
-    for child in node.children.values_mut() {
-        let (child_size, child_delta) = aggregate_diff(child);
-        total_size = total_size.saturating_add(child_size);
-        total_delta += child_delta;
-    }
-    if node.current_size == 0 {
-        node.current_size = total_size;
-    }
-    if node.size_delta == 0 {
-        node.size_delta = total_delta;
-    }
-    (node.current_size, node.size_delta)
-}
-
 fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, DbError> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
@@ -650,18 +443,6 @@ fn optional_i64_from_u64(value: Option<u64>) -> Result<Option<i64>, DbError> {
 
 fn u64_from_i64(value: i64) -> Result<u64, DbError> {
     u64::try_from(value).map_err(|_| DbError::NumericOverflow(value.to_string()))
-}
-
-fn relative_record_path(root_path: &Path, path: &str) -> String {
-    let full = Path::new(path);
-    if full == root_path {
-        return String::new();
-    }
-    full.strip_prefix(root_path)
-        .unwrap_or(full)
-        .to_string_lossy()
-        .trim_start_matches('/')
-        .to_string()
 }
 
 #[cfg(test)]
@@ -802,68 +583,5 @@ mod tests {
         let summaries = query_root_summaries(&conn).unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].scan_count, 2);
-    }
-
-    #[test]
-    fn test_query_delta_reports_additions_and_deletions() {
-        let temp = tempdir().unwrap();
-        let db_path = temp.path().join("argus.db");
-        let mut conn = open_db(&db_path).unwrap();
-
-        let root_path = Path::new("/tmp/downloads");
-        let old = sample_snapshot(root_path);
-        let mut new = sample_snapshot(root_path);
-        new.root_node
-            .children
-            .insert("new.txt".to_string(), file_node("new.txt", 25));
-        new.root_node.children.remove("b.txt");
-
-        let mut old_clone = old.clone();
-        old_clone.timestamp = Utc::now() - chrono::Duration::days(1);
-        let mut new_clone = new.clone();
-        new_clone.timestamp = Utc::now();
-
-        write_scan(&mut conn, &old_clone).unwrap();
-        write_scan(&mut conn, &new_clone).unwrap();
-
-        let deltas =
-            query_delta(&conn, root_path, &old_clone.timestamp, &new_clone.timestamp).unwrap();
-        assert!(deltas
-            .iter()
-            .any(|d| d.path == "new.txt" && d.exists_to && !d.exists_from));
-        assert!(deltas
-            .iter()
-            .any(|d| d.path == "b.txt" && d.exists_from && !d.exists_to));
-    }
-
-    #[test]
-    fn test_build_diff_tree_uses_root_name() {
-        let records = vec![
-            PathDelta {
-                path: String::new(),
-                size_from: 100,
-                size_to: 120,
-                delta: 20,
-                is_dir: true,
-                file_type: FileType::Directory,
-                exists_from: true,
-                exists_to: true,
-            },
-            PathDelta {
-                path: "dir/a.txt".to_string(),
-                size_from: 10,
-                size_to: 20,
-                delta: 10,
-                is_dir: false,
-                file_type: FileType::File,
-                exists_from: true,
-                exists_to: true,
-            },
-        ];
-
-        let tree = build_diff_tree(&records, "downloads");
-        assert_eq!(tree.name, "downloads");
-        assert!(tree.children.contains_key("dir"));
-        assert_eq!(tree.size_delta, 20);
     }
 }

@@ -73,20 +73,7 @@ pub struct Snapshot {
 |------|------|------|
 | `root_path_hash` | `String` | `sha256(root_path)` 前 8 字符。用于快照文件命名、快速校验路径一致性，防止加载错误路径的快照。写入时由 `Snapshot::new()` 自动计算 |
 
-### 1.3 DiffNode（差分节点）
-
-对比结果，非持久化，用于展示。
-
-```rust
-#[derive(Debug, Clone)]
-pub struct DiffNode {
-    pub name: String,
-    pub is_dir: bool,
-    pub current_size: u64,
-    pub size_delta: i64,      // 增长为正，减少为负
-    pub children: HashMap<String, DiffNode>,
-}
-```
+> **2026-07 架构变更**：`DiffNode` 已被移除。Phase 2（独立模式）无 delta 功能。Delta 将在 Phase 3（Daemon 模式）中通过增量事件聚合实现，数据结构届时重新设计。
 
 ## 2. 核心算法
 
@@ -99,66 +86,7 @@ pub struct DiffNode {
 4. 按路径深度从深到浅排序。
 5. 将子节点 size 累加到父节点。
 
-### 2.2 Tree Merge Diff 算法
-
-```
-输入：node_a（快照 A 的 FileNode）, node_b（快照 B 的 FileNode）
-输出：DiffNode（合并后的差分树）
-
-算法步骤：
-1. 若 A 和 B 均不存在 → 返回 None
-2. 若 A 存在而 B 不存在 → 文件被删除
-   size_delta = -(A.size), current_size = 0
-3. 若 B 存在而 A 不存在 → 文件新增
-   size_delta = B.size, current_size = B.size
-4. 若 A 和 B 均存在 → 对比变化
-   size_delta = B.size - A.size, current_size = B.size
-5. 如果是目录，递归合并子节点（Union Keys）
-6. 过滤掉 size_delta == 0 且 current_size == 0 的未变动节点
-7. 自底向上：子节点 size_delta 累加到父节点
-```
-
-### 2.3 AI 特征提取 & 结果映射
-
-```rust
-/// 发送给 AI 的单条目录上下文（输入）
-pub struct AiContext {
-    pub target_path: String,
-    pub size_delta_mb: f64,
-    pub current_size_mb: f64,
-    pub top_large_files: Vec<(String, u64)>,
-    pub primary_extensions: Vec<(String, f32)>,
-}
-
-/// 风险等级（与 07-safety.md 一致）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum RiskLevel {
-    Safe,       // 用户个人目录下的非系统缓存
-    Low,        // 应用程序缓存目录
-    Medium,     // 系统级辅助目录（如 /var/tmp）
-    High,       // 系统目录
-}
-
-/// AI 对单个路径的分析结论（输出）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiResult {
-    pub path: PathBuf,
-    pub label: String,           // 来源实体名，如 "Docker Buildx", "pip cache"
-    pub description: String,     // 用途说明
-    pub risk_level: RiskLevel,   // 删除风险等级
-    pub suggestion: String,      // 治理建议
-    pub deletable: bool,         // AI 认为是否可删
-    pub confidence: f32,         // AI 置信度 0.0-1.0
-}
-
-/// AI 缓存：以全路径为键，避免重复请求同一目录
-pub type AiCache = HashMap<PathBuf, AiResult>;
-```
-
-提取逻辑：
-1. 根据用户选中的子路径，从 Diff 树中截取对应子树。
-2. 统计子树下变动最大的 Top 5 文件。
-3. 计算主要后缀名分布（如 `.log` 占 90%）。
+> **2026-07 架构变更**：AI 特征提取（`AiContext`、`AiResult`）随 Snapshot Diff 一同移除，将在 Phase 4（Daemon 模式 + AI）中重新设计。
 
 ### 2.4 惰性目录列举（list_dir）
 
@@ -403,6 +331,4 @@ FROM ...
 
 ### 6.3 与树渲染的关系
 
-- `Snapshot` 仍然用于表示当前视图树，但由 SQLite materialize 得到。
-- `DiffNode` 仍然是 diff 展示结构。
-- TUI 的渲染层对数据来源保持无感知。
+- `Snapshot` 用于表示当前视图树，由 SQLite materialize 得到。

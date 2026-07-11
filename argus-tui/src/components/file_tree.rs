@@ -27,11 +27,20 @@ pub fn render(
     match_indices: &[SearchMatch],
     current_match: usize,
     cursor_visible: bool,
+    focus: bool,
 ) {
     let title = format!(" {} ", view_root_path.display());
+    let title_style = Style::default().fg(if focus { Color::Magenta } else { Color::Gray });
+    let border_style = Style::default().fg(if focus {
+        Color::Magenta
+    } else {
+        Color::DarkGray
+    });
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
+        .border_style(border_style)
         .title(title)
+        .title_style(title_style)
         .title_alignment(ratatui::layout::Alignment::Left);
     let inner = block.inner(area);
     let content_width = inner.width.saturating_sub(1);
@@ -113,7 +122,7 @@ fn filter_status_line<'a>(
 ) -> Line<'a> {
     match filter_mode {
         FilterMode::Inactive => Line::from(vec![Span::styled(
-            "[type / to filter]",
+            "  [type / to filter]",
             Style::default().fg(Color::DarkGray),
         )]),
         FilterMode::Input => {
@@ -121,15 +130,22 @@ fn filter_status_line<'a>(
             display.push(if cursor_visible { '▎' } else { ' ' });
             let count = format!(" ({}/{})", match_indices.len(), lines.len());
             Line::from(vec![
-                Span::styled(display, Style::default().fg(Color::Yellow)),
+                Span::styled(format!("  {display}"), Style::default().fg(Color::Yellow)),
                 Span::styled(count, Style::default().fg(Color::DarkGray)),
             ])
         }
         FilterMode::Active => {
-            let count = format!(" ({}/{})", match_indices.len(), lines.len());
+            let count = format!(
+                " ({}/{})  [n]next  [N]prev [ESC]clear [Enter]edit ",
+                match_indices.len(),
+                lines.len()
+            );
             Line::from(vec![
-                Span::styled(filter_word.to_string(), Style::default().fg(Color::Green)),
-                Span::styled(count, Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("  {}", filter_word.to_string()),
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(count, Style::default().fg(Color::Magenta)),
             ])
         }
     }
@@ -211,32 +227,13 @@ fn render_tree_line<'a>(
         base.fg(Color::Yellow).bg(Color::Reset)
     };
 
-    let delta = line.delta;
-    let delta_str = if delta != 0 {
-        let delta_color = if delta > 0 { Color::Red } else { Color::Green };
-        Some((
-            util::format_delta(delta),
-            base.fg(delta_color).add_modifier(Modifier::BOLD),
-        ))
-    } else {
-        None
-    };
-
-    // Calculate visible widths for right-alignment
     let name_width: usize = spans.iter().map(|s| s.content.len()).sum();
     let size_width = size_str.len();
-    let delta_width = delta_str.as_ref().map(|(s, _)| s.len()).unwrap_or(0);
-    let gap = if delta_str.is_some() { 2 } else { 1 };
-    let right_block = delta_width + gap + size_width;
-    let pad = (content_width as usize).saturating_sub(name_width + right_block);
+    let pad = (content_width as usize).saturating_sub(name_width + 1 + size_width);
 
     if pad > 0 {
         spans.push(Span::raw(" ".repeat(pad)));
     } else {
-        spans.push(Span::raw(" "));
-    }
-    if let Some((ds, style)) = delta_str {
-        spans.push(Span::styled(ds, style));
         spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(size_str, size_style));

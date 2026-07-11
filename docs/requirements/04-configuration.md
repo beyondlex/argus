@@ -38,10 +38,9 @@ move_up = "k"
 move_down = "j"
 enter_dir = "l"
 leave_dir = "h"
-sort_toggle = "o"         # 在体积排序与增量排序间切换
-ai_diagnose = "a"         # Phase 4：手动触发 AI 诊断
+sort_toggle = "o"         # 在名称排序与体积排序间切换
 delete_item = "d"
-focus_panel = "tab"       # 在主要面板之间切换焦点（Phase 2 仅文件树 / 筛选栏 / 元数据）
+focus_panel = "tab"       # 在主要面板之间切换焦点
 quit = "q"
 ```
 
