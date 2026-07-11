@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use ratatui::{
@@ -28,8 +29,13 @@ pub fn render(
     current_match: usize,
     cursor_visible: bool,
     focus: bool,
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
 ) {
-    let title = format!(" {} ", view_root_path.display());
+    let title = if delta_cache.is_some() {
+        format!(" {}  [Δ column] ", view_root_path.display())
+    } else {
+        format!(" {} ", view_root_path.display())
+    };
     let title_style = Style::default().fg(if focus { Color::Magenta } else { Color::Gray });
     let border_style = Style::default().fg(if focus {
         Color::Magenta
@@ -71,11 +77,15 @@ pub fn render(
     let end = (scroll_offset + available_height).min(lines.len());
     let visible_lines = &lines[scroll_offset..end];
 
+    let has_delta = delta_cache.is_some();
+
     for (display_offset, line) in visible_lines.iter().enumerate() {
         let global_idx = scroll_offset + display_offset;
         let is_selected = global_idx == cursor;
         let is_current_match =
             is_active_match && match_indices[current_match].tree_idx == Some(global_idx);
+
+        let delta = delta_cache.and_then(|c| c.get(&line.path).copied());
 
         rendered_lines.push(render_tree_line(
             line,
@@ -84,6 +94,8 @@ pub fn render(
             filter_mode != FilterMode::Inactive && !filter_word.is_empty(),
             filter_word,
             content_width,
+            has_delta,
+            delta,
         ));
     }
 
@@ -186,6 +198,8 @@ fn render_tree_line<'a>(
     has_filter: bool,
     filter_word: &'a str,
     content_width: u16,
+    has_delta: bool,
+    delta: Option<i64>,
 ) -> Line<'a> {
     let bg = if is_current_match {
         Color::Blue
@@ -226,8 +240,19 @@ fn render_tree_line<'a>(
         base.fg(Color::Yellow).bg(Color::Reset)
     };
 
+    let delta_str = if has_delta {
+        match delta {
+            Some(d) if d > 0 => format!(" +{}", util::format_size(d as u64)),
+            Some(d) if d < 0 => format!(" -{}", util::format_size(d.unsigned_abs())),
+            Some(_) => "  -".to_string(),
+            None => "  ?".to_string(),
+        }
+    } else {
+        String::new()
+    };
+
     let name_width: usize = spans.iter().map(|s| s.content.len()).sum();
-    let size_width = size_str.len();
+    let size_width = size_str.len() + delta_str.len();
     let pad = (content_width as usize).saturating_sub(name_width + 1 + size_width);
 
     if pad > 0 {
@@ -235,6 +260,18 @@ fn render_tree_line<'a>(
     } else {
         spans.push(Span::raw(" "));
     }
+
+    if has_delta {
+        let delta_style = match delta {
+            Some(d) if d > 0 => base.fg(Color::Red).bg(Color::Reset),
+            Some(d) if d < 0 => base.fg(Color::Green).bg(Color::Reset),
+            Some(_) => base.fg(Color::DarkGray).bg(Color::Reset),
+            None => base.fg(Color::DarkGray).bg(Color::Reset),
+        };
+        spans.push(Span::styled(delta_str, delta_style));
+        spans.push(Span::raw(" "));
+    }
+
     spans.push(Span::styled(size_str, size_style));
 
     Line::from(spans)

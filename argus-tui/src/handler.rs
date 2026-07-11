@@ -9,6 +9,7 @@ use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, TreeNode};
 use crate::event::SHOULD_QUIT;
+use crate::ipc_client::IpcClient;
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
@@ -177,6 +178,28 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
 
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
+        }
+        KeyCode::Char('t') if app.server_mode => {
+            let next = (app.time_preset + 1) % 4;
+            app.set_time_preset(next);
+            app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
+            app.request_delta_refresh();
+        }
+        KeyCode::Char('R') if !app.server_mode => {
+            let path = crate::config::TuiConfig::default().daemon.uds_path.clone();
+            let path_clone = path.clone();
+            let tx = app.tx.clone();
+            tokio::spawn(async move {
+                if let Ok(mut client) = IpcClient::connect(&path_clone).await {
+                    if client.ping().await.is_ok() {
+                        let _ = tx.send(AppMessage::DaemonConnected(client)).await;
+                        return;
+                    }
+                }
+                let _ = tx
+                    .send(AppMessage::Error("daemon reconnect failed".into()))
+                    .await;
+            });
         }
         KeyCode::Char('i') => {
             if let Some(path) = app.selected_node_full_path() {

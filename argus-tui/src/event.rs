@@ -141,6 +141,11 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
     // File tree
     let file_tree_focused = app.focus == crate::app::Focus::Tree && app.mode == AppMode::Browsing;
+    let delta_cache = if app.server_mode {
+        Some(&app.delta_cache)
+    } else {
+        None
+    };
     file_tree::render(
         f,
         main_chunks[0],
@@ -155,6 +160,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         app.current_match,
         cursor_visible,
         file_tree_focused,
+        delta_cache,
     );
 
     // Status bar
@@ -171,6 +177,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         scan_elapsed,
         app.last_scan_summary.as_ref(),
         error_str,
+        app.server_mode,
+        app.server_connected,
     );
 
     // Overlays
@@ -239,7 +247,11 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
         "This will move the item to trash."
     };
 
-    let confirm_label = if permanent { "Permanently delete" } else { "Confirm delete" };
+    let confirm_label = if permanent {
+        "Permanently delete"
+    } else {
+        "Confirm delete"
+    };
 
     let text = Paragraph::new(vec![
         Line::from(vec![Span::styled(
@@ -262,7 +274,10 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
                 "y",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!(" - {}  ", confirm_label), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" - {}  ", confirm_label),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(
                 "n",
                 Style::default()

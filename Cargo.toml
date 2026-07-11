@@ -3,5 +3,6 @@ members = [
     "argus-core",
     "argus-cli",
     "argus-tui",
+    "argusd",
 ]
 resolver = "2"

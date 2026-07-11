@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 
 use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 
+use crate::ipc_client::IpcClient;
+
 /// Directories with more children than this won't have their subtree matched or expanded
 /// during search navigation. Prevents n/N from hanging when jumping into massive directories.
 const MAX_DIR_CHILDREN: usize = 2000;
@@ -16,10 +18,12 @@ const MAX_DIR_CHILDREN: usize = 2000;
 // ── Data types ──────────────────────────────────────────────────────────────
 
 /// Messages from background tasks to the UI
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AppMessage {
     ScanProgress { file_count: u64, total_bytes: u64 },
     ScanComplete(Snapshot),
+    DaemonConnected(IpcClient),
+    DeltaData(HashMap<Vec<String>, i64>),
     Error(String),
 }
 
@@ -146,6 +150,15 @@ pub struct App {
     // Scan cache: path → full scanned snapshot
     pub scan_cache: HashMap<PathBuf, Snapshot>,
 
+    // Server mode (connected to daemon)
+    pub server_mode: bool,
+    pub daemon_client: Option<IpcClient>,
+    pub server_connected: bool,
+    pub delta_cache: HashMap<Vec<String>, i64>,
+    pub time_from: u64,
+    pub time_to: u64,
+    pub time_preset: usize,
+
     // Tree filter (fuzzy search)
     pub filter_word: String,
     pub filter_mode: FilterMode,
@@ -209,6 +222,13 @@ impl App {
             scroll_offset: 0,
             expanded: HashSet::new(),
             scan_cache: HashMap::new(),
+            server_mode: false,
+            daemon_client: None,
+            server_connected: false,
+            delta_cache: HashMap::new(),
+            time_from: 0,
+            time_to: 0,
+            time_preset: 0,
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -236,6 +256,9 @@ impl App {
     pub fn rebuild_tree(&mut self) {
         self.build_current_tree();
         self.update_tree_lines();
+        if self.server_mode {
+            self.request_delta_refresh();
+        }
     }
 
     fn build_current_tree(&mut self) {
@@ -336,6 +359,17 @@ impl App {
                 self.scanning = false;
                 self.scan_started_at = None;
                 self.set_error(e, 5);
+            }
+            AppMessage::DaemonConnected(client) => {
+                self.server_mode = true;
+                self.server_connected = true;
+                self.daemon_client = Some(client);
+                self.default_time_range();
+                self.set_error("connected to daemon".into(), 2);
+                self.request_delta_refresh();
+            }
+            AppMessage::DeltaData(deltas) => {
+                self.delta_cache = deltas;
             }
         }
     }
@@ -474,7 +508,69 @@ impl App {
         self.tree_lines.get(idx).map(|line| line.path.clone())
     }
 
-    /// Get the full path of the selected node
+    /// Set time range preset (0=1h, 1=6h, 2=24h, 3=7d)
+    pub fn set_time_preset(&mut self, preset: usize) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.time_to = now;
+        self.time_preset = preset;
+        self.time_from = match preset {
+            0 => now.saturating_sub(3_600_000),   // 1h
+            1 => now.saturating_sub(21_600_000),  // 6h
+            2 => now.saturating_sub(86_400_000),  // 24h
+            3 => now.saturating_sub(604_800_000), // 7d
+            _ => now.saturating_sub(3_600_000),
+        };
+    }
+
+    pub fn default_time_range(&mut self) {
+        self.set_time_preset(0);
+    }
+
+    pub fn time_preset_label(preset: usize) -> &'static str {
+        match preset {
+            0 => "1h",
+            1 => "6h",
+            2 => "24h",
+            3 => "7d",
+            _ => "1h",
+        }
+    }
+
+    /// Request delta data from daemon for all tree lines (spawns background task)
+    pub fn request_delta_refresh(&mut self) {
+        let paths: Vec<Vec<String>> = self.tree_lines.iter().map(|l| l.path.clone()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        let view_root = self.view_root_path.clone();
+        let from = self.time_from;
+        let to = self.time_to;
+        let tx = self.tx.clone();
+        let uds = crate::config::TuiConfig::default().daemon.uds_path.clone();
+        tokio::spawn(async move {
+            let mut client = match IpcClient::connect(&uds).await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let mut deltas = HashMap::new();
+            for path in &paths {
+                // Build absolute path from view_root + relative path components (skip root name)
+                let mut full = view_root.clone();
+                for comp in path.iter().skip(1) {
+                    full.push(comp);
+                }
+                if let Ok((total, _)) = client.get_delta(&full, from, to).await {
+                    if total != 0 {
+                        deltas.insert(path.clone(), total);
+                    }
+                }
+            }
+            let _ = tx.send(AppMessage::DeltaData(deltas)).await;
+        });
+    }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();
         let relative = self.tree_line_relative_path(self.cursor)?;
@@ -793,7 +889,7 @@ mod tests {
     use super::*;
     use crate::config::TuiConfig;
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use tokio::sync::mpsc;
 

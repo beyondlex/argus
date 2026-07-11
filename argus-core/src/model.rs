@@ -156,6 +156,24 @@ pub enum ParseSizeError {
     Overflow,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaEvent {
+    pub path: PathBuf,
+    pub delta_size: i64,
+    pub event_type: String,
+    pub timestamp: u64,
+    pub is_agg: bool,
+    pub process_info: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaEntry {
+    pub path: PathBuf,
+    pub delta_size: i64,
+    pub event_type: String,
+    pub timestamp: u64,
+}
+
 pub const SNAPSHOT_VERSION: u32 = 2;
 
 pub fn hash_root_path(path: &Path) -> String {

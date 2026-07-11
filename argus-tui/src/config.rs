@@ -9,6 +9,20 @@ pub struct TuiConfig {
     pub keybindings: Keybindings,
     pub theme: Theme,
     pub browsing: BrowsingConfig,
+    pub daemon: DaemonAccessConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonAccessConfig {
+    pub uds_path: String,
+}
+
+impl Default for DaemonAccessConfig {
+    fn default() -> Self {
+        Self {
+            uds_path: argus_core::DEFAULT_UDS_PATH.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +110,12 @@ struct RawConfig {
     keybindings: Option<RawKeybindings>,
     theme: Option<RawTheme>,
     browsing: Option<RawBrowsing>,
+    daemon: Option<RawDaemon>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDaemon {
+    uds_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,6 +202,12 @@ pub fn load_config(path: &Path) -> TuiConfig {
         }
         if let Some(v) = b.skip_dirs {
             config.browsing.skip_dirs = v;
+        }
+    }
+
+    if let Some(d) = raw.daemon {
+        if let Some(v) = d.uds_path {
+            config.daemon.uds_path = v;
         }
     }
 
