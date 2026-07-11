@@ -319,6 +319,14 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             };
             app.filter_focus = next;
         }
+        KeyCode::BackTab => {
+            let next = match app.filter_focus {
+                FilterFocus::TimePreset => FilterFocus::DeltaUnit,
+                FilterFocus::DeltaValue => FilterFocus::TimePreset,
+                FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
+            };
+            app.filter_focus = next;
+        }
         KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
             FilterFocus::TimePreset => {
                 let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;

@@ -175,7 +175,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
-        chunks[2],
+        chunks[3],
         app.mode,
         &app.view_root_path,
         app.scanning,
@@ -235,28 +235,33 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let is_focused = app.focus == Focus::FilterPane;
 
-    // Build time span
     let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
+    let time_label_len = time_label.len();
     let time_style = if is_focused && app.filter_focus == FilterFocus::TimePreset {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(Color::White).bg(Color::Black)
     };
 
-    // Highlight the focused field within the delta part
     let delta_value_style = if is_focused && app.filter_focus == FilterFocus::DeltaValue {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::Yellow).bg(Color::Black)
     };
 
     let delta_unit_style = if is_focused && app.filter_focus == FilterFocus::DeltaUnit {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(Color::Cyan).bg(Color::Black)
     };
 
-    let delta_prefix_style = Style::default().fg(Color::DarkGray);
+    let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
+
+    let hint = format!(
+        " [{}]Focus [Tab]cycle [c]Clear ",
+        if is_focused { "Esc" } else { "f" }
+    );
+    let hint_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
 
     let line = Line::from(vec![
         Span::styled(time_label, time_style),
@@ -284,14 +289,18 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             delta_unit_style,
         ),
         Span::styled(
-            format!(
-                "  [{}]Focus [Tab]cycle [c]Clear",
-                if is_focused { "Esc" } else { "f" }
+            " ".repeat(
+                (area.width as usize)
+                    .saturating_sub(3 + time_label_len + 2 + 9 + 6 + 2 + hint.len()),
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().bg(Color::Black),
         ),
+        Span::styled(hint, hint_style),
     ]);
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(Color::Black)),
+        area,
+    );
 }
 fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
     use ratatui::{
