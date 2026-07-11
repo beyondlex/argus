@@ -18,7 +18,8 @@ const SCROLL_MARGIN: usize = 3;
 pub fn render(
     f: &mut Frame,
     area: Rect,
-    lines: &[TreeLine],
+    tree_lines: &[TreeLine],
+    filtered_indices: &[usize],
     cursor: usize,
     scroll_offset: usize,
     _sort_mode: SortMode,
@@ -54,6 +55,9 @@ pub fn render(
     let is_active_match = filter_mode == FilterMode::Active && current_match < match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
 
+    // Use filtered_indices for total count; cursor is index into filtered view
+    let total_filtered = filtered_indices.len();
+
     let scroll_offset = if cursor >= scroll_offset + available_height.saturating_sub(SCROLL_MARGIN)
     {
         cursor
@@ -71,19 +75,22 @@ pub fn render(
         filter_word,
         cursor_visible,
         match_indices,
-        lines,
+        tree_lines,
     ));
 
-    let end = (scroll_offset + available_height).min(lines.len());
-    let visible_lines = &lines[scroll_offset..end];
+    let end = (scroll_offset + available_height).min(total_filtered);
+    let visible_indices = &filtered_indices[scroll_offset..end];
 
     let has_delta = delta_cache.is_some();
 
-    for (display_offset, line) in visible_lines.iter().enumerate() {
+    for (display_offset, &tree_idx) in visible_indices.iter().enumerate() {
+        let Some(line) = tree_lines.get(tree_idx) else {
+            continue;
+        };
         let global_idx = scroll_offset + display_offset;
         let is_selected = global_idx == cursor;
         let is_current_match =
-            is_active_match && match_indices[current_match].tree_idx == Some(global_idx);
+            is_active_match && match_indices[current_match].tree_idx == Some(tree_idx);
 
         let delta = delta_cache.and_then(|c| c.get(&line.path).copied());
 
@@ -99,9 +106,9 @@ pub fn render(
         ));
     }
 
-    let has_scrollbar = lines.len() > available_height;
+    let has_scrollbar = total_filtered > available_height;
     if has_scrollbar {
-        let total_visible = lines.len().saturating_add(1);
+        let total_visible = total_filtered.saturating_add(1);
         let mut scrollbar_state =
             ScrollbarState::new(total_visible).position(scroll_offset.saturating_add(1));
 

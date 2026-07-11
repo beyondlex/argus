@@ -40,7 +40,30 @@ pub enum AppMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Focus {
     Tree,
+    FilterPane,
 }
+
+/// Which field in the filter pane has focus
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterFocus {
+    TimePreset,
+    DeltaValue,
+    DeltaUnit,
+}
+
+/// Multiplier for delta filter unit index
+pub fn delta_unit_multiplier(unit: usize) -> u64 {
+    match unit {
+        0 => 1024,               // KB
+        1 => 1024 * 1024,        // MB
+        2 => 1024 * 1024 * 1024, // GB
+        _ => 1,
+    }
+}
+
+pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
+
+pub const TIME_PRESET_COUNT: usize = 7;
 
 /// Tree filter mode
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -159,6 +182,13 @@ pub struct App {
     pub time_to: u64,
     pub time_preset: usize,
 
+    // Filter pane state
+    pub filter_focus: FilterFocus,
+    pub delta_filter_active: bool,
+    pub delta_filter_value: u64,
+    pub delta_filter_unit: usize, // 0=KB, 1=MB, 2=GB
+    pub filtered_tree_lines: Vec<usize>,
+
     // Tree filter (fuzzy search)
     pub filter_word: String,
     pub filter_mode: FilterMode,
@@ -229,6 +259,11 @@ impl App {
             time_from: 0,
             time_to: 0,
             time_preset: 0,
+            filter_focus: FilterFocus::TimePreset,
+            delta_filter_active: false,
+            delta_filter_value: 100,
+            delta_filter_unit: 1,
+            filtered_tree_lines: Vec::new(),
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
@@ -319,6 +354,7 @@ impl App {
         if self.cursor >= self.tree_lines.len() && !self.tree_lines.is_empty() {
             self.cursor = self.tree_lines.len() - 1;
         }
+        self.refresh_filtered_lines();
     }
 
     /// Handle a message from background tasks
@@ -370,6 +406,7 @@ impl App {
             }
             AppMessage::DeltaData(deltas) => {
                 self.delta_cache = deltas;
+                self.refresh_filtered_lines();
             }
         }
     }
@@ -480,12 +517,15 @@ impl App {
         }
 
         self.tree_lines.splice(pos + 1..pos + 1, new_lines);
+        self.refresh_filtered_lines();
         true
     }
 
-    /// Get the currently selected tree line
+    /// Get the currently selected tree line (from filtered view)
     pub fn selected_line(&self) -> Option<&TreeLine> {
-        self.tree_lines.get(self.cursor)
+        self.filtered_tree_lines
+            .get(self.cursor)
+            .and_then(|&idx| self.tree_lines.get(idx))
     }
 
     /// Set error message and log to file.
@@ -502,12 +542,15 @@ impl App {
             .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
     }
 
-    /// Return the relative path of the tree line at `idx`, rooted at `view_root_path`.
+    /// Return the relative path of the tree line at `idx` (into filtered view), rooted at `view_root_path`.
     pub fn tree_line_relative_path(&self, idx: usize) -> Option<Vec<String>> {
-        self.tree_lines.get(idx).map(|line| line.path.clone())
+        self.filtered_tree_lines
+            .get(idx)
+            .and_then(|&actual| self.tree_lines.get(actual))
+            .map(|line| line.path.clone())
     }
 
-    /// Set time range preset (0=1h, 1=6h, 2=24h, 3=7d)
+    /// Set time range preset (0=1h, 1=6h, 2=12h, 3=24h, 4=1d, 5=3d, 6=7d)
     pub fn set_time_preset(&mut self, preset: usize) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -518,8 +561,11 @@ impl App {
         self.time_from = match preset {
             0 => now.saturating_sub(3_600_000),   // 1h
             1 => now.saturating_sub(21_600_000),  // 6h
-            2 => now.saturating_sub(86_400_000),  // 24h
-            3 => now.saturating_sub(604_800_000), // 7d
+            2 => now.saturating_sub(43_200_000),  // 12h
+            3 => now.saturating_sub(86_400_000),  // 24h
+            4 => now.saturating_sub(86_400_000),  // 1d (same as 24h)
+            5 => now.saturating_sub(259_200_000), // 3d
+            6 => now.saturating_sub(604_800_000), // 7d
             _ => now.saturating_sub(3_600_000),
         };
     }
@@ -532,10 +578,85 @@ impl App {
         match preset {
             0 => "1h",
             1 => "6h",
-            2 => "24h",
-            3 => "7d",
+            2 => "12h",
+            3 => "24h",
+            4 => "1d",
+            5 => "3d",
+            6 => "7d",
             _ => "1h",
         }
+    }
+    /// Rebuild filtered_tree_lines from tree_lines based on delta filter
+    pub fn refresh_filtered_lines(&mut self) {
+        if !self.delta_filter_active {
+            self.filtered_tree_lines = (0..self.tree_lines.len()).collect();
+        } else {
+            let threshold = self.delta_filter_value * delta_unit_multiplier(self.delta_filter_unit);
+            let strict = self.delta_filter_value == 0;
+            self.filtered_tree_lines = self
+                .tree_lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let delta = self.delta_cache.get(&line.path).copied().unwrap_or(0);
+                    if strict {
+                        delta > 0
+                    } else {
+                        (delta as u64) >= threshold
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if self.cursor >= self.filtered_tree_lines.len() && !self.filtered_tree_lines.is_empty() {
+            self.cursor = self.filtered_tree_lines.len() - 1;
+        }
+    }
+    /// Get the current delta filter threshold in bytes, or 0 if inactive
+    pub fn delta_filter_threshold(&self) -> u64 {
+        if !self.delta_filter_active {
+            0
+        } else {
+            self.delta_filter_value * delta_unit_multiplier(self.delta_filter_unit)
+        }
+    }
+
+    /// Map filtered view cursor to actual tree_lines index
+    pub fn cursor_to_tree_idx(&self) -> usize {
+        self.filtered_tree_lines
+            .get(self.cursor)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Increment delta filter value, with auto unit level-up at 1024
+    pub fn delta_filter_inc(&mut self) {
+        self.delta_filter_value += 1;
+        if self.delta_filter_value > 1024 && self.delta_filter_unit < 2 {
+            self.delta_filter_value = 1;
+            self.delta_filter_unit += 1;
+        }
+    }
+
+    /// Decrement delta filter value (min 0)
+    pub fn delta_filter_dec(&mut self) {
+        if self.delta_filter_value > 0 {
+            self.delta_filter_value -= 1;
+        }
+    }
+
+    /// Cycle delta filter unit (KB→MB→GB→KB)
+    pub fn delta_filter_cycle_unit(&mut self) {
+        self.delta_filter_unit = (self.delta_filter_unit + 1) % 3;
+    }
+
+    /// Clear the delta filter and return to tree focus
+    pub fn clear_filter_pane(&mut self) {
+        self.delta_filter_active = false;
+        self.delta_filter_value = 100;
+        self.delta_filter_unit = 1;
+        self.focus = Focus::Tree;
+        self.refresh_filtered_lines();
     }
 
     /// Request delta data from daemon — single query to root path, build full map locally

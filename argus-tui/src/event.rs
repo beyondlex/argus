@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event};
 use ratatui::Frame;
 
-use crate::app::{App, AppMode, FilterMode};
+use crate::app::{App, AppMode, FilterFocus, FilterMode, Focus, DELTA_UNIT_LABELS};
 use crate::components::{file_tree, help_popup, metadata, status_bar};
 use crate::handler;
 
@@ -125,6 +125,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header
+            Constraint::Length(1), // Filter pane
             Constraint::Min(1),    // Main content
             Constraint::Length(1), // Status bar
         ])
@@ -133,14 +134,19 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     // Header
     render_header(f, chunks[0]);
 
+    // Filter pane (only when in server mode with delta data)
+    if app.server_mode {
+        render_filter_pane(f, chunks[1], app);
+    }
+
     // Main content: tree takes full width
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(100)])
-        .split(chunks[1]);
+        .split(chunks[2]);
 
     // File tree
-    let file_tree_focused = app.focus == crate::app::Focus::Tree && app.mode == AppMode::Browsing;
+    let file_tree_focused = app.focus == Focus::Tree && app.mode == AppMode::Browsing;
     let delta_cache = if app.server_mode {
         Some(&app.delta_cache)
     } else {
@@ -150,6 +156,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         f,
         main_chunks[0],
         &app.tree_lines,
+        &app.filtered_tree_lines,
         app.cursor,
         app.scroll_offset,
         app.sort_mode,
@@ -218,7 +225,74 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-/// Render delete confirmation prompt
+/// Render the filter pane (time range + delta filter)
+fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::Paragraph,
+    };
+
+    let is_focused = app.focus == Focus::FilterPane;
+
+    // Build time span
+    let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
+    let time_style = if is_focused && app.filter_focus == FilterFocus::TimePreset {
+        Style::default().fg(Color::Black).bg(Color::LightYellow)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    // Highlight the focused field within the delta part
+    let delta_value_style = if is_focused && app.filter_focus == FilterFocus::DeltaValue {
+        Style::default().fg(Color::Black).bg(Color::LightYellow)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+
+    let delta_unit_style = if is_focused && app.filter_focus == FilterFocus::DeltaUnit {
+        Style::default().fg(Color::Black).bg(Color::LightYellow)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
+    let delta_prefix_style = Style::default().fg(Color::DarkGray);
+
+    let line = Line::from(vec![
+        Span::styled(time_label, time_style),
+        Span::raw("  "),
+        Span::styled("+Size: >=", delta_prefix_style),
+        Span::styled(
+            if app.delta_filter_active {
+                app.delta_filter_value.to_string()
+            } else {
+                "-".to_string()
+            },
+            delta_value_style,
+        ),
+        Span::raw(" "),
+        Span::styled(
+            if app.delta_filter_active {
+                DELTA_UNIT_LABELS
+                    .get(app.delta_filter_unit)
+                    .copied()
+                    .unwrap_or("--")
+                    .to_string()
+            } else {
+                "-".to_string()
+            },
+            delta_unit_style,
+        ),
+        Span::styled(
+            format!(
+                "  [{}]Focus [Tab]cycle [c]Clear",
+                if is_focused { "Esc" } else { "f" }
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
 fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
     use ratatui::{
         layout::Alignment,

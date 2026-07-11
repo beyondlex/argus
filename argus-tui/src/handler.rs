@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
-use crate::app::{App, AppMessage, AppMode, FilterMode, TreeNode};
+use crate::app::{App, AppMessage, AppMode, FilterFocus, FilterMode, Focus, TreeNode};
 use crate::event::SHOULD_QUIT;
 use crate::ipc_client::IpcClient;
 
@@ -26,6 +26,12 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
         }
+        return;
+    }
+
+    // Filter pane has focus — handle its keys
+    if app.focus == Focus::FilterPane {
+        handle_filter_pane_key(key, app);
         return;
     }
 
@@ -107,8 +113,8 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
         }
         KeyCode::Char('G') => {
-            if !app.tree_lines.is_empty() {
-                app.cursor = app.tree_lines.len() - 1;
+            if !app.filtered_tree_lines.is_empty() {
+                app.cursor = app.filtered_tree_lines.len() - 1;
             }
             app.pending_gg = false;
         }
@@ -180,7 +186,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.mode = AppMode::Help;
         }
         KeyCode::Char('t') if app.server_mode => {
-            let next = (app.time_preset + 1) % 4;
+            let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
             app.set_time_preset(next);
             app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
             app.request_delta_refresh();
@@ -215,6 +221,10 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('q') => {
             app.should_quit = true;
+        }
+        KeyCode::Char('f') if app.server_mode => {
+            app.focus = Focus::FilterPane;
+            app.filter_focus = FilterFocus::TimePreset;
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             app.should_quit = true;
@@ -297,17 +307,74 @@ fn handle_help_key(key: KeyEvent, app: &mut App) {
     }
 }
 
+// ── Filter pane key handling ─────────────────────────────────────────────────
+
+fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Tab | KeyCode::Char('\t') => {
+            let next = match app.filter_focus {
+                FilterFocus::TimePreset => FilterFocus::DeltaValue,
+                FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
+                FilterFocus::DeltaUnit => FilterFocus::TimePreset,
+            };
+            app.filter_focus = next;
+        }
+        KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
+            FilterFocus::TimePreset => {
+                let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
+                app.set_time_preset(next);
+                app.request_delta_refresh();
+            }
+            FilterFocus::DeltaValue => {
+                app.delta_filter_active = true;
+                app.delta_filter_inc();
+                app.refresh_filtered_lines();
+            }
+            FilterFocus::DeltaUnit => {
+                app.delta_filter_active = true;
+                app.delta_filter_cycle_unit();
+                app.refresh_filtered_lines();
+            }
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.filter_focus {
+            FilterFocus::TimePreset => {
+                let count = crate::app::TIME_PRESET_COUNT;
+                let next = (app.time_preset + count - 1) % count;
+                app.set_time_preset(next);
+                app.request_delta_refresh();
+            }
+            FilterFocus::DeltaValue => {
+                app.delta_filter_active = true;
+                app.delta_filter_dec();
+                app.refresh_filtered_lines();
+            }
+            FilterFocus::DeltaUnit => {
+                app.delta_filter_active = true;
+                app.delta_filter_unit = (app.delta_filter_unit + 2) % 3;
+                app.refresh_filtered_lines();
+            }
+        },
+        KeyCode::Char('c') => {
+            app.clear_filter_pane();
+        }
+        KeyCode::Esc => {
+            app.focus = Focus::Tree;
+        }
+        _ => {}
+    }
+}
+
 // ── Helper functions ────────────────────────────────────────────────────────
 
 fn move_cursor(app: &mut App, delta: isize) {
-    if app.tree_lines.is_empty() {
+    if app.filtered_tree_lines.is_empty() {
         return;
     }
     let new_cursor = app.cursor as isize + delta;
     if new_cursor < 0 {
         app.cursor = 0;
-    } else if new_cursor >= app.tree_lines.len() as isize {
-        app.cursor = app.tree_lines.len() - 1;
+    } else if new_cursor >= app.filtered_tree_lines.len() as isize {
+        app.cursor = app.filtered_tree_lines.len() - 1;
     } else {
         app.cursor = new_cursor as usize;
     }
@@ -579,7 +646,12 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
         .iter()
         .position(|line| line.path == target_path)
     {
-        app.cursor = pos;
+        // Map tree_lines position to filtered view position
+        app.cursor = app
+            .filtered_tree_lines
+            .iter()
+            .position(|&i| i == pos)
+            .unwrap_or(0);
     }
 }
 
@@ -639,7 +711,8 @@ fn collapse_or_navigate_up(app: &mut App) {
         if app.cursor > 0 {
             let target_depth = line.depth.saturating_sub(1);
             for i in (0..app.cursor).rev() {
-                if app.tree_lines[i].depth == target_depth {
+                let actual_idx = app.filtered_tree_lines.get(i).copied().unwrap_or(0);
+                if app.tree_lines.get(actual_idx).map(|l| l.depth) == Some(target_depth) {
                     app.cursor = i;
                     return;
                 }
