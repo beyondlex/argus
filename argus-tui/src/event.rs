@@ -43,13 +43,19 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             .min(time_to_error)
             .min(Duration::from_millis(100)); // cap idle wakeup
 
-        if event::poll(poll_timeout)? {
-            if let Event::Key(key) = event::read()? {
-                handler::handle_key(key, app);
+        let got_event = event::poll(poll_timeout)?;
+        let mut dirty = false;
+
+        if got_event {
+            match event::read()? {
+                Event::Key(key) => {
+                    handler::handle_key(key, app);
+                    dirty = true;
+                }
+                Event::Resize(..) => dirty = true,
+                _ => {}
             }
         }
-
-        let mut dirty = false;
 
         // Process background messages
         while let Ok(msg) = app.rx.try_recv() {
