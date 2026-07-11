@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -200,7 +201,7 @@ pub fn start_watcher(
         let mut state = WatcherState::new();
 
         while running_clone.load(Ordering::Relaxed) {
-            match rx.recv() {
+            match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(Ok(event)) => {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -220,8 +221,11 @@ pub fn start_watcher(
                 Ok(Err(e)) => {
                     tracing::warn!("watcher error: {e}");
                 }
-                Err(_) => {
-                    tracing::info!("watcher channel closed");
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::info!("watcher channel disconnected");
                     break;
                 }
             }
