@@ -538,13 +538,12 @@ impl App {
         }
     }
 
-    /// Request delta data from daemon for all tree lines (spawns background task)
+    /// Request delta data from daemon — single query to root path, build full map locally
     pub fn request_delta_refresh(&mut self) {
-        let paths: Vec<Vec<String>> = self.tree_lines.iter().map(|l| l.path.clone()).collect();
-        if paths.is_empty() {
+        let view_root = self.view_root_path.clone();
+        if !view_root.exists() {
             return;
         }
-        let view_root = self.view_root_path.clone();
         let from = self.time_from;
         let to = self.time_to;
         let tx = self.tx.clone();
@@ -554,14 +553,36 @@ impl App {
                 Ok(c) => c,
                 Err(_) => return,
             };
+            // Single query: get all entries under root path (prefix matching in daemon)
+            let (_total, entries) = match client.get_delta(&view_root, from, to).await {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            // Sum entries by path to get per-file delta
+            let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
+            for entry in &entries {
+                *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
+            }
+            // Build tree-path-keyed delta map, propagating to ancestors
             let mut deltas: HashMap<Vec<String>, i64> = HashMap::new();
-            for path in &paths {
-                let mut full = view_root.clone();
-                for comp in path.iter().skip(1) {
-                    full.push(comp);
+            for (abs_path, delta) in &file_deltas {
+                // Convert absolute path to tree path components (relative to root)
+                let relative = abs_path.strip_prefix(&view_root).ok();
+                let Some(relative) = relative else { continue };
+                let mut components: Vec<String> = Vec::new();
+                components.push(
+                    view_root
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                );
+                for comp in relative.components() {
+                    components.push(comp.as_os_str().to_string_lossy().to_string());
                 }
-                if let Ok((total, _)) = client.get_delta(&full, from, to).await {
-                    deltas.insert(path.clone(), total);
+                // Propagate to all ancestors
+                for i in 1..=components.len() {
+                    let ancestor = components[..i].to_vec();
+                    *deltas.entry(ancestor).or_insert(0) += delta;
                 }
             }
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
