@@ -5,14 +5,15 @@ edition = "2021"
 
 [dependencies]
 argus-core = { path = "../argus-core" }
-ratatui = "0.29"
-crossterm = "0.28"
-tokio = { version = "1", features = ["full"] }
+anyhow = "1"
 chrono = "0.4"
-serde_json = "1.0"
-anyhow = "1.0"
-toml = "0.8"
+crossterm = "0.28"
+ctrlc = "3.4"
+ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 trash = "3"
 
 [dev-dependencies]

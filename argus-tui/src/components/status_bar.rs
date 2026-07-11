@@ -28,7 +28,7 @@ pub fn render(
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
-    if matches!(mode, AppMode::DeletePrompt) {
+    if matches!(mode, AppMode::DeletePrompt | AppMode::DeletePermanentPrompt) {
         left_spans.push(Span::styled(
             " DELETE CONFIRM ",
             Style::default()

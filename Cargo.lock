@@ -142,6 +142,7 @@ dependencies = [
  "argus-core",
  "chrono",
  "crossterm",
+ "ctrlc",
  "ratatui",
  "serde",
  "serde_json",

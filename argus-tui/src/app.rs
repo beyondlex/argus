@@ -9,6 +9,10 @@ use tokio::sync::mpsc;
 
 use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 
+/// Directories with more children than this won't have their subtree matched or expanded
+/// during search navigation. Prevents n/N from hanging when jumping into massive directories.
+const MAX_DIR_CHILDREN: usize = 2000;
+
 // ── Data types ──────────────────────────────────────────────────────────────
 
 /// Messages from background tasks to the UI
@@ -24,6 +28,7 @@ pub enum AppMessage {
 pub enum AppMode {
     Browsing,
     DeletePrompt,
+    DeletePermanentPrompt,
     Help,
 }
 
@@ -109,6 +114,7 @@ pub struct TreeLine {
     pub node: TreeNode,
     pub expanded: bool,
     pub has_scan_data: bool,
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +151,7 @@ pub struct App {
     pub filter_mode: FilterMode,
     pub match_indices: Vec<SearchMatch>,
     pub current_match: usize,
+    pub path_to_walk_idx: HashMap<Vec<String>, usize>,
 
     // gg double-tap tracking
     pub pending_gg: bool,
@@ -206,6 +213,7 @@ impl App {
             filter_mode: FilterMode::Inactive,
             match_indices: Vec::new(),
             current_match: 0,
+            path_to_walk_idx: HashMap::new(),
             pending_gg: false,
             scanning: false,
             scan_progress: None,
@@ -237,8 +245,7 @@ impl App {
         } else {
             match argus_core::list_dir(&self.view_root_path) {
                 Ok(mut snap) => {
-                    let root_scan_tree =
-                        resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+                    let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
                     enrich_snapshot_sizes(
                         &mut snap,
                         ROOT_NODE,
@@ -336,9 +343,11 @@ impl App {
     /// Recompute match_indices for current filter_word.
     /// Walks the full tree in display order (depth-first, sorted by sort_mode)
     /// so n/N jumps follow the natural top-to-bottom order.
+    /// Also populates path_to_walk_idx cache to avoid a second full tree walk on n/N.
     pub fn recompute_matches(&mut self) {
         self.match_indices.clear();
         self.current_match = 0;
+        self.path_to_walk_idx.clear();
         if self.filter_word.is_empty() {
             return;
         }
@@ -365,12 +374,79 @@ impl App {
             &mut walk_index,
             &mut visible_count,
             &mut matches,
+            &mut self.path_to_walk_idx,
         );
 
         self.match_indices = matches;
         if self.current_match >= self.match_indices.len() && !self.match_indices.is_empty() {
             self.current_match = self.match_indices.len() - 1;
         }
+    }
+
+    /// O(1) lookup for walk_idx of a path, using the cache built during recompute_matches.
+    pub fn get_walk_idx(&self, path: &[String]) -> Option<usize> {
+        self.path_to_walk_idx.get(path).copied()
+    }
+
+    /// Incrementally expand a single collapsed directory in tree_lines by inserting child lines.
+    /// Unlike update_tree_lines() which rebuilds the entire visible tree, this only adds the
+    /// newly visible lines for the specified path. Returns true if any lines were inserted.
+    pub fn expand_path_in_tree(&mut self, path: &[String]) -> bool {
+        let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &self.tree_root else {
+            return false;
+        };
+        let Some(dir_idx) = find_snapshot_node(snap_arc, *root_idx, path) else {
+            return false;
+        };
+        let node = snap_arc.node(dir_idx);
+        if !node.is_dir || node.children.is_empty() || node.children.len() > MAX_DIR_CHILDREN {
+            return false;
+        }
+
+        let pos = self.tree_lines.iter().position(|line| line.path == path);
+        let Some(pos) = pos else {
+            return false;
+        };
+
+        // Skip if already expanded (next line is a child)
+        if pos + 1 < self.tree_lines.len()
+            && self.tree_lines[pos + 1].depth > self.tree_lines[pos].depth
+        {
+            return false;
+        }
+
+        // Mark this directory as expanded in-place
+        if let Some(line) = self.tree_lines.get_mut(pos) {
+            line.expanded = true;
+        }
+
+        let mut children: Vec<(&String, NodeIndex)> =
+            node.children.iter().map(|(n, i)| (n, *i)).collect();
+        sort_children_snapshot(&mut children, snap_arc, self.sort_mode);
+
+        let expanded = &self.expanded;
+        let sort_mode = self.sort_mode;
+        let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+
+        let mut new_lines = Vec::new();
+        let mut child_path = path.to_vec();
+        for (_name, child_idx) in children {
+            flatten_snapshot_tree(
+                snap_arc,
+                child_idx,
+                path.len(),
+                expanded,
+                sort_mode,
+                &mut new_lines,
+                &self.scan_cache,
+                &self.view_root_path,
+                root_scan_tree,
+                &mut child_path,
+            );
+        }
+
+        self.tree_lines.splice(pos + 1..pos + 1, new_lines);
+        true
     }
 
     /// Get the currently selected tree line
@@ -395,25 +471,7 @@ impl App {
 
     /// Return the relative path of the tree line at `idx`, rooted at `view_root_path`.
     pub fn tree_line_relative_path(&self, idx: usize) -> Option<Vec<String>> {
-        let line = self.tree_lines.get(idx)?;
-        if line.depth == 0 {
-            return Some(vec![line.node.name().to_string()]);
-        }
-
-        let mut ancestors = Vec::new();
-        let mut target_depth = line.depth;
-
-        for i in (0..idx).rev() {
-            let l = &self.tree_lines[i];
-            if l.depth < target_depth {
-                ancestors.push(l.node.name().to_string());
-                target_depth = l.depth;
-            }
-        }
-
-        ancestors.reverse();
-        ancestors.push(line.node.name().to_string());
-        Some(ancestors)
+        self.tree_lines.get(idx).map(|line| line.path.clone())
     }
 
     /// Get the full path of the selected node
@@ -456,6 +514,7 @@ fn flatten_snapshot_tree(
         node: TreeNode::Snapshot(Arc::clone(snap_arc), idx),
         expanded: is_expanded && node.is_dir && !node.children.is_empty(),
         has_scan_data: node_has_scan || !node.is_dir,
+        path: path.clone(),
     });
 
     if is_expanded && node.is_dir {
@@ -667,9 +726,13 @@ fn collect_matches_in_order(
     walk_index: &mut usize,
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
+    path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
 ) {
     let node = snap.node(idx);
     let is_visible = path_is_visible(path, expanded);
+
+    // Cache walk_idx for every node so n/N jumping is O(1) instead of O(n).
+    path_to_walk_idx.insert(path.clone(), *walk_index);
 
     if fuzzy_match_indices(query, &node.name).is_some() {
         result.push(SearchMatch {
@@ -689,23 +752,30 @@ fn collect_matches_in_order(
     *walk_index += 1;
 
     if node.is_dir {
-        let mut children: Vec<(&String, NodeIndex)> =
-            node.children.iter().map(|(n, i)| (n, *i)).collect();
-        sort_children_snapshot(&mut children, snap, sort_mode);
-        for (name, child_idx) in children {
-            path.push(name.clone());
-            collect_matches_in_order(
-                snap,
-                child_idx,
-                query,
-                expanded,
-                sort_mode,
-                path,
-                walk_index,
-                visible_count,
-                result,
-            );
-            path.pop();
+        // Skip subtrees with too many siblings — prevents n/N from trying to
+        // expand a massive directory and hanging the UI.
+        let skip_subtree = node.children.len() > MAX_DIR_CHILDREN;
+
+        if !skip_subtree {
+            let mut children: Vec<(&String, NodeIndex)> =
+                node.children.iter().map(|(n, i)| (n, *i)).collect();
+            sort_children_snapshot(&mut children, snap, sort_mode);
+            for (name, child_idx) in children {
+                path.push(name.clone());
+                collect_matches_in_order(
+                    snap,
+                    child_idx,
+                    query,
+                    expanded,
+                    sort_mode,
+                    path,
+                    walk_index,
+                    visible_count,
+                    result,
+                    path_to_walk_idx,
+                );
+                path.pop();
+            }
         }
     }
 }

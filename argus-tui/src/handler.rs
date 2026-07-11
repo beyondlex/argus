@@ -8,12 +8,14 @@ use std::time::Instant;
 use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::app::{App, AppMessage, AppMode, FilterMode, TreeNode};
+use crate::event::SHOULD_QUIT;
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
     match app.mode {
         AppMode::Browsing => handle_browsing_key(key, app),
         AppMode::DeletePrompt => handle_delete_prompt_key(key, app),
+        AppMode::DeletePermanentPrompt => handle_delete_permanent_prompt_key(key, app),
         AppMode::Help => handle_help_key(key, app),
     }
 }
@@ -153,6 +155,25 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
             }
         }
+        KeyCode::Char('D') => {
+            if let Some(line) = app.selected_line() {
+                let root_name = app
+                    .view_root_path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if line.node.is_dir() && line.node.name() == root_name {
+                    app.set_error("cannot delete root directory".into(), 3);
+                } else if let Some(full_path) = app.selected_node_full_path() {
+                    if crate::util::is_protected_path(&full_path) {
+                        app.set_error("protected path, cannot delete".into(), 3);
+                    } else {
+                        app.delete_target_path = Some(full_path);
+                        app.mode = AppMode::DeletePermanentPrompt;
+                    }
+                }
+            }
+        }
 
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
@@ -194,6 +215,37 @@ fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
                 match trash::delete(&path) {
                     Ok(_) => {
                         app.set_error(format!("deleted: {}", path.display()), 3);
+                        apply_deletion_to_state(app, &path);
+                        app.update_tree_lines();
+                    }
+                    Err(e) => {
+                        app.set_error(format!("delete failed: {}", e), 5);
+                    }
+                }
+            }
+            app.delete_target_path = None;
+            app.mode = AppMode::Browsing;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.delete_target_path = None;
+            app.mode = AppMode::Browsing;
+        }
+        _ => {}
+    }
+}
+
+fn handle_delete_permanent_prompt_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if let Some(path) = app.delete_target_path.clone() {
+                let result = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                match result {
+                    Ok(_) => {
+                        app.set_error(format!("permanently deleted: {}", path.display()), 3);
                         apply_deletion_to_state(app, &path);
                         app.update_tree_lines();
                     }
@@ -462,13 +514,17 @@ fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
 }
 
 fn jump_to_next_match(app: &mut App, delta: isize) {
+    if SHOULD_QUIT.load(Ordering::Relaxed) {
+        app.should_quit = true;
+        return;
+    }
     if app.match_indices.is_empty() {
         return;
     }
     let Some(current_path) = app.tree_line_relative_path(app.cursor) else {
         return;
     };
-    let Some(anchor_walk_idx) = current_cursor_walk_index(app, &current_path) else {
+    let Some(anchor_walk_idx) = app.get_walk_idx(&current_path) else {
         return;
     };
 
@@ -479,110 +535,60 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
     };
 
     app.current_match = new_idx;
-    let sm = app.match_indices[new_idx].clone();
-    let target_path = sm.path.clone();
+    let target_path = app.match_indices[new_idx].path.clone();
 
-    if target_path.len() > 1 {
-        expand_ancestor_prefixes(&mut app.expanded, &target_path[..target_path.len() - 1]);
+    let newly_expanded = if target_path.len() > 1 {
+        expand_ancestor_prefixes(&mut app.expanded, &target_path[..target_path.len() - 1])
+    } else {
+        Vec::new()
+    };
+
+    if !newly_expanded.is_empty() {
+        // Incrementally expand each newly visible directory (shallowest first)
+        for path in &newly_expanded {
+            app.expand_path_in_tree(path);
+        }
     }
-
-    app.update_tree_lines();
 
     // Find the exact match by relative path, not just name.
     if let Some(pos) = app
         .tree_lines
         .iter()
-        .enumerate()
-        .find(|(idx, _)| app.tree_line_relative_path(*idx) == Some(target_path.clone()))
-        .map(|(idx, _)| idx)
+        .position(|line| line.path == target_path)
     {
         app.cursor = pos;
     }
 }
 
 fn next_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
-    matches
-        .iter()
-        .position(|m| m.walk_idx > anchor_walk_idx)
-        .or_else(|| (!matches.is_empty()).then_some(0))
+    if matches.is_empty() {
+        return None;
+    }
+    let idx = matches.binary_search_by_key(&anchor_walk_idx, |m| m.walk_idx);
+    let start = match idx {
+        Ok(i) => i + 1,
+        Err(i) => i,
+    };
+    if start < matches.len() {
+        Some(start)
+    } else {
+        Some(0)
+    }
 }
 
 fn prev_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
-    matches
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, m)| m.walk_idx < anchor_walk_idx)
-        .map(|(idx, _)| idx)
-        .or_else(|| (!matches.is_empty()).then_some(matches.len() - 1))
-}
-
-fn current_cursor_walk_index(app: &App, target_path: &[String]) -> Option<usize> {
-    let (snap_arc, root_idx) = match &app.tree_root {
-        Some(crate::app::TreeNode::Snapshot(snap_arc, root_idx)) => (snap_arc, *root_idx),
-        _ => return None,
-    };
-
-    let mut path = vec![snap_arc.node(root_idx).name.clone()];
-    let mut walk_idx = 0usize;
-    walk_index_for_path(
-        snap_arc,
-        root_idx,
-        &mut path,
-        target_path,
-        app.sort_mode,
-        &mut walk_idx,
-    )
-}
-
-fn walk_index_for_path(
-    snap: &Snapshot,
-    idx: NodeIndex,
-    path: &mut Vec<String>,
-    target_path: &[String],
-    sort_mode: crate::app::SortMode,
-    walk_idx: &mut usize,
-) -> Option<usize> {
-    if path.as_slice() == target_path {
-        return Some(*walk_idx);
-    }
-
-    *walk_idx += 1;
-
-    let node = snap.node(idx);
-    if !node.is_dir {
+    if matches.is_empty() {
         return None;
     }
-
-    let mut children: Vec<(&String, NodeIndex)> =
-        node.children.iter().map(|(n, i)| (n, *i)).collect();
-    sort_children_by_mode(&mut children, snap, sort_mode);
-
-    for (name, child_idx) in children {
-        path.push(name.clone());
-        if let Some(result) =
-            walk_index_for_path(snap, child_idx, path, target_path, sort_mode, walk_idx)
-        {
-            return Some(result);
-        }
-        path.pop();
-    }
-
-    None
-}
-
-fn sort_children_by_mode(
-    children: &mut Vec<(&String, NodeIndex)>,
-    snap: &Snapshot,
-    mode: crate::app::SortMode,
-) {
-    match mode {
-        crate::app::SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
-        crate::app::SortMode::Size => children.sort_by(|a, b| {
-            let a_size = snap.node(a.1).size;
-            let b_size = snap.node(b.1).size;
-            b_size.cmp(&a_size)
-        }),
+    let idx = matches.binary_search_by_key(&anchor_walk_idx, |m| m.walk_idx);
+    let end = match idx {
+        Ok(i) => i,
+        Err(i) => i,
+    };
+    if end > 0 {
+        Some(end - 1)
+    } else {
+        Some(matches.len() - 1)
     }
 }
 
@@ -697,14 +703,19 @@ pub fn start_scan(app: &mut App) {
 fn expand_ancestor_prefixes(
     expanded: &mut std::collections::HashSet<Vec<String>>,
     path: &[String],
-) {
+) -> Vec<Vec<String>> {
+    let mut expanded_paths = Vec::new();
     if path.len() <= 1 {
-        return;
+        return expanded_paths;
     }
 
     for len in 2..=path.len() {
-        expanded.insert(path[..len].to_vec());
+        let ancestor = path[..len].to_vec();
+        if expanded.insert(ancestor.clone()) {
+            expanded_paths.push(ancestor);
+        }
     }
+    expanded_paths
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
@@ -7,8 +8,13 @@ use crate::app::{App, AppMode, FilterMode};
 use crate::components::{file_tree, help_popup, metadata, status_bar};
 use crate::handler;
 
+pub static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
+
 /// Main event loop
 pub async fn run(app: &mut App) -> anyhow::Result<()> {
+    let _ = ctrlc::set_handler(|| {
+        SHOULD_QUIT.store(true, Ordering::Relaxed);
+    });
     let mut terminal = ratatui::init();
     let spinner_rate = Duration::from_millis(120);
     let mut cursor_visible = true;
@@ -18,6 +24,10 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
     terminal.draw(|f| render(f, app, cursor_visible))?;
 
     loop {
+        if SHOULD_QUIT.swap(false, Ordering::Relaxed) {
+            app.should_quit = true;
+        }
+
         // Compute how long to sleep — just long enough for next pending timer
         let time_to_spinner = if app.scanning {
             let elapsed = app.scan_spinner_tick.elapsed();
@@ -50,6 +60,9 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             match event::read()? {
                 Event::Key(key) => {
                     handler::handle_key(key, app);
+                    if SHOULD_QUIT.load(Ordering::Relaxed) {
+                        app.should_quit = true;
+                    }
                     dirty = true;
                 }
                 Event::Resize(..) => dirty = true,
@@ -162,7 +175,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
     // Overlays
     match app.mode {
-        AppMode::DeletePrompt => render_delete_prompt(f, area, app),
+        AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
+        AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Help => help_popup::render(f, area),
         AppMode::Browsing => {}
     }
@@ -197,7 +211,7 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
 }
 
 /// Render delete confirmation prompt
-fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
     use ratatui::{
         layout::Alignment,
         style::{Color, Modifier, Style},
@@ -205,7 +219,7 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         widgets::{Block, Borders, Clear, Paragraph},
     };
 
-    let popup = crate::components::help_popup::centered_rect(50, 25, area);
+    let popup = crate::components::help_popup::centered_rect(50, 40, area);
     f.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -219,6 +233,14 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
+    let action_text = if permanent {
+        "This will permanently delete the item."
+    } else {
+        "This will move the item to trash."
+    };
+
+    let confirm_label = if permanent { "Permanently delete" } else { "Confirm delete" };
+
     let text = Paragraph::new(vec![
         Line::from(vec![Span::styled(
             "WARNING:",
@@ -231,7 +253,7 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         ]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
-            "This will move the item to trash.",
+            action_text,
             Style::default().fg(Color::White),
         )]),
         Line::from(vec![Span::raw("")]),
@@ -240,7 +262,7 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                 "y",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" - Confirm delete  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" - {}  ", confirm_label), Style::default().fg(Color::DarkGray)),
             Span::styled(
                 "n",
                 Style::default()
