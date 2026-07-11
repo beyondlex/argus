@@ -1,29 +1,21 @@
 # Argus Agent Progress
 
-This is the living progress file for AI agents working on Argus.
-Read this after `AGENTS.md` and the relevant requirements docs, then update it when a task is completed, blocked, or handed off.
-
-## How To Use
-
-- Update task status in place when work changes.
-- Keep `Last updated` current.
-- When starting a new session, read this file first to recover context quickly.
-- When handing work off, record the exact next action and any blockers.
+Living progress file for AI agents working on Argus.
+Read after `AGENTS.md` and relevant requirements docs, then update when task status changes.
 
 ## Last Updated
 
-- 2026-07-09
+- 2026-07-11
 
 ## Current State
 
-- Phase 1 MVP is complete: `argus-core` (model/scanner/diff/ai_feature) + `argus-cli` (scan/diff/explain).
-- 37 unit tests, clippy clean, fmt clean.
-- Phase 2 TUI structural refactoring in progress: standalone mode file tree redesign.
-- Design approved in `docs/plans/standalone-fs-navigation-refactor.md`.
+- Phase 1: complete
+- Phase 2: code complete, doc updated, integration tests pending
+- Phase 3: design doc written at `docs/plans/phase3-daemon-design.md`, implementation not started
 
 ## Active Work
 
-### Phase 1
+### Phase 1 — MVP
 
 - [x] Initialize Cargo workspace.
 - [x] Implement `argus-core` data model.
@@ -32,36 +24,39 @@ Read this after `AGENTS.md` and the relevant requirements docs, then update it w
 - [x] Implement AI context generation stubs.
 - [x] Implement `argus-cli` commands.
 - [x] Manual acceptance testing (§4.1-4.5).
-- [ ] Implement config.rs (§2.4) for ignore config loading.
+- [x] Config loading for ignore rules.
 
 ### Phase 2 — Standalone FS Navigation Refactor
 
 - [x] Design doc: `docs/plans/standalone-fs-navigation-refactor.md`
 - [x] Updated: `02-architecture.md`, `03-core-features.md`, `04-configuration.md`
 - [x] Updated: `05-ux-interaction.md`, `08-data-model.md`, `12-phase2-guide.md`
-- [ ] `argus-core`: implement `list_dir()` + tests
-- [ ] `argus-tui/app.rs`: new fields, scan_cache, rebuild_tree
-- [ ] `argus-tui/handler.rs`: new navigation, s = scan tree root, no prompt
-- [ ] `argus-tui/event.rs`: remove empty/scan prompts
-- [ ] `argus-tui/file_tree.rs`: `"- "` rendering for unscanned dirs
-- [ ] `argus-tui/filter_bar.rs`: scoped to current path hash
-- [ ] `argus-tui/metadata.rs`: scan status display
-- [ ] `argus-tui/config.rs`: BrowsingConfig
-- [ ] `argus-tui/main.rs`: auto_scan_on_start
+- [x] `argus-core`: `list_dir()` + tests
+- [x] `argus-tui/app.rs`: new fields, scan_cache, rebuild_tree
+- [x] `argus-tui/handler.rs`: new navigation, s = scan tree root, no prompt
+- [x] `argus-tui/event.rs`: remove empty/scan prompts
+- [x] `argus-tui/file_tree.rs`: `"- "` rendering for unscanned dirs
+- [x] `argus-tui/config.rs`: BrowsingConfig
+- [x] `argus-tui/main.rs`: auto_scan_on_start
 - [ ] Integration tests, manual acceptance
 
-### Later Phases
+### Phase 3 — Daemon Automation
 
-- [ ] Daemon and IPC protocol.
-- [ ] AI API integration and token tracking.
-- [ ] GUI client.
+- [x] Design doc: `docs/plans/phase3-daemon-design.md`
+- [ ] Step 1: Data structures + DB schema (model.rs DeltaEvent/DeltaEntry, db.rs query API)
+- [ ] Step 2: IPC protocol types (argus-core/src/ipc.rs)
+- [ ] Step 3: `argusd` crate creation + main.rs skeleton
+- [ ] Step 4: watcher module (notify, size cache, hardlink dedup)
+- [ ] Step 5: debounce module (buffer, merge, delayed write)
+- [ ] Step 6: IPC Server (UDS listener + request dispatch)
+- [ ] Step 7: Daemon main flow (config, signal handling, graceful shutdown)
+- [ ] Step 8: TUI IPC Client (UDS connect, auto-detect, fallback)
+- [ ] Step 9: TUI delta overlay (delta column, time filter bar, detail popup)
+- [ ] Step 10: Integration tests (end-to-end daemon, UDS, delta query)
 
 ## Recent Completed Work
 
-- Phase 1 code: model.rs (FileNode/Snapshot/DiffNode/error types + parse_human_size).
-- Phase 1 code: scanner.rs (ignore::WalkBuilder, hardlink dedup, cancel via AtomicBool, progress via mpsc).
-- Phase 1 code: diff.rs (Tree Merge algorithm, threshold filter with 11 edge case tests).
-- Phase 1 code: ai_feature.rs (extract_feature, generate_prompt, find_subtree).
-- Phase 1 code: argus-cli (scan/diff/explain, --threshold/--format, exit code contract).
-- All strings localized to English (errors, prompts, CLI output).
-- .idea/ added to .gitignore.
+- Phase 1: model/scanner/diff/ai_feature + cli (scan/diff/explain)
+- Phase 2 (code): list_dir, scan_cache, rebuild_tree, navigation, "-" rendering, BrowsingConfig, auto_scan_on_start
+- Phase 3 design: `docs/plans/phase3-daemon-design.md`
+- docs/requirements/index.md: added P3 reference

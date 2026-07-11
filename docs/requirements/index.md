@@ -26,6 +26,7 @@
 | 11 | [日志系统设计](11-logging.md) | 等级规范、JSON 结构、Span 定义、AI Agent 调试 |
 | 12 | [Phase 2 实施指南](12-phase2-guide.md) | TUI 极客版具体开发指导与验收标准 |
 | P1 | [Standalone FS 导航重构计划](../plans/standalone-fs-navigation-refactor.md) | 文件树为一级导航的重构方案 |
+| P3 | [Phase 3 Daemon 设计](../plans/phase3-daemon-design.md) | 守护进程、delta 存储、IPC 协议、TUI 服务模式 |
 
 ---
 
