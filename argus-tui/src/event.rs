@@ -125,7 +125,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header
-            Constraint::Length(1), // Filter pane
+            Constraint::Length(2), // Filter pane (border + content)
             Constraint::Min(1),    // Main content
             Constraint::Length(1), // Status bar
         ])
@@ -230,10 +230,20 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     use ratatui::{
         style::{Color, Style},
         text::{Line, Span},
-        widgets::Paragraph,
+        widgets::{Block, Borders, Paragraph},
     };
 
     let is_focused = app.focus == Focus::FilterPane;
+
+    let border_style = Style::default().fg(if is_focused {
+        Color::Magenta
+    } else {
+        Color::DarkGray
+    });
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(border_style);
+    let inner = block.inner(area);
 
     let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
     let time_label_len = time_label.len();
@@ -290,7 +300,7 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         ),
         Span::styled(
             " ".repeat(
-                (area.width as usize)
+                (inner.width as usize)
                     .saturating_sub(3 + time_label_len + 2 + 9 + 6 + 2 + hint.len()),
             ),
             Style::default().bg(Color::Black),
@@ -299,8 +309,9 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     ]);
     f.render_widget(
         Paragraph::new(line).style(Style::default().bg(Color::Black)),
-        area,
+        inner,
     );
+    f.render_widget(block, area);
 }
 fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
     use ratatui::{
