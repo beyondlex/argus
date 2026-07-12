@@ -100,9 +100,6 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     }
 
     match key.code {
-        KeyCode::Char('c') => {
-            app.clear_filter_pane();
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             move_cursor(app, 1);
         }
@@ -262,6 +259,9 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
             app.should_quit = true;
+        }
+        KeyCode::Char('c') => {
+            app.clear_filter_pane();
         }
         KeyCode::Esc => {
             app.info_data = None;

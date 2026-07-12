@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use clap::ValueEnum;
 use crate::SHOULD_QUIT;
+use clap::ValueEnum;
 
 pub struct DaemonGuard {
     pid_path: PathBuf,
@@ -24,20 +24,28 @@ impl DaemonGuard {
             return Err("fork failed".into());
         }
         if pid > 0 {
-            unsafe { libc::_exit(0); }
+            unsafe {
+                libc::_exit(0);
+            }
         }
 
-        unsafe { libc::setsid(); }
+        unsafe {
+            libc::setsid();
+        }
         if unsafe { libc::fork() } > 0 {
-            unsafe { libc::_exit(0); }
+            unsafe {
+                libc::_exit(0);
+            }
         }
 
         let my_pid = std::process::id();
         if let Some(parent) = pid_path.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::write(&pid_path, my_pid.to_string()).map_err(|e| format!("failed to write PID file: {e}"))?;
+        fs::write(&pid_path, my_pid.to_string())
+            .map_err(|e| format!("failed to write PID file: {e}"))?;
 
+        println!("argusd: daemon started (pid {my_pid})");
         redirect_stdio();
 
         let cleanup_path = pid_path.clone();
@@ -52,7 +60,8 @@ impl DaemonGuard {
     }
 
     pub fn print_service(template: ServiceTemplate) {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/local/bin/argusd"));
+        let exe =
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/local/bin/argusd"));
         match template {
             ServiceTemplate::Launchd => print_launchd_plist(&exe),
             ServiceTemplate::Systemd => print_systemd_unit(&exe),
