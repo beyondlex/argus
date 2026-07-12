@@ -329,6 +329,7 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Tab if !app.command_matches.is_empty() => {
             app.command_selected = (app.command_selected + 1) % app.command_matches.len();
+            app.command_input = app.command_matches[app.command_selected].to_string();
         }
         KeyCode::BackTab if !app.command_matches.is_empty() => {
             app.command_selected = if app.command_selected == 0 {
@@ -336,9 +337,10 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
             } else {
                 app.command_selected - 1
             };
+            app.command_input = app.command_matches[app.command_selected].to_string();
         }
         KeyCode::Enter => {
-            let cmd = if !app.command_matches.is_empty() && app.command_input.is_empty() {
+            let cmd = if !app.command_matches.is_empty() {
                 app.command_matches[app.command_selected].to_string()
             } else {
                 app.command_input.clone()
