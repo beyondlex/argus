@@ -31,6 +31,22 @@ pub fn render(
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
+    // Server mode indicator (right-aligned via spaces)
+    if server_mode {
+        let status = if server_connected {
+            "[Server: connected]"
+        } else {
+            "[Server: disconnected]"
+        };
+        let status_color = if server_connected {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        left_spans.push(Span::raw("   "));
+        left_spans.push(Span::styled(status, Style::default().fg(status_color)));
+    }
+
     if matches!(mode, AppMode::DeletePrompt | AppMode::DeletePermanentPrompt) {
         left_spans.push(Span::styled(
             " DELETE CONFIRM ",
@@ -118,22 +134,6 @@ pub fn render(
             err,
             Style::default().fg(Color::Red).bg(Color::Black),
         ));
-    }
-
-    // Server mode indicator (right-aligned via spaces)
-    if server_mode {
-        let status = if server_connected {
-            "[Server: connected]"
-        } else {
-            "[Server: disconnected]"
-        };
-        let status_color = if server_connected {
-            Color::Green
-        } else {
-            Color::Red
-        };
-        left_spans.push(Span::raw("   "));
-        left_spans.push(Span::styled(status, Style::default().fg(status_color)));
     }
 
     // Use full width for the single status line

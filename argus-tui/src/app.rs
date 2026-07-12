@@ -693,13 +693,13 @@ impl App {
     // ── Command bar ────────────────────────────────────────────────────────────
 
     pub const COMMANDS: &'static [&'static str] = &[
-        "FilterClear",
-        "FilterFocus",
-        "Help",
-        "FilterDelta",
-        "FilterTime",
-        "Scan",
         "Consolidate",
+        "FilterClear",
+        "FilterDelta",
+        "FilterFocus",
+        "FilterTime",
+        "Help",
+        "Scan",
     ];
 
     pub fn update_command_matches(&mut self) {
@@ -753,15 +753,18 @@ impl App {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }
-                let arg = *parts.get(1).ok_or("usage: FilterDelta <N>[k|m|g]")?;
-                let (num_str, unit) = if arg.ends_with('k') || arg.ends_with('K') {
-                    (&arg[..arg.len() - 1], 0usize)
-                } else if arg.ends_with('m') || arg.ends_with('M') {
-                    (&arg[..arg.len() - 1], 1usize)
-                } else if arg.ends_with('g') || arg.ends_with('G') {
-                    (&arg[..arg.len() - 1], 2usize)
-                } else {
-                    (arg, 1usize)
+                let (num_str, unit) = match parts.get(1).copied() {
+                    Some(arg) if arg.ends_with('k') || arg.ends_with('K') => {
+                        (&arg[..arg.len() - 1], 0usize)
+                    }
+                    Some(arg) if arg.ends_with('m') || arg.ends_with('M') => {
+                        (&arg[..arg.len() - 1], 1usize)
+                    }
+                    Some(arg) if arg.ends_with('g') || arg.ends_with('G') => {
+                        (&arg[..arg.len() - 1], 2usize)
+                    }
+                    Some(arg) => (arg, 1usize),
+                    None => ("0", 0usize),
                 };
                 let value: u64 = num_str
                     .parse()
