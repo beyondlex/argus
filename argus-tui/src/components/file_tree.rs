@@ -9,33 +9,35 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{fuzzy_match_indices, SearchMatch, SearchMode, SortMode, TreeLine};
+use crate::app::{fuzzy_match_indices, SearchMatch, SearchMode, TreeLine};
 use crate::util;
 use crate::util::key_hints;
 
 const SCROLL_MARGIN: usize = 3;
 
-#[allow(clippy::too_many_arguments)]
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    tree_lines: &[TreeLine],
-    filtered_indices: &[usize],
-    cursor: usize,
-    scroll_offset: usize,
-    _sort_mode: SortMode,
-    view_root_path: &Path,
-    search_word: &str,
-    search_mode: SearchMode,
-    match_indices: &[SearchMatch],
-    current_match: usize,
-    cursor_visible: bool,
-    focus: bool,
-    delta_cache: Option<&HashMap<Vec<String>, i64>>,
-) {
-    let title = format!("{} ", view_root_path.display());
-    let title_style = Style::default().fg(if focus { Color::Magenta } else { Color::Gray });
-    let border_style = Style::default().fg(if focus {
+pub struct TreeRenderCtx<'a> {
+    pub tree_lines: &'a [TreeLine],
+    pub filtered_indices: &'a [usize],
+    pub cursor: usize,
+    pub scroll_offset: usize,
+    pub view_root_path: &'a Path,
+    pub search_word: &'a str,
+    pub search_mode: SearchMode,
+    pub match_indices: &'a [SearchMatch],
+    pub current_match: usize,
+    pub cursor_visible: bool,
+    pub focus: bool,
+    pub delta_cache: Option<&'a HashMap<Vec<String>, i64>>,
+}
+
+pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
+    let title = format!("{} ", ctx.view_root_path.display());
+    let title_style = Style::default().fg(if ctx.focus {
+        Color::Magenta
+    } else {
+        Color::Gray
+    });
+    let border_style = Style::default().fg(if ctx.focus {
         Color::Magenta
     } else {
         Color::DarkGray
@@ -49,27 +51,27 @@ pub fn render(
     let inner = block.inner(area);
     let content_width = inner.width.saturating_sub(1);
 
-    let is_active_match = search_mode == SearchMode::Active && current_match < match_indices.len();
+    let is_active_match =
+        ctx.search_mode == SearchMode::Active && ctx.current_match < ctx.match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
 
-    // Use filtered_indices for total count; cursor is index into filtered view
-    let total_filtered = filtered_indices.len();
+    let total_filtered = ctx.filtered_indices.len();
 
-    let scroll_offset = if cursor >= scroll_offset + available_height.saturating_sub(SCROLL_MARGIN)
-    {
-        cursor
-            .saturating_sub(available_height)
-            .saturating_add(SCROLL_MARGIN + 1)
-    } else if cursor < scroll_offset + SCROLL_MARGIN {
-        cursor.saturating_sub(SCROLL_MARGIN)
-    } else {
-        scroll_offset
-    };
+    let scroll_offset =
+        if ctx.cursor >= ctx.scroll_offset + available_height.saturating_sub(SCROLL_MARGIN) {
+            ctx.cursor
+                .saturating_sub(available_height)
+                .saturating_add(SCROLL_MARGIN + 1)
+        } else if ctx.cursor < ctx.scroll_offset + SCROLL_MARGIN {
+            ctx.cursor.saturating_sub(SCROLL_MARGIN)
+        } else {
+            ctx.scroll_offset
+        };
 
     let end = (scroll_offset + available_height).min(total_filtered);
-    let visible_indices = &filtered_indices[scroll_offset..end];
+    let visible_indices = &ctx.filtered_indices[scroll_offset..end];
 
-    let has_delta = delta_cache.is_some();
+    let has_delta = ctx.delta_cache.is_some();
     let has_scrollbar = total_filtered > available_height;
 
     f.render_widget(block, area);
@@ -97,11 +99,11 @@ pub fn render(
     }
 
     let (status_left, status_right) = search_status_line(
-        search_mode,
-        search_word,
-        cursor_visible,
-        match_indices,
-        filtered_indices.len(),
+        ctx.search_mode,
+        ctx.search_word,
+        ctx.cursor_visible,
+        ctx.match_indices,
+        ctx.filtered_indices.len(),
     );
 
     let status_area = Rect {
@@ -125,22 +127,22 @@ pub fn render(
     }
 
     for (display_offset, &tree_idx) in visible_indices.iter().enumerate() {
-        let Some(line) = tree_lines.get(tree_idx) else {
+        let Some(line) = ctx.tree_lines.get(tree_idx) else {
             continue;
         };
         let global_idx = scroll_offset + display_offset;
-        let is_selected = global_idx == cursor;
+        let is_selected = global_idx == ctx.cursor;
         let is_current_match =
-            is_active_match && match_indices[current_match].tree_idx == Some(tree_idx);
+            is_active_match && ctx.match_indices[ctx.current_match].tree_idx == Some(tree_idx);
 
-        let delta = delta_cache.and_then(|c| c.get(&line.path).copied());
+        let delta = ctx.delta_cache.and_then(|c| c.get(&line.path).copied());
 
         let (left_spans, right_spans) = render_tree_line(
             line,
             is_selected,
             is_current_match,
-            search_mode != SearchMode::Inactive && !search_word.is_empty(),
-            search_word,
+            ctx.search_mode != SearchMode::Inactive && !ctx.search_word.is_empty(),
+            ctx.search_word,
             has_delta,
             delta,
         );
@@ -284,20 +286,17 @@ fn render_tree_line<'a>(
     let mut right = Vec::new();
 
     if has_delta {
-        let delta_str = match delta {
-            Some(d) if d > 0 => format!("+{}", util::format_size(d as u64)),
-            Some(d) if d < 0 => format!("-{}", util::format_size(d.unsigned_abs())),
-            Some(_) => "-".to_string(),
-            None => "-".to_string(),
-        };
-        let delta_style = match delta {
+        let (delta_str, delta_style) = match delta {
             Some(d) if d > 0 => {
-                let unit = util::extract_unit(&delta_str);
-                base.fg(util::delta_unit_color(unit)).bg(Color::Reset)
+                let s = format!("+{}", util::format_size(d as u64));
+                let color = util::delta_unit_color(util::extract_unit(&s));
+                (s, base.fg(color).bg(Color::Reset))
             }
-            Some(d) if d < 0 => base.fg(Color::Green).bg(Color::Reset),
-            Some(_) => base.fg(Color::DarkGray).bg(Color::Reset),
-            None => base.fg(Color::DarkGray).bg(Color::Reset),
+            Some(d) if d < 0 => (
+                format!("-{}", util::format_size(d.unsigned_abs())),
+                base.fg(Color::Green).bg(Color::Reset),
+            ),
+            Some(_) | None => ("-".to_string(), base.fg(Color::DarkGray).bg(Color::Reset)),
         };
         right.push(Span::styled(delta_str, delta_style));
         right.push(Span::raw(" "));
@@ -456,4 +455,177 @@ fn match_highlight_spans<'a>(
     }
 
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{SearchMatch, TreeNode};
+    use argus_core::FileType;
+    use std::sync::Arc;
+
+    fn make_file_node(name: &str, is_dir: bool, file_type: FileType) -> argus_core::FileNode {
+        argus_core::FileNode {
+            name: name.into(),
+            parent: None,
+            is_dir,
+            file_type,
+            size: 1024,
+            children: vec![],
+        }
+    }
+
+    fn make_treeline(
+        name: &str,
+        depth: usize,
+        is_dir: bool,
+        file_type: FileType,
+        expanded: bool,
+        has_scan_data: bool,
+    ) -> TreeLine {
+        let arena = vec![make_file_node(name, is_dir, file_type)];
+        let snap = Arc::new(argus_core::Snapshot::new(
+            std::path::PathBuf::from("/"),
+            arena,
+            1024,
+        ));
+        TreeLine {
+            depth,
+            node: TreeNode::Snapshot(snap, 0),
+            expanded,
+            has_scan_data,
+            path: vec![name.into()],
+        }
+    }
+
+    #[test]
+    fn test_line_indent_zero() {
+        assert_eq!(line_indent(0), "");
+    }
+
+    #[test]
+    fn test_line_indent_one() {
+        assert_eq!(line_indent(1), "  ");
+    }
+
+    #[test]
+    fn test_line_indent_two() {
+        assert_eq!(line_indent(2), "    ");
+    }
+
+    #[test]
+    fn test_line_indent_deep() {
+        assert_eq!(line_indent(3), "      ");
+    }
+
+    #[test]
+    fn test_branch_marker_dir_expanded() {
+        let line = make_treeline("d", 0, true, FileType::Directory, true, false);
+        assert_eq!(branch_marker(&line), "- ");
+    }
+
+    #[test]
+    fn test_branch_marker_dir_collapsed() {
+        let line = make_treeline("d", 0, true, FileType::Directory, false, false);
+        assert_eq!(branch_marker(&line), "+ ");
+    }
+
+    #[test]
+    fn test_branch_marker_file() {
+        let line = make_treeline("f", 0, false, FileType::File, false, false);
+        assert_eq!(branch_marker(&line), "  ");
+    }
+
+    #[test]
+    fn test_is_symlink_true() {
+        let line = make_treeline("link", 0, false, FileType::Symlink, false, false);
+        assert!(is_symlink(&line));
+    }
+
+    #[test]
+    fn test_is_symlink_false() {
+        let line = make_treeline("f", 0, false, FileType::File, false, false);
+        assert!(!is_symlink(&line));
+    }
+
+    #[test]
+    fn test_search_status_inactive() {
+        let (left, right) = search_status_line(SearchMode::Inactive, "", true, &[], 10);
+        assert!(right.is_empty());
+        assert!(left[0].content.contains("type / to search"));
+    }
+
+    #[test]
+    fn test_search_status_input_cursor_visible() {
+        let (left, right) = search_status_line(SearchMode::Input, "hello", true, &[], 10);
+        assert!(right.is_empty());
+        assert!(left[0].content.contains("hello"));
+    }
+
+    #[test]
+    fn test_search_status_active_shows_hints() {
+        let matches = vec![SearchMatch {
+            path: vec!["a".into()],
+            tree_idx: Some(0),
+            walk_idx: 0,
+        }];
+        let (left, right) = search_status_line(SearchMode::Active, "hello", true, &matches, 10);
+        assert!(!right.is_empty());
+        assert!(left[0].content.contains("hello"));
+    }
+
+    #[test]
+    fn test_match_highlight_spans_no_matches() {
+        let spans = match_highlight_spans("hello", &[], false, false, false, false);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "hello");
+    }
+
+    #[test]
+    fn test_match_highlight_spans_some_matches() {
+        let spans = match_highlight_spans("hello", &[0, 1], false, false, false, false);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "h");
+        assert_eq!(spans[1].content, "e");
+        assert_eq!(spans[2].content, "llo");
+    }
+
+    #[test]
+    fn test_render_tree_line_normal() {
+        let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
+        let (left, right) = render_tree_line(&line, false, false, false, "", false, None);
+        assert!(!left.is_empty());
+        assert!(!right.is_empty());
+    }
+
+    #[test]
+    fn test_render_tree_line_selected() {
+        let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
+        let (left, _) = render_tree_line(&line, true, false, false, "", false, None);
+        assert!(!left.is_empty());
+    }
+
+    #[test]
+    fn test_render_tree_line_with_delta_positive() {
+        let line = make_treeline("f", 0, false, FileType::File, false, true);
+        let (_, right) = render_tree_line(&line, false, false, false, "", true, Some(2048));
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        assert!(right_text.contains('+'));
+    }
+
+    #[test]
+    fn test_render_tree_line_with_delta_negative() {
+        let line = make_treeline("f", 0, false, FileType::File, false, true);
+        let (_, right) = render_tree_line(&line, false, false, false, "", true, Some(-512));
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        assert!(right_text.contains('-'));
+    }
+
+    #[test]
+    fn test_render_tree_line_with_search() {
+        let line = make_treeline("hello.txt", 0, false, FileType::File, false, true);
+        let (left, _) = render_tree_line(&line, false, false, true, "hello", false, None);
+        let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
+        assert!(left_text.contains("hello"));
+    }
 }

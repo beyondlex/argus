@@ -1650,7 +1650,7 @@ mod tests {
     use super::*;
     use crate::config::TuiConfig;
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use tokio::sync::mpsc;
 

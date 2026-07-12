@@ -213,3 +213,149 @@ pub fn load_config(path: &Path) -> TuiConfig {
 
     config
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = TuiConfig::default();
+        assert_eq!(config.keybindings.move_up, "k");
+        assert_eq!(config.keybindings.move_down, "j");
+        assert_eq!(config.keybindings.enter_dir, "l");
+        assert_eq!(config.keybindings.leave_dir, "h");
+        assert_eq!(config.keybindings.quit, "q");
+        assert_eq!(config.keybindings.help, "?");
+        assert_eq!(config.theme.color_scheme, "system");
+        assert!(config.theme.colors.contains_key("growth_high"));
+        assert!(config.theme.colors.contains_key("text_primary"));
+        assert!(!config.browsing.auto_scan_on_start);
+        assert!(config.browsing.skip_dirs.contains(&"node_modules".into()));
+        assert!(config.browsing.skip_dirs.contains(&"target".into()));
+        assert!(config.browsing.skip_dirs.contains(&".git".into()));
+        assert_eq!(config.daemon.uds_path, argus_core::DEFAULT_UDS_PATH);
+    }
+
+    #[test]
+    fn test_load_config_file_not_found_returns_default() {
+        let path = Path::new("/nonexistent/path/config.toml");
+        let config = load_config(path);
+        assert_eq!(config.keybindings.move_up, "k");
+    }
+
+    #[test]
+    fn test_load_config_empty_toml_returns_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.keybindings.move_up, "k");
+    }
+
+    #[test]
+    fn test_load_config_partial_keybindings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[keybindings]
+move_up = "w"
+move_down = "s"
+"#,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.keybindings.move_up, "w");
+        assert_eq!(config.keybindings.move_down, "s");
+        assert_eq!(config.keybindings.quit, "q"); // default
+    }
+
+    #[test]
+    fn test_load_config_full_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[keybindings]
+move_up = "w"
+move_down = "s"
+enter_dir = "right"
+leave_dir = "left"
+sort_toggle = "t"
+delete_item = "x"
+focus_panel = "f1"
+quit = "ctrl-c"
+
+[theme]
+color_scheme = "dark"
+colors.growth_high = "#FF0000"
+colors.custom_key = "#00FF00"
+
+[browsing]
+auto_scan_on_start = true
+skip_dirs = ["node_modules", ".git"]
+
+[daemon]
+uds_path = "/tmp/argus.sock"
+"##,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.keybindings.move_up, "w");
+        assert_eq!(config.keybindings.quit, "ctrl-c");
+        assert_eq!(config.theme.color_scheme, "dark");
+        assert_eq!(config.theme.colors.get("growth_high").unwrap(), "#FF0000");
+        assert_eq!(config.theme.colors.get("custom_key").unwrap(), "#00FF00");
+        assert!(config.browsing.auto_scan_on_start);
+        assert_eq!(config.browsing.skip_dirs, vec!["node_modules", ".git"]);
+        assert_eq!(config.daemon.uds_path, "/tmp/argus.sock");
+    }
+
+    #[test]
+    fn test_load_config_invalid_toml_returns_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[[invalid toml").unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.keybindings.move_up, "k");
+    }
+
+    #[test]
+    fn test_load_config_theme_overrides_default_colors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[theme]
+colors.growth_high = "#112233"
+"##,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.theme.colors.get("growth_high").unwrap(), "#112233");
+        // other default colors still present
+        assert_eq!(config.theme.colors.get("text_primary").unwrap(), "#FFFFFF");
+    }
+
+    #[test]
+    fn test_load_config_browsing_partial() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[browsing]
+auto_scan_on_start = true
+"#,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert!(config.browsing.auto_scan_on_start);
+        // skip_dirs should still have defaults
+        assert!(config.browsing.skip_dirs.contains(&"node_modules".into()));
+    }
+}

@@ -6,8 +6,13 @@ use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar
 use crate::handler;
 use crate::util::key_hints;
 use crossterm::event::{self, Event};
-use ratatui::layout::Alignment;
-use ratatui::Frame;
+use ratatui::{
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
+};
 
 pub static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
 
@@ -124,8 +129,6 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
 
 /// Render the entire TUI
 fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
-    use ratatui::layout::{Constraint, Direction, Layout};
-
     let area = f.area();
 
     let chunks = Layout::default()
@@ -160,19 +163,20 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     file_tree::render(
         f,
         main_chunks[0],
-        &app.tree_lines,
-        &app.filtered_tree_lines,
-        app.cursor,
-        app.scroll_offset,
-        app.sort_mode,
-        &app.view_root_path,
-        &app.search_word,
-        app.search_mode,
-        &app.match_indices,
-        app.current_match,
-        cursor_visible,
-        file_tree_focused,
-        delta_cache,
+        file_tree::TreeRenderCtx {
+            tree_lines: &app.tree_lines,
+            filtered_indices: &app.filtered_tree_lines,
+            cursor: app.cursor,
+            scroll_offset: app.scroll_offset,
+            view_root_path: &app.view_root_path,
+            search_word: &app.search_word,
+            search_mode: app.search_mode,
+            match_indices: &app.match_indices,
+            current_match: app.current_match,
+            cursor_visible,
+            focus: file_tree_focused,
+            delta_cache,
+        },
     );
 
     // Status bar
@@ -219,18 +223,12 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
 /// Render header bar
 fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
-    use ratatui::{
-        style::{Color, Style},
-        text::{Line, Span},
-        widgets::Paragraph,
-    };
-
     let mut header_spans: Vec<Span> = vec![
         Span::styled(
             " Argus v0.1.0 ",
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(ratatui::style::Modifier::BOLD),
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
     ];
@@ -239,14 +237,16 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
+fn focus_highlight_style(active: bool, inactive_fg: Color) -> Style {
+    if active {
+        Style::default().fg(Color::Black).bg(Color::LightYellow)
+    } else {
+        Style::default().fg(inactive_fg).bg(Color::Black)
+    }
+}
+
 /// Render the filter pane (time range + delta filter)
 fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
-    use ratatui::{
-        style::{Color, Style},
-        text::{Line, Span},
-        widgets::{Block, Borders, Paragraph},
-    };
-
     let is_focused = app.focus == Focus::FilterPane;
 
     let border_style = Style::default().fg(if is_focused {
@@ -291,24 +291,20 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         format!(" Time: in {} ", App::time_preset_label(app.time_preset))
     };
-    let time_style =
-        if is_focused && app.filter_focus == FilterFocus::TimePreset && !app.time_custom {
-            Style::default().fg(Color::Black).bg(Color::LightYellow)
-        } else {
-            Style::default().fg(Color::White).bg(default_bg)
-        };
+    let time_style = focus_highlight_style(
+        is_focused && app.filter_focus == FilterFocus::TimePreset && !app.time_custom,
+        Color::White,
+    );
 
-    let delta_value_style = if is_focused && app.filter_focus == FilterFocus::DeltaValue {
-        Style::default().fg(Color::Black).bg(Color::LightYellow)
-    } else {
-        Style::default().fg(Color::Yellow).bg(default_bg)
-    };
+    let delta_value_style = focus_highlight_style(
+        is_focused && app.filter_focus == FilterFocus::DeltaValue,
+        Color::Yellow,
+    );
 
-    let delta_unit_style = if is_focused && app.filter_focus == FilterFocus::DeltaUnit {
-        Style::default().fg(Color::Black).bg(Color::LightYellow)
-    } else {
-        Style::default().fg(Color::Cyan).bg(default_bg)
-    };
+    let delta_unit_style = focus_highlight_style(
+        is_focused && app.filter_focus == FilterFocus::DeltaUnit,
+        Color::Cyan,
+    );
 
     let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(default_bg);
 
@@ -346,13 +342,6 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     f.render_widget(block, area);
 }
 fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
-    use ratatui::{
-        layout::Alignment,
-        style::{Color, Modifier, Style},
-        text::{Line, Span},
-        widgets::{Block, Borders, Clear, Paragraph},
-    };
-
     let popup = crate::components::help_popup::centered_rect(50, 40, area);
     f.render_widget(Clear, popup);
 
@@ -400,4 +389,166 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
     .block(block)
     .alignment(Alignment::Center);
     f.render_widget(text, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use ratatui::backend::TestBackend;
+    use tokio::sync::mpsc;
+
+    fn make_app() -> App {
+        let config = crate::config::TuiConfig::default();
+        let (tx, _rx) = mpsc::channel(100);
+        App::new(config, tx, _rx)
+    }
+
+    #[test]
+    fn test_render_header_contains_title() {
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+                render_header(f, area);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("Argus"),
+            "header should contain Argus, got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_header_shows_help_and_quit_hints() {
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 1);
+                render_header(f, area);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains('?'), "header should have help hint");
+        assert!(content.contains('q'), "header should have quit hint");
+    }
+
+    #[test]
+    fn test_render_filter_pane_not_connected_shows_hint() {
+        let mut app = make_app();
+        app.server_connected = false;
+
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
+                render_filter_pane(f, area, &app);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("Press R to connect"),
+            "disconnected hint not found in: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_filter_pane_connected_shows_time() {
+        let mut app = make_app();
+        app.server_connected = true;
+
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
+                render_filter_pane(f, area, &app);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("Time:"),
+            "time label not found in: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_filter_pane_shows_size_filter() {
+        let mut app = make_app();
+        app.server_connected = true;
+        app.delta_filter_active = true;
+        app.delta_filter_value = 500;
+        app.delta_filter_unit = 0;
+
+        let backend = TestBackend::new(80, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
+                render_filter_pane(f, area, &app);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("500"),
+            "delta filter value not found in: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_delete_prompt_shows_path() {
+        let mut app = make_app();
+        app.delete_target_path = Some(std::path::PathBuf::from("/tmp/test_file"));
+        app.mode = AppMode::DeletePrompt;
+
+        let backend = TestBackend::new(80, 25);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 25);
+                render_delete_prompt(f, area, &app, false);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("test_file"),
+            "delete prompt should contain path, got: {content:?}"
+        );
+        assert!(
+            content.contains("trash"),
+            "non-permanent should mention trash, got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_delete_prompt_permanent() {
+        let mut app = make_app();
+        app.delete_target_path = Some(std::path::PathBuf::from("/tmp/test_file"));
+        app.mode = AppMode::DeletePermanentPrompt;
+
+        let backend = TestBackend::new(80, 25);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect::new(0, 0, 80, 25);
+                render_delete_prompt(f, area, &app, true);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(
+            content.contains("permanently delete"),
+            "permanent prompt should say permanently delete, got: {content:?}"
+        );
+    }
 }
