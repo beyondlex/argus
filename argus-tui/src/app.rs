@@ -398,6 +398,8 @@ pub struct App {
     pub command_input: String,
     pub command_matches: Vec<&'static str>,
     pub command_selected: usize,
+    pub command_history: Vec<String>,
+    pub command_history_idx: Option<usize>,
 
     // Time help popup
     pub time_help_scroll: usize,
@@ -460,6 +462,8 @@ impl App {
             command_input: String::new(),
             command_matches: Vec::new(),
             command_selected: 0,
+            command_history: Vec::new(),
+            command_history_idx: None,
             rx,
             last_error: None,
             error_clear_at: None,
@@ -884,6 +888,21 @@ impl App {
         if self.command_selected >= self.command_matches.len() {
             self.command_selected = 0;
         }
+    }
+
+    pub fn push_command_history(&mut self, cmd: &str) {
+        let cmd = cmd.trim().to_string();
+        if cmd.is_empty() {
+            return;
+        }
+        if self.command_history.last().map(|s| s.as_str()) == Some(cmd.as_str()) {
+            return;
+        }
+        self.command_history.push(cmd);
+        if self.command_history.len() > 50 {
+            self.command_history.remove(0);
+        }
+        self.command_history_idx = None;
     }
 
     pub fn execute_command(&mut self, cmd: &str) -> Result<String, String> {

@@ -194,6 +194,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.mode = AppMode::Command;
             app.command_input.clear();
             app.command_selected = 0;
+            app.command_history_idx = None;
             app.update_command_matches();
         }
         KeyCode::Char('t') if app.server_mode => {
@@ -344,14 +345,17 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char(c) if app.command_input.len() < 200 => {
             app.command_input.push(c);
             app.update_command_matches();
+            app.command_history_idx = None;
         }
         KeyCode::Backspace => {
             app.command_input.pop();
             app.update_command_matches();
+            app.command_history_idx = None;
         }
         KeyCode::Tab if !app.command_matches.is_empty() => {
             app.command_selected = (app.command_selected + 1) % app.command_matches.len();
             app.command_input = app.command_matches[app.command_selected].to_string();
+            app.command_history_idx = None;
         }
         KeyCode::BackTab if !app.command_matches.is_empty() => {
             app.command_selected = if app.command_selected == 0 {
@@ -360,6 +364,28 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
                 app.command_selected - 1
             };
             app.command_input = app.command_matches[app.command_selected].to_string();
+            app.command_history_idx = None;
+        }
+        KeyCode::Up | KeyCode::Char('k') if !app.command_history.is_empty() => {
+            let idx = match app.command_history_idx {
+                Some(i) if i > 0 => i - 1,
+                None => app.command_history.len() - 1,
+                _ => return,
+            };
+            app.command_history_idx = Some(idx);
+            app.command_input = app.command_history[idx].clone();
+            app.update_command_matches();
+        }
+        KeyCode::Down | KeyCode::Char('j') if app.command_history_idx.is_some() => {
+            let idx = app.command_history_idx.unwrap();
+            if idx + 1 < app.command_history.len() {
+                app.command_history_idx = Some(idx + 1);
+                app.command_input = app.command_history[idx + 1].clone();
+            } else {
+                app.command_history_idx = None;
+                app.command_input.clear();
+            }
+            app.update_command_matches();
         }
         KeyCode::Enter => {
             let cmd = if !app.command_matches.is_empty() {
@@ -382,6 +408,15 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
 
 fn execute_command(app: &mut App, cmd: &str) {
     let cmd = cmd.trim();
+
+    if cmd.is_empty() {
+        app.command_input.clear();
+        app.command_matches.clear();
+        app.command_selected = 0;
+        return;
+    }
+
+    app.push_command_history(cmd);
 
     if cmd.eq_ignore_ascii_case("Scan") {
         app.command_input.clear();
@@ -567,6 +602,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             app.mode = AppMode::Command;
             app.command_input.clear();
             app.command_selected = 0;
+            app.command_history_idx = None;
             app.update_command_matches();
         }
         _ => {}

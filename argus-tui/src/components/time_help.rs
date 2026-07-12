@@ -30,7 +30,7 @@ fn all_lines() -> Vec<Line<'static>> {
         )]),
         Line::from(vec![Span::raw("  :time 12:00 to 13:00")]),
         Line::from(vec![Span::raw("")]),
-        
+
         Line::from(vec![section("Usage:")]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::raw(
