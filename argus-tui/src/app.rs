@@ -252,13 +252,15 @@ pub struct SearchMatch {
 pub enum SortMode {
     Name,
     Size,
+    Delta,
 }
 
 impl SortMode {
     pub fn toggle(self) -> Self {
         match self {
-            SortMode::Size => SortMode::Name,
             SortMode::Name => SortMode::Size,
+            SortMode::Size => SortMode::Delta,
+            SortMode::Delta => SortMode::Name,
         }
     }
 
@@ -266,6 +268,7 @@ impl SortMode {
         match self {
             SortMode::Size => "Size",
             SortMode::Name => "Name",
+            SortMode::Delta => "Delta",
         }
     }
 }
@@ -515,6 +518,11 @@ impl App {
     pub fn update_tree_lines(&mut self) {
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
+        let delta_cache = if self.delta_cache.is_empty() {
+            None
+        } else {
+            Some(&self.delta_cache)
+        };
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(snap_arc, idx)) => {
                 let mut lines = Vec::new();
@@ -529,6 +537,7 @@ impl App {
                     &self.scan_cache,
                     &self.view_root_path,
                     root_scan_tree,
+                    delta_cache,
                     &mut Vec::new(),
                 );
                 lines
@@ -636,6 +645,11 @@ impl App {
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
 
+        let delta_cache = if self.delta_cache.is_empty() {
+            None
+        } else {
+            Some(&self.delta_cache)
+        };
         let mut matches = Vec::new();
         let mut walk_index = 0usize;
         let mut visible_count = 0usize;
@@ -651,6 +665,7 @@ impl App {
             &mut visible_count,
             &mut matches,
             &mut self.path_to_walk_idx,
+            delta_cache,
         );
 
         self.match_indices = matches;
@@ -698,7 +713,12 @@ impl App {
 
         let mut children: Vec<(&String, NodeIndex)> =
             node.children.iter().map(|(n, i)| (n, *i)).collect();
-        sort_children_snapshot(&mut children, snap_arc, self.sort_mode);
+        let delta_cache = if self.delta_cache.is_empty() {
+            None
+        } else {
+            Some(&self.delta_cache)
+        };
+        sort_children_snapshot(&mut children, snap_arc, self.sort_mode, path, delta_cache);
 
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
@@ -717,6 +737,7 @@ impl App {
                 &self.scan_cache,
                 &self.view_root_path,
                 root_scan_tree,
+                delta_cache,
                 &mut child_path,
             );
         }
@@ -880,6 +901,7 @@ impl App {
         "FilterFocus",
         "Help",
         "Scan",
+        "Sort",
         "Time",
     ];
 
@@ -1101,6 +1123,33 @@ impl App {
                     }
                 }
             }
+            "sort" | "s" => {
+                let sub = parts.get(1).copied().unwrap_or("");
+                match sub.to_lowercase().as_str() {
+                    "d" | "delta" => self.sort_mode = SortMode::Delta,
+                    "s" | "size" => self.sort_mode = SortMode::Size,
+                    "n" | "name" => self.sort_mode = SortMode::Name,
+                    "" => self.sort_mode = self.sort_mode.toggle(),
+                    _ => return Err(format!("unknown sort mode: {sub}")),
+                }
+                self.update_tree_lines();
+                Ok(format!("Sort: {}", self.sort_mode.label()))
+            }
+            "sd" => {
+                self.sort_mode = SortMode::Delta;
+                self.update_tree_lines();
+                Ok("Sort: Delta".into())
+            }
+            "ss" => {
+                self.sort_mode = SortMode::Size;
+                self.update_tree_lines();
+                Ok("Sort: Size".into())
+            }
+            "sn" => {
+                self.sort_mode = SortMode::Name;
+                self.update_tree_lines();
+                Ok("Sort: Name".into())
+            }
             "scan" => {
                 if self.scanning {
                     return Err("already scanning".into());
@@ -1243,6 +1292,7 @@ impl App {
 
 // ── Tree flattening ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn flatten_snapshot_tree(
     snap_arc: &Arc<Snapshot>,
     idx: NodeIndex,
@@ -1253,6 +1303,7 @@ fn flatten_snapshot_tree(
     scan_cache: &HashMap<PathBuf, Snapshot>,
     view_root_path: &Path,
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
     path: &mut Vec<String>,
 ) {
     let node = snap_arc.node(idx);
@@ -1274,7 +1325,7 @@ fn flatten_snapshot_tree(
     if is_expanded && node.is_dir {
         let mut children: Vec<(&String, NodeIndex)> =
             node.children.iter().map(|(n, i)| (n, *i)).collect();
-        sort_children_snapshot(&mut children, snap_arc, sort_mode);
+        sort_children_snapshot(&mut children, snap_arc, sort_mode, path, delta_cache);
         for (_name, child_idx) in children {
             flatten_snapshot_tree(
                 snap_arc,
@@ -1286,6 +1337,7 @@ fn flatten_snapshot_tree(
                 scan_cache,
                 view_root_path,
                 root_scan_tree,
+                delta_cache,
                 path,
             );
         }
@@ -1429,6 +1481,8 @@ fn sort_children_snapshot(
     children: &mut Vec<(&String, NodeIndex)>,
     snap: &Snapshot,
     mode: SortMode,
+    parent_path: &[String],
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
 ) {
     match mode {
         SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
@@ -1437,6 +1491,25 @@ fn sort_children_snapshot(
             let b_size = snap.node(b.1).size;
             b_size.cmp(&a_size)
         }),
+        SortMode::Delta => {
+            let mut with_delta: Vec<(i64, &String, NodeIndex)> = children
+                .iter()
+                .map(|(name, idx)| {
+                    let mut child_path = parent_path.to_vec();
+                    child_path.push((*name).clone());
+                    let delta = delta_cache
+                        .and_then(|c| c.get(&child_path))
+                        .copied()
+                        .unwrap_or(0);
+                    (delta, *name, *idx)
+                })
+                .collect();
+            with_delta.sort_unstable_by(|a, b| b.0.abs().cmp(&a.0.abs()));
+            children.clear();
+            for (_, name, idx) in with_delta {
+                children.push((name, idx));
+            }
+        }
     }
 }
 
@@ -1492,6 +1565,7 @@ fn collect_matches_in_order(
     visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
     path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
 ) {
     let node = snap.node(idx);
     let is_visible = path_is_visible(path, expanded);
@@ -1524,7 +1598,7 @@ fn collect_matches_in_order(
         if !skip_subtree {
             let mut children: Vec<(&String, NodeIndex)> =
                 node.children.iter().map(|(n, i)| (n, *i)).collect();
-            sort_children_snapshot(&mut children, snap, sort_mode);
+            sort_children_snapshot(&mut children, snap, sort_mode, path, delta_cache);
             for (name, child_idx) in children {
                 path.push(name.clone());
                 collect_matches_in_order(
@@ -1538,6 +1612,7 @@ fn collect_matches_in_order(
                     visible_count,
                     result,
                     path_to_walk_idx,
+                    delta_cache,
                 );
                 path.pop();
             }
