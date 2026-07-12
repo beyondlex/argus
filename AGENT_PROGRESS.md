@@ -5,13 +5,13 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-07-11
+- 2026-07-12
 
 ## Current State
 
 - Phase 1: complete
 - Phase 2: code complete, doc updated, integration tests pending
-- Phase 3: design doc written at `docs/plans/phase3-daemon-design.md`, implementation not started
+- Phase 3: code complete (argusd, IPC, DB, TUI client), integration tests pending
 
 ## Active Work
 
@@ -43,15 +43,15 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 ### Phase 3 — Daemon Automation
 
 - [x] Design doc: `docs/plans/phase3-daemon-design.md`
-- [ ] Step 1: Data structures + DB schema (model.rs DeltaEvent/DeltaEntry, db.rs query API)
-- [ ] Step 2: IPC protocol types (argus-core/src/ipc.rs)
-- [ ] Step 3: `argusd` crate creation + main.rs skeleton
-- [ ] Step 4: watcher module (notify, size cache, hardlink dedup)
-- [ ] Step 5: debounce module (buffer, merge, delayed write)
-- [ ] Step 6: IPC Server (UDS listener + request dispatch)
-- [ ] Step 7: Daemon main flow (config, signal handling, graceful shutdown)
-- [ ] Step 8: TUI IPC Client (UDS connect, auto-detect, fallback)
-- [ ] Step 9: TUI delta overlay (delta column, time filter bar, detail popup)
+- [x] Step 1: Data structures + DB schema (model.rs DeltaEvent/DeltaEntry, db.rs query API)
+- [x] Step 2: IPC protocol types (argus-core/src/ipc.rs)
+- [x] Step 3: `argusd` crate creation + main.rs skeleton
+- [x] Step 4: watcher module (notify, size cache, hardlink dedup)
+- [x] Step 5: debounce module (buffer, merge, delayed write)
+- [x] Step 6: IPC Server (UDS listener + request dispatch)
+- [x] Step 7: Daemon main flow (config, signal handling, graceful shutdown)
+- [x] Step 8: TUI IPC Client (UDS connect, auto-detect, fallback)
+- [x] Step 9: TUI delta overlay (delta column, time filter bar, detail popup)
 - [ ] Step 10: Integration tests (end-to-end daemon, UDS, delta query)
 
 ## Recent Completed Work
@@ -59,4 +59,5 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - Phase 1: model/scanner/diff/ai_feature + cli (scan/diff/explain)
 - Phase 2 (code): list_dir, scan_cache, rebuild_tree, navigation, "-" rendering, BrowsingConfig, auto_scan_on_start
 - Phase 3 design: `docs/plans/phase3-daemon-design.md`
+- Phase 3 (code): db.rs schema + query, ipc.rs protocol, argusd (watcher/debounce/ipc_server/config/retention), TUI ipc_client + delta overlay
 - docs/requirements/index.md: added P3 reference

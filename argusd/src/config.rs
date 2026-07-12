@@ -111,14 +111,22 @@ struct RawConfig {
 
 pub fn load_config() -> DaemonConfig {
     let path = config_path();
-    let content = match std::fs::read_to_string(&path) {
+    load_config_from_path(&path)
+}
+
+pub fn load_config_from(path: &str) -> DaemonConfig {
+    load_config_from_path(&PathBuf::from(path))
+}
+
+fn load_config_from_path(path: &PathBuf) -> DaemonConfig {
+    let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return DaemonConfig::default(),
     };
     match toml::from_str::<RawConfig>(&content) {
         Ok(raw) => raw.daemon.unwrap_or_default(),
         Err(e) => {
-            tracing::warn!("failed to parse config: {e}, using defaults");
+            tracing::warn!("failed to parse config {path:?}: {e}, using defaults");
             DaemonConfig::default()
         }
     }
