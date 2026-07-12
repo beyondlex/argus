@@ -1048,15 +1048,29 @@ impl App {
                     self.request_delta_refresh();
                     Ok(format!("time range: {}", self.time_custom_label))
                 } else {
-                    // No "to" — single duration (backward compat)
-                    let ms = parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
+                    // No "to" — single arg
                     let now = now_in_millis();
-                    self.time_from = now.saturating_sub(ms);
-                    self.time_to = now;
-                    self.time_custom = true;
-                    self.time_custom_label = format_duration_label(ms);
-                    self.request_delta_refresh();
-                    Ok(format!("time range: in {}", self.time_custom_label))
+                    if is_time_only(arg) {
+                        let time_parts: Vec<&str> = arg.split(':').collect();
+                        let h: u32 = time_parts[0].parse().map_err(|_| format!("invalid hour: {arg}"))?;
+                        let min: u32 = time_parts[1].parse().map_err(|_| format!("invalid minute: {arg}"))?;
+                        let (m, d) = today_md();
+                        let from_ms = datetime_to_millis(m, d, h, min);
+                        self.time_from = from_ms;
+                        self.time_to = now;
+                        self.time_custom = true;
+                        self.time_custom_label = format!("{:02}:{:02} ~ now", h, min);
+                        self.request_delta_refresh();
+                        Ok(format!("time range: {}", self.time_custom_label))
+                    } else {
+                        let ms = parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
+                        self.time_from = now.saturating_sub(ms);
+                        self.time_to = now;
+                        self.time_custom = true;
+                        self.time_custom_label = format_duration_label(ms);
+                        self.request_delta_refresh();
+                        Ok(format!("time range: in {}", self.time_custom_label))
+                    }
                 }
             }
             "scan" => {
