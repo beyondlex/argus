@@ -1189,6 +1189,193 @@ mod tests {
     }
 
     #[test]
+    fn test_jump_auto_expands_collapsed_ancestors() {
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1), ("b", 2)]),
+            dir_node("a", vec![("target_file", 3)]),
+            dir_node("b", vec![("other", 4)]),
+            file_node("target_file", 1),
+            file_node("other", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        // Don't expand any subdirectories — only root is expanded
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 1);
+        assert!(
+            app.match_indices[0].tree_idx.is_none(),
+            "match should be hidden (tree_idx=None) before expansion"
+        );
+
+        // Jump to the match — should auto-expand ancestors
+        app.cursor = 0;
+        jump_to_next_match(&mut app, 1);
+
+        let selected = app.selected_line().expect("cursor should point to a line");
+        assert_eq!(selected.node.name(), "target_file");
+        assert!(
+            app.expanded
+                .contains(&vec!["test".to_string(), "a".to_string()]),
+            "parent 'a' should be in expanded set"
+        );
+        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
+        assert!(
+            tree_paths.contains(&vec![
+                "test".to_string(),
+                "a".to_string(),
+                "target_file".to_string()
+            ]),
+            "target_file should be in tree_lines after expansion"
+        );
+    }
+
+    #[test]
+    fn test_jump_auto_expands_deeply_nested() {
+        // Setup: root/a/b/c/target (4 levels deep, all collapsed)
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1)]),
+            dir_node("a", vec![("b", 2)]),
+            dir_node("b", vec![("c", 3)]),
+            dir_node("c", vec![("target", 4)]),
+            file_node("target", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 1);
+        assert!(app.match_indices[0].tree_idx.is_none());
+
+        app.cursor = 0;
+        jump_to_next_match(&mut app, 1);
+
+        let selected = app.selected_line().expect("cursor should point to a line");
+        assert_eq!(selected.node.name(), "target");
+        assert!(app
+            .expanded
+            .contains(&vec!["test".to_string(), "a".to_string()]));
+        assert!(app
+            .expanded
+            .contains(&vec!["test".to_string(), "a".to_string(), "b".to_string()]));
+        assert!(app.expanded.contains(&vec![
+            "test".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string()
+        ]));
+        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
+        assert!(
+            tree_paths.contains(&vec![
+                "test".to_string(),
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "target".to_string()
+            ]),
+            "deeply nested target should be in tree_lines"
+        );
+    }
+
+    #[test]
+    fn test_jump_auto_expands_partially_expanded() {
+        // Setup: root/a/b/target where "a" is already expanded but "b" is not
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1), ("x", 2)]),
+            dir_node("a", vec![("b", 3)]),
+            dir_node("x", vec![]),
+            dir_node("b", vec![("target", 4)]),
+            file_node("target", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        // Expand "a" but NOT "a/b"
+        app.expanded
+            .insert(vec!["test".to_string(), "a".to_string()]);
+        app.update_tree_lines();
+
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 1);
+        assert!(
+            app.match_indices[0].tree_idx.is_none(),
+            "match should be hidden because 'a/b' is collapsed"
+        );
+
+        app.cursor = 0;
+        jump_to_next_match(&mut app, 1);
+
+        let selected = app.selected_line().expect("cursor should point to a line");
+        assert_eq!(selected.node.name(), "target");
+        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
+        assert!(
+            tree_paths.contains(&vec![
+                "test".to_string(),
+                "a".to_string(),
+                "b".to_string(),
+                "target".to_string()
+            ]),
+            "target should be in tree_lines after partial expansion"
+        );
+    }
+
+    #[test]
+    fn test_refresh_filtered_lines_keeps_hidden_matches() {
+        // Regression: refresh_filtered_lines must NOT prune matches with tree_idx=None.
+        // These are matches in collapsed subtrees. Previously the retain condition
+        // `.is_some_and(...)` removed them, making n/N unable to find them.
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1)]),
+            dir_node("a", vec![("target", 2)]),
+            file_node("target", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 1);
+        assert!(
+            app.match_indices[0].tree_idx.is_none(),
+            "match in collapsed subtree should have tree_idx=None"
+        );
+
+        // Simulate what happens when a background message (e.g. DeltaData) arrives:
+        // refresh_filtered_lines is called, which should NOT drop hidden matches.
+        app.refresh_filtered_lines();
+
+        assert!(
+            !app.match_indices.is_empty(),
+            "hidden matches must survive refresh_filtered_lines"
+        );
+        assert_eq!(
+            app.match_indices[0].tree_idx, None,
+            "hidden match should still have tree_idx=None after refresh"
+        );
+
+        // n/N should still work
+        app.cursor = 0;
+        jump_to_next_match(&mut app, 1);
+        let selected = app.selected_line().expect("cursor should point to a line");
+        assert_eq!(selected.node.name(), "target");
+    }
+
+    #[test]
     fn test_expanded_is_path_scoped() {
         let root_arena = vec![
             dir_node("root", vec![("left", 1), ("right", 2)]),

@@ -840,7 +840,7 @@ impl App {
         if !self.match_indices.is_empty() {
             let visible: HashSet<usize> = self.filtered_tree_lines.iter().copied().collect();
             self.match_indices
-                .retain(|m| m.tree_idx.is_some_and(|idx| visible.contains(&idx)));
+                .retain(|m| m.tree_idx.map_or(true, |idx| visible.contains(&idx)));
             self.current_match = self
                 .current_match
                 .min(self.match_indices.len().saturating_sub(1));
