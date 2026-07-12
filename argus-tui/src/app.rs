@@ -550,6 +550,7 @@ impl App {
             self.cursor = self.tree_lines.len() - 1;
         }
         self.refresh_filtered_lines();
+        self.recompute_matches();
     }
 
     /// Handle a message from background tasks
@@ -744,6 +745,7 @@ impl App {
 
         self.tree_lines.splice(pos + 1..pos + 1, new_lines);
         self.refresh_filtered_lines();
+        self.recompute_matches();
         true
     }
 
@@ -890,6 +892,7 @@ impl App {
         self.set_time_preset(0);
         self.focus = Focus::Tree;
         self.refresh_filtered_lines();
+        self.recompute_matches();
     }
 
     // ── Command bar ────────────────────────────────────────────────────────────
