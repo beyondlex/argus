@@ -1062,6 +1062,14 @@ impl App {
                         self.time_custom_label = format!("{:02}:{:02} ~ now", h, min);
                         self.request_delta_refresh();
                         Ok(format!("time range: {}", self.time_custom_label))
+                    } else if let Ok((m, d, h, min)) = parse_date_time(arg) {
+                        let from_ms = datetime_to_millis(m, d, h, min);
+                        self.time_from = from_ms;
+                        self.time_to = now;
+                        self.time_custom = true;
+                        self.time_custom_label = format!("{} ~ now", format_absolute_label(m, d, h, min));
+                        self.request_delta_refresh();
+                        Ok(format!("time range: {}", self.time_custom_label))
                     } else {
                         let ms = parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
                         self.time_from = now.saturating_sub(ms);

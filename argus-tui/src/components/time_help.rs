@@ -27,6 +27,9 @@ fn all_lines() -> Vec<Line<'static>> {
             "  :Time HH:MM               from HH:MM today until now",
         )]),
         Line::from(vec![Span::raw(
+            "  :Time MM-DD [HH:MM]       from date (optionally time) until now",
+        )]),
+        Line::from(vec![Span::raw(
             "  :Time <from> to <to>      range with 'to' separator",
         )]),
         Line::from(vec![Span::raw("")]),
@@ -48,6 +51,7 @@ fn all_lines() -> Vec<Line<'static>> {
         Line::from(vec![section("Examples:")]),
         Line::from(vec![Span::raw("  :time 1w")]),
         Line::from(vec![Span::raw("  :time 13:00")]),
+        Line::from(vec![Span::raw("  :time 06-12 13:00")]),
         Line::from(vec![Span::raw("  :time 1w to 3d")]),
         Line::from(vec![Span::raw("  :time 06-12 12:00 to 13:00")]),
         Line::from(vec![Span::raw("  :time 06-12 to 06-13")]),
