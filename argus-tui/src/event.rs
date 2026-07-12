@@ -170,12 +170,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     render_overlays(f, app, area);
 }
 
-fn render_chrome(
-    f: &mut Frame,
-    app: &App,
-    chunks: &[ratatui::layout::Rect],
-    cursor_visible: bool,
-) {
+fn render_chrome(f: &mut Frame, app: &App, chunks: &[ratatui::layout::Rect], cursor_visible: bool) {
     render_header(f, chunks[0]);
     render_filter_pane(f, chunks[1], app);
     render_main_content(f, app, chunks[2], cursor_visible);
