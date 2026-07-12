@@ -215,6 +215,22 @@ fn format_absolute_label(month: u32, day: u32, hour: u32, minute: u32) -> String
     }
 }
 
+fn today_md() -> (u32, u32) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = now / 86400 + 719468;
+    let era = if days >= 0 { days } else { days - 146096 } / 146097;
+    let doe = days - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    (month, day)
+}
+
 /// Tree search mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SearchMode {
@@ -383,7 +399,8 @@ pub struct App {
     pub command_matches: Vec<&'static str>,
     pub command_selected: usize,
 
-    // Quit
+    // Time help popup
+    pub time_help_scroll: usize,
     pub should_quit: bool,
 }
 
@@ -447,6 +464,7 @@ impl App {
             last_error: None,
             error_clear_at: None,
             log_path,
+            time_help_scroll: 0,
             should_quit: false,
         }
     }
@@ -957,12 +975,18 @@ impl App {
                     }
 
                     // Parse left side
-                    let (from_ms, left_label) = if is_time_only(left) {
-                        return Err("left side cannot be time-only".into());
+                    let (from_ms, left_label, left_date) = if is_time_only(left) {
+                        let time_parts: Vec<&str> = left.split(':').collect();
+                        let h: u32 = time_parts[0].parse().map_err(|_| format!("invalid hour: {left}"))?;
+                        let min: u32 = time_parts[1].parse().map_err(|_| format!("invalid minute: {left}"))?;
+                        let (m, d) = today_md();
+                        let label = format!("{:02}:{:02}", h, min);
+                        (datetime_to_millis(m, d, h, min), label, Some((m, d)))
                     } else if let Ok(ms) = parse_duration(left) {
                         (
                             now_in_millis().saturating_sub(ms),
                             format_duration_label(ms),
+                            None,
                         )
                     } else {
                         let (m, d, h, min) =
@@ -970,28 +994,20 @@ impl App {
                         (
                             datetime_to_millis(m, d, h, min),
                             format_absolute_label(m, d, h, min),
+                            Some((m, d)),
                         )
                     };
 
                     // Parse right side
                     let (to_ms, right_label) = if is_time_only(right) {
-                        // Inherit date from left if left was absolute
-                        if let Ok((m, d, _, _)) = parse_date_time(left) {
-                            let time_parts: Vec<&str> = right.split(':').collect();
-                            let h: u32 = time_parts[0].parse().unwrap_or(0);
-                            let min: u32 = time_parts[1].parse().unwrap_or(0);
-                            (
-                                datetime_to_millis(m, d, h, min),
-                                format!(
-                                    "{} {:02}:{:02}",
-                                    format_absolute_label(m, d, 0, 0),
-                                    h,
-                                    min
-                                ),
-                            )
-                        } else {
-                            return Err("cannot inherit date for time-only right side".into());
-                        }
+                        let date = left_date.ok_or("cannot inherit date for time-only right side")?;
+                        let time_parts: Vec<&str> = right.split(':').collect();
+                        let h: u32 = time_parts[0].parse().unwrap_or(0);
+                        let min: u32 = time_parts[1].parse().unwrap_or(0);
+                        (
+                            datetime_to_millis(date.0, date.1, h, min),
+                            format!("{:02}:{:02}", h, min),
+                        )
                     } else if let Ok(ms) = parse_duration(right) {
                         (
                             now_in_millis().saturating_sub(ms),

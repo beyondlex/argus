@@ -327,6 +327,13 @@ fn handle_time_help_key(key: KeyEvent, app: &mut App) {
     match key.code {
         KeyCode::Esc => {
             app.mode = AppMode::Browsing;
+            app.time_help_scroll = 0;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.time_help_scroll = app.time_help_scroll.saturating_add(1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.time_help_scroll = app.time_help_scroll.saturating_sub(1);
         }
         _ => {}
     }

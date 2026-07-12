@@ -198,7 +198,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Help => help_popup::render(f, area),
-        AppMode::TimeHelp => time_help::render(f, area),
+        AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll),
         AppMode::Command => {
             command_bar::render(
                 f,
