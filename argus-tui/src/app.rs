@@ -698,7 +698,7 @@ impl App {
             let lower = self.command_input.to_lowercase();
             self.command_matches = Self::COMMANDS
                 .iter()
-                .filter(|c| c.to_lowercase().contains(&lower))
+                .filter(|c| fuzzy_match(&lower, &c.to_lowercase()))
                 .copied()
                 .collect();
         }
@@ -1242,6 +1242,20 @@ fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
     }
 
     (1..path.len()).all(|len| expanded.contains(&path[..len].to_vec()))
+}
+
+fn fuzzy_match(query: &str, target: &str) -> bool {
+    let mut chars = target.chars();
+    for qc in query.chars() {
+        loop {
+            match chars.next() {
+                Some(tc) if tc == qc => break,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]

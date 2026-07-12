@@ -8,10 +8,8 @@ use ratatui::{
 use ratatui::layout::Rect;
 
 pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected: usize) {
-    // Input line at the very bottom of the screen
     let input_y = area.y + area.height - 1;
 
-    // Completion popup above the input line
     if !matches.is_empty() {
         let max_popup = matches.len().min(8) as u16;
         let popup_h = max_popup + 2;
@@ -32,19 +30,22 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
         let inner = popup_block.inner(popup_area);
         f.render_widget(popup_block, popup_area);
 
+        let inner_w = inner.width as usize;
         let mut lines = Vec::new();
         for (i, m) in matches.iter().enumerate().take(8) {
             let style = if i == selected {
                 Style::default().fg(Color::Black).bg(Color::LightYellow)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::White).bg(Color::Black)
             };
-            lines.push(Line::from(Span::styled(*m, style)));
+            lines.push(Line::from(Span::styled(
+                format!("{:<width$}", m, width = inner_w),
+                style,
+            )));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    // Input line — clear area and render
     let input_area = Rect {
         x: area.x,
         y: input_y,
@@ -53,7 +54,7 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
     };
     f.render_widget(Clear, input_area);
 
-    let input_text = format!(":{}", input);
+    let input_text = format!(":{:<width$}", input, width = area.width as usize - 1);
     let input_style = Style::default()
         .fg(Color::Cyan)
         .bg(Color::Black)
@@ -63,7 +64,9 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
         input_area,
     );
 
-    // Cursor
-    let cursor_x = area.x + (input.len() as u16).min(area.width.saturating_sub(2)).saturating_add(1);
+    let cursor_x = area.x
+        + (input.len() as u16)
+            .min(area.width.saturating_sub(2))
+            .saturating_add(1);
     f.set_cursor_position((cursor_x, input_y));
 }
