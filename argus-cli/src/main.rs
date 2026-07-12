@@ -79,8 +79,9 @@ fn cmd_help() -> Result<i32> {
     println!("  :Scan                 Scan current directory");
     println!("  :FilterClear          Clear delta filter");
     println!("  :FilterFocus          Focus filter pane");
-    println!("  :FilterDelta <N>[k|m|g]  Set delta threshold");
-    println!("  :FilterTime <N>h      Set time range");
+    println!("  :Delta <N>[k|m|g]    Set delta threshold");
+    println!("  :Time <N>[h|d|w]     Set time range (relative)");
+    println!("  :Time <from> to <to> Set time range (absolute or mixed)");
     println!("  :Consolidate          Request event consolidation");
     println!("  :Help                 Show help overlay");
     Ok(0)

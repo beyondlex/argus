@@ -44,7 +44,7 @@ pub fn render(f: &mut Frame, area: Rect) {
         Line::from(key_hints(&[("o", "Toggle sort mode")])),
         Line::from(key_hints(&[("d", "Delete selected item")])),
         Line::from(key_hints(&[("Tab", "Focus next panel")])),
-        Line::from(key_hints(&[("/", "Filter items in tree")])),
+        Line::from(key_hints(&[("/", "Search items in tree")])),
         Line::from(key_hints(&[("n/N", "Next/prev match (with filter)")])),
         Line::from(key_hints(&[("?", "Toggle this help")])),
         Line::from(key_hints(&[("q / Ctrl+C", "Quit")])),
@@ -66,11 +66,9 @@ pub fn render(f: &mut Frame, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw(
-            "  Select 'from' and 'to' timestamps to show delta",
+            "  :Time <N>[h|d|w] | <from> to <to>  Set time range",
         )]),
-        Line::from(vec![Span::raw(
-            "  Set threshold to filter by minimum change",
-        )]),
+        Line::from(vec![Span::raw("  :Delta <N>[k|m|g]  Set delta threshold")]),
         Line::from(vec![Span::raw("  Press 'Clear' to reset filters")]),
         Line::from(vec![Span::raw("")]),
         Line::from(key_hints(&[("? / Esc", "Close")])),

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
-use crate::app::{App, AppMessage, AppMode, FilterFocus, FilterMode, Focus, TreeNode};
+use crate::app::{App, AppMessage, AppMode, FilterFocus, SearchMode, Focus, TreeNode};
 use crate::event::SHOULD_QUIT;
 use crate::ipc_client::IpcClient;
 
@@ -36,35 +36,35 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    match app.filter_mode {
-        FilterMode::Input => {
+    match app.search_mode {
+        SearchMode::Input => {
             match key.code {
                 KeyCode::Char(c) => {
-                    app.filter_word.push(c);
+                    app.search_word.push(c);
                     app.recompute_matches();
                 }
                 KeyCode::Backspace => {
-                    app.filter_word.pop();
+                    app.search_word.pop();
                     app.recompute_matches();
                 }
                 KeyCode::Enter => {
-                    if app.filter_word.is_empty() {
+                    if app.search_word.is_empty() {
                         app.recompute_matches();
-                        app.filter_mode = FilterMode::Inactive;
+                        app.search_mode = SearchMode::Inactive;
                     } else {
-                        app.filter_mode = FilterMode::Active;
+                        app.search_mode = SearchMode::Active;
                     }
                 }
                 KeyCode::Esc => {
-                    app.filter_word.clear();
+                    app.search_word.clear();
                     app.recompute_matches();
-                    app.filter_mode = FilterMode::Inactive;
+                    app.search_mode = SearchMode::Inactive;
                 }
                 _ => {}
             }
             return;
         }
-        FilterMode::Active => {
+        SearchMode::Active => {
             match key.code {
                 KeyCode::Char('n') => {
                     jump_to_next_match(app, 1);
@@ -73,27 +73,27 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                     jump_to_next_match(app, -1);
                 }
                 KeyCode::Char('/') => {
-                    app.filter_word.clear();
+                    app.search_word.clear();
                     app.recompute_matches();
-                    app.filter_mode = FilterMode::Input;
+                    app.search_mode = SearchMode::Input;
                 }
                 KeyCode::Esc => {
-                    app.filter_word.clear();
+                    app.search_word.clear();
                     app.recompute_matches();
-                    app.filter_mode = FilterMode::Inactive;
+                    app.search_mode = SearchMode::Inactive;
                     return;
                 }
                 _ => {}
             }
             // Don't return for other keys — let navigation keys pass through
         }
-        FilterMode::Inactive => {}
+        SearchMode::Inactive => {}
     }
 
     // Only '/' triggers filter from Inactive; other keys ignored if already handled above
-    if app.filter_mode == FilterMode::Inactive {
+    if app.search_mode == SearchMode::Inactive {
         if let KeyCode::Char('/') = key.code {
-            app.filter_mode = FilterMode::Input;
+            app.search_mode = SearchMode::Input;
             return;
         }
     }
@@ -134,8 +134,8 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('u') => {
             navigate_up_root(app);
         }
-        KeyCode::Enter if !app.filter_word.is_empty() => {
-            app.filter_mode = FilterMode::Input;
+        KeyCode::Enter if !app.search_word.is_empty() => {
+            app.search_mode = SearchMode::Input;
         }
         KeyCode::Char('s') => {
             start_scan(app);
@@ -196,9 +196,14 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.update_command_matches();
         }
         KeyCode::Char('t') if app.server_mode => {
-            let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
-            app.set_time_preset(next);
-            app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
+            if app.time_custom {
+                app.set_time_preset(0);
+                app.set_error(format!("time range: {}", App::time_preset_label(0)), 2);
+            } else {
+                let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
+                app.set_time_preset(next);
+                app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
+            }
             app.request_delta_refresh();
         }
         KeyCode::Char('R') if !app.server_mode => {
@@ -423,20 +428,37 @@ fn execute_command(app: &mut App, cmd: &str) {
 // ── Filter pane key handling ─────────────────────────────────────────────────
 
 fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
+    let skip_time = app.time_custom;
     match key.code {
         KeyCode::Tab | KeyCode::Char('\t') => {
-            let next = match app.filter_focus {
-                FilterFocus::TimePreset => FilterFocus::DeltaValue,
-                FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
-                FilterFocus::DeltaUnit => FilterFocus::TimePreset,
+            let next = if skip_time {
+                match app.filter_focus {
+                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
+                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
+                    _ => FilterFocus::DeltaValue,
+                }
+            } else {
+                match app.filter_focus {
+                    FilterFocus::TimePreset => FilterFocus::DeltaValue,
+                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
+                    FilterFocus::DeltaUnit => FilterFocus::TimePreset,
+                }
             };
             app.filter_focus = next;
         }
         KeyCode::BackTab => {
-            let next = match app.filter_focus {
-                FilterFocus::TimePreset => FilterFocus::DeltaUnit,
-                FilterFocus::DeltaValue => FilterFocus::TimePreset,
-                FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
+            let next = if skip_time {
+                match app.filter_focus {
+                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
+                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
+                    _ => FilterFocus::DeltaValue,
+                }
+            } else {
+                match app.filter_focus {
+                    FilterFocus::TimePreset => FilterFocus::DeltaUnit,
+                    FilterFocus::DeltaValue => FilterFocus::TimePreset,
+                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
+                }
             };
             app.filter_focus = next;
         }
@@ -463,7 +485,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             app.refresh_filtered_lines();
         }
         KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
-            FilterFocus::TimePreset => {
+            FilterFocus::TimePreset if !skip_time => {
                 let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
                 let label = App::time_preset_label(next);
                 crate::app::log_msg(
@@ -473,6 +495,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }
+            FilterFocus::TimePreset => {}
             FilterFocus::DeltaValue => {
                 app.delta_filter_active = true;
                 app.delta_filter_inc();
@@ -485,7 +508,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             }
         },
         KeyCode::Char('k') | KeyCode::Up => match app.filter_focus {
-            FilterFocus::TimePreset => {
+            FilterFocus::TimePreset if !skip_time => {
                 let count = crate::app::TIME_PRESET_COUNT;
                 let next = (app.time_preset + count - 1) % count;
                 let label = App::time_preset_label(next);
@@ -496,6 +519,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }
+            FilterFocus::TimePreset => {}
             FilterFocus::DeltaValue => {
                 app.delta_filter_active = true;
                 app.delta_filter_dec();
@@ -518,6 +542,15 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Esc => {
             app.focus = Focus::Tree;
+        }
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+        }
+        KeyCode::Char(':') => {
+            app.mode = AppMode::Command;
+            app.command_input.clear();
+            app.command_selected = 0;
+            app.update_command_matches();
         }
         _ => {}
     }
@@ -1037,7 +1070,7 @@ mod tests {
         app.expanded
             .insert(vec!["test".to_string(), "b".to_string()]);
         app.update_tree_lines();
-        app.filter_word = "target".to_string();
+        app.search_word = "target".to_string();
         app.recompute_matches();
 
         assert_eq!(app.match_indices.len(), 2);

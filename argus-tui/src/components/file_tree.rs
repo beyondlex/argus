@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{fuzzy_match_indices, FilterMode, SearchMatch, SortMode, TreeLine};
+use crate::app::{fuzzy_match_indices, SearchMode, SearchMatch, SortMode, TreeLine};
 use crate::util;
 use crate::util::key_hints;
 
@@ -25,8 +25,8 @@ pub fn render(
     scroll_offset: usize,
     _sort_mode: SortMode,
     view_root_path: &Path,
-    filter_word: &str,
-    filter_mode: FilterMode,
+    search_word: &str,
+    search_mode: SearchMode,
     match_indices: &[SearchMatch],
     current_match: usize,
     cursor_visible: bool,
@@ -49,7 +49,7 @@ pub fn render(
     let inner = block.inner(area);
     let content_width = inner.width.saturating_sub(1);
 
-    let is_active_match = filter_mode == FilterMode::Active && current_match < match_indices.len();
+    let is_active_match = search_mode == SearchMode::Active && current_match < match_indices.len();
     let available_height = inner.height.saturating_sub(1).max(1) as usize;
 
     // Use filtered_indices for total count; cursor is index into filtered view
@@ -67,9 +67,9 @@ pub fn render(
     };
 
     let mut rendered_lines: Vec<Line> = Vec::new();
-    rendered_lines.push(filter_status_line(
-        filter_mode,
-        filter_word,
+    rendered_lines.push(search_status_line(
+        search_mode,
+        search_word,
         cursor_visible,
         match_indices,
         tree_lines,
@@ -95,8 +95,8 @@ pub fn render(
             line,
             is_selected,
             is_current_match,
-            filter_mode != FilterMode::Inactive && !filter_word.is_empty(),
-            filter_word,
+            search_mode != SearchMode::Inactive && !search_word.is_empty(),
+            search_word,
             content_width,
             has_delta,
             delta,
@@ -129,20 +129,20 @@ pub fn render(
     f.render_widget(Paragraph::new(rendered_lines).block(block), area);
 }
 
-fn filter_status_line<'a>(
-    filter_mode: FilterMode,
-    filter_word: &'a str,
+fn search_status_line<'a>(
+    search_mode: SearchMode,
+    search_word: &'a str,
     cursor_visible: bool,
     match_indices: &'a [SearchMatch],
     lines: &'a [TreeLine],
 ) -> Line<'a> {
-    match filter_mode {
-        FilterMode::Inactive => Line::from(vec![Span::styled(
-            "  [type / to filter]",
+    match search_mode {
+        SearchMode::Inactive => Line::from(vec![Span::styled(
+            "  [type / to search]",
             Style::default().fg(Color::DarkGray),
         )]),
-        FilterMode::Input => {
-            let mut display = filter_word.to_string();
+        SearchMode::Input => {
+            let mut display = search_word.to_string();
             display.push(if cursor_visible { '▎' } else { ' ' });
             let count = format!(" ({}/{})", match_indices.len(), lines.len());
             Line::from(vec![
@@ -150,11 +150,11 @@ fn filter_status_line<'a>(
                 Span::styled(count, Style::default().fg(Color::DarkGray)),
             ])
         }
-        FilterMode::Active => {
+        SearchMode::Active => {
             let count = format!(" ({}/{}) ", match_indices.len(), lines.len());
             let mut spans: Vec<Span> = vec![
                 Span::styled(
-                    format!("  {}", filter_word.to_string()),
+                    format!("  {}", search_word.to_string()),
                     Style::default().fg(Color::Green),
                 ),
                 Span::styled(count, Style::default().fg(Color::DarkGray)),
@@ -202,8 +202,8 @@ fn render_tree_line<'a>(
     line: &'a TreeLine,
     is_selected: bool,
     is_current_match: bool,
-    has_filter: bool,
-    filter_word: &'a str,
+    has_search: bool,
+    search_word: &'a str,
     content_width: u16,
     has_delta: bool,
     delta: Option<i64>,
@@ -236,8 +236,8 @@ fn render_tree_line<'a>(
             bg,
             is_selected,
             is_current_match,
-            has_filter,
-            filter_word,
+            has_search,
+            search_word,
         },
     );
 
@@ -290,14 +290,14 @@ struct NameSpanContext<'a> {
     bg: Color,
     is_selected: bool,
     is_current_match: bool,
-    has_filter: bool,
-    filter_word: &'a str,
+    has_search: bool,
+    search_word: &'a str,
 }
 
 fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>> {
     let name_text = line.node.name();
 
-    if ctx.has_filter && !ctx.filter_word.is_empty() {
+    if ctx.has_search && !ctx.search_word.is_empty() {
         let prefix_style = if ctx.is_current_match {
             Style::default().add_modifier(Modifier::BOLD)
         } else if ctx.is_selected {
@@ -310,7 +310,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
         };
         let mut spans = vec![Span::styled(ctx.name_prefix, prefix_style)];
 
-        if let Some(indices) = fuzzy_match_indices(ctx.filter_word, name_text) {
+        if let Some(indices) = fuzzy_match_indices(ctx.search_word, name_text) {
             spans.extend(match_highlight_spans(
                 name_text,
                 &indices,

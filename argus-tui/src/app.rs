@@ -69,15 +69,160 @@ pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
 
 pub const TIME_PRESET_COUNT: usize = 7;
 
-/// Tree filter mode
+pub fn now_in_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn parse_duration(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num_str, mult) = if s.ends_with('w') || s.ends_with('W') {
+        (&s[..s.len() - 1], 604_800_000u64)
+    } else if s.ends_with('d') || s.ends_with('D') {
+        (&s[..s.len() - 1], 86_400_000u64)
+    } else if s.ends_with('h') || s.ends_with('H') {
+        (&s[..s.len() - 1], 3_600_000u64)
+    } else {
+        (s, 3_600_000u64)
+    };
+    let n: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid number: {num_str}"))?;
+    Ok(n * mult)
+}
+
+fn parse_date_time(s: &str) -> Result<(u32, u32, u32, u32), String> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    match parts.len() {
+        1 => {
+            let date_parts: Vec<&str> = parts[0].split('-').collect();
+            if date_parts.len() == 2 {
+                let month: u32 = date_parts[0]
+                    .parse()
+                    .map_err(|_| format!("invalid month: {}", date_parts[0]))?;
+                let day: u32 = date_parts[1]
+                    .parse()
+                    .map_err(|_| format!("invalid day: {}", date_parts[1]))?;
+                Ok((month, day, 0, 0))
+            } else {
+                Err(format!("invalid date: {}", s))
+            }
+        }
+        2 => {
+            let date_parts: Vec<&str> = parts[0].split('-').collect();
+            if date_parts.len() != 2 {
+                return Err(format!("invalid date: {}", parts[0]));
+            }
+            let month: u32 = date_parts[0]
+                .parse()
+                .map_err(|_| format!("invalid month: {}", date_parts[0]))?;
+            let day: u32 = date_parts[1]
+                .parse()
+                .map_err(|_| format!("invalid day: {}", date_parts[1]))?;
+            let time_parts: Vec<&str> = parts[1].split(':').collect();
+            if time_parts.len() != 2 {
+                return Err(format!("invalid time: {}", parts[1]));
+            }
+            let hour: u32 = time_parts[0]
+                .parse()
+                .map_err(|_| format!("invalid hour: {}", time_parts[0]))?;
+            let minute: u32 = time_parts[1]
+                .parse()
+                .map_err(|_| format!("invalid minute: {}", time_parts[1]))?;
+            Ok((month, day, hour, minute))
+        }
+        _ => Err(format!("invalid date-time: {s}")),
+    }
+}
+
+fn is_time_only(s: &str) -> bool {
+    let parts: Vec<&str> = s.split(':').collect();
+    parts.len() == 2
+        && parts[0].chars().all(|c| c.is_ascii_digit())
+        && parts[1].chars().all(|c| c.is_ascii_digit())
+}
+
+fn datetime_to_millis(month: u32, day: u32, hour: u32, minute: u32) -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Use current year, if result is in the future try previous year
+    for year_offset in [0i64, -1] {
+        let year = 1970 + (now as f64 / 31557600.0) as i64 + year_offset;
+        if let Some(ms) = date_to_millis(year as i32, month, day, hour, minute) {
+            if ms <= now as u64 * 1000 || year_offset < 0 {
+                return ms;
+            }
+        }
+    }
+    0
+}
+
+fn date_to_millis(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<u64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+
+    let days = days_since_epoch(year, month, day)?;
+    Some((days as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60) * 1000)
+}
+
+fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let y = if month <= 2 {
+        year as i64 - 1
+    } else {
+        year as i64
+    };
+    let m = if month <= 2 {
+        month as i64 + 12
+    } else {
+        month as i64
+    };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m - 3) + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days)
+}
+
+fn format_time_label(left: &str, right: &str) -> String {
+    format!("{} ~ {}", left, right)
+}
+
+fn format_duration_label(ms: u64) -> String {
+    if ms % 604_800_000 == 0 {
+        format!("{}w", ms / 604_800_000)
+    } else if ms % 86_400_000 == 0 {
+        format!("{}d", ms / 86_400_000)
+    } else {
+        format!("{}h", ms / 3_600_000)
+    }
+}
+
+fn format_absolute_label(month: u32, day: u32, hour: u32, minute: u32) -> String {
+    if hour == 0 && minute == 0 {
+        format!("{month:02}-{day:02}")
+    } else {
+        format!("{month:02}-{day:02} {hour:02}:{minute:02}")
+    }
+}
+
+/// Tree search mode
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FilterMode {
+pub enum SearchMode {
     Inactive,
     Input,
     Active,
 }
 
-/// A match found by the tree filter — `path` is the full relative path from the view root.
+/// A match found by the tree search — `path` is the full relative path from the view root.
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
     pub path: Vec<String>,
@@ -185,6 +330,8 @@ pub struct App {
     pub time_from: u64,
     pub time_to: u64,
     pub time_preset: usize,
+    pub time_custom: bool,
+    pub time_custom_label: String,
 
     // Filter pane state
     pub filter_focus: FilterFocus,
@@ -194,9 +341,9 @@ pub struct App {
     pub delta_pending: bool,
     pub filtered_tree_lines: Vec<usize>,
 
-    // Tree filter (fuzzy search)
-    pub filter_word: String,
-    pub filter_mode: FilterMode,
+    // Tree search (fuzzy search)
+    pub search_word: String,
+    pub search_mode: SearchMode,
     pub match_indices: Vec<SearchMatch>,
     pub current_match: usize,
     pub path_to_walk_idx: HashMap<Vec<String>, usize>,
@@ -269,14 +416,16 @@ impl App {
             time_from: 0,
             time_to: 0,
             time_preset: 0,
+            time_custom: false,
+            time_custom_label: String::new(),
             filter_focus: FilterFocus::TimePreset,
             delta_filter_active: false,
             delta_filter_value: 100,
             delta_filter_unit: 1,
             delta_pending: false,
             filtered_tree_lines: Vec::new(),
-            filter_word: String::new(),
-            filter_mode: FilterMode::Inactive,
+            search_word: String::new(),
+            search_mode: SearchMode::Inactive,
             match_indices: Vec::new(),
             current_match: 0,
             path_to_walk_idx: HashMap::new(),
@@ -444,7 +593,7 @@ impl App {
         }
     }
 
-    /// Recompute match_indices for current filter_word.
+    /// Recompute match_indices for current search_word.
     /// Walks the full tree in display order (depth-first, sorted by sort_mode)
     /// so n/N jumps follow the natural top-to-bottom order.
     /// Also populates path_to_walk_idx cache to avoid a second full tree walk on n/N.
@@ -452,7 +601,7 @@ impl App {
         self.match_indices.clear();
         self.current_match = 0;
         self.path_to_walk_idx.clear();
-        if self.filter_word.is_empty() {
+        if self.search_word.is_empty() {
             return;
         }
 
@@ -460,7 +609,7 @@ impl App {
             return;
         };
 
-        let query = &self.filter_word;
+        let query = &self.search_word;
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
 
@@ -585,10 +734,9 @@ impl App {
 
     /// Set time range preset (0=1h, 1=6h, 2=12h, 3=1d, 4=3d, 5=7d)
     pub fn set_time_preset(&mut self, preset: usize) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        self.time_custom = false;
+        self.time_custom_label.clear();
+        let now = now_in_millis();
         self.time_to = now;
         self.time_preset = preset;
         self.time_from = match preset {
@@ -681,11 +829,12 @@ impl App {
         self.delta_filter_unit = (self.delta_filter_unit + 1) % 3;
     }
 
-    /// Clear the delta filter and return to tree focus
+    /// Clear the delta filter and reset time, return to tree focus
     pub fn clear_filter_pane(&mut self) {
         self.delta_filter_active = false;
         self.delta_filter_value = 100;
         self.delta_filter_unit = 1;
+        self.set_time_preset(0);
         self.focus = Focus::Tree;
         self.refresh_filtered_lines();
     }
@@ -694,12 +843,12 @@ impl App {
 
     pub const COMMANDS: &'static [&'static str] = &[
         "Consolidate",
+        "Delta",
         "FilterClear",
-        "FilterDelta",
         "FilterFocus",
-        "FilterTime",
         "Help",
         "Scan",
+        "Time",
     ];
 
     pub fn update_command_matches(&mut self) {
@@ -749,7 +898,7 @@ impl App {
                 self.mode = AppMode::Help;
                 Ok("help opened".into())
             }
-            "FilterDelta" => {
+            "Delta" => {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }
@@ -779,38 +928,95 @@ impl App {
                     ["KB", "MB", "GB"][unit]
                 ))
             }
-            "FilterTime" => {
+            "Time" => {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }
-                let arg = *parts.get(1).ok_or("usage: FilterTime <N>h")?;
-                let num_str = if arg.ends_with('h')
-                    || arg.ends_with('H')
-                    || arg.ends_with('d')
-                    || arg.ends_with('D')
-                {
-                    &arg[..arg.len() - 1]
+                let arg = parts
+                    .get(1)
+                    .ok_or("usage: Time <N>[h|d|w] | <from> to <to>")?;
+                let rest: String = parts[1..].join(" ");
+
+                // Split on " to " (case-insensitive)
+                let to_lower = rest.to_lowercase();
+                let to_marker = " to ";
+                if let Some(pos) = to_lower.find(to_marker) {
+                    let left = &rest[..pos];
+                    let right = &rest[pos + to_marker.len()..];
+                    let left = left.trim();
+                    let right = right.trim();
+
+                    if left.is_empty() || right.is_empty() {
+                        return Err("invalid time range: empty side".into());
+                    }
+
+                    // Parse left side
+                    let (from_ms, left_label) = if is_time_only(left) {
+                        return Err("left side cannot be time-only".into());
+                    } else if let Ok(ms) = parse_duration(left) {
+                        (
+                            now_in_millis().saturating_sub(ms),
+                            format_duration_label(ms),
+                        )
+                    } else {
+                        let (m, d, h, min) =
+                            parse_date_time(left).map_err(|e| format!("invalid left side: {e}"))?;
+                        (
+                            datetime_to_millis(m, d, h, min),
+                            format_absolute_label(m, d, h, min),
+                        )
+                    };
+
+                    // Parse right side
+                    let (to_ms, right_label) = if is_time_only(right) {
+                        // Inherit date from left if left was absolute
+                        if let Ok((m, d, _, _)) = parse_date_time(left) {
+                            let time_parts: Vec<&str> = right.split(':').collect();
+                            let h: u32 = time_parts[0].parse().unwrap_or(0);
+                            let min: u32 = time_parts[1].parse().unwrap_or(0);
+                            (
+                                datetime_to_millis(m, d, h, min),
+                                format!(
+                                    "{} {:02}:{:02}",
+                                    format_absolute_label(m, d, 0, 0),
+                                    h,
+                                    min
+                                ),
+                            )
+                        } else {
+                            return Err("cannot inherit date for time-only right side".into());
+                        }
+                    } else if let Ok(ms) = parse_duration(right) {
+                        (
+                            now_in_millis().saturating_sub(ms),
+                            format_duration_label(ms),
+                        )
+                    } else {
+                        let (m, d, h, min) = parse_date_time(right)
+                            .map_err(|e| format!("invalid right side: {e}"))?;
+                        (
+                            datetime_to_millis(m, d, h, min),
+                            format_absolute_label(m, d, h, min),
+                        )
+                    };
+
+                    self.time_from = from_ms;
+                    self.time_to = to_ms;
+                    self.time_custom = true;
+                    self.time_custom_label = format_time_label(&left_label, &right_label);
+                    self.request_delta_refresh();
+                    Ok(format!("time range: {}", self.time_custom_label))
                 } else {
-                    arg
-                };
-                let hours: u64 = if arg.ends_with('d') || arg.ends_with('D') {
-                    num_str
-                        .parse::<u64>()
-                        .map_err(|_| format!("invalid number: {num_str}"))?
-                        * 24
-                } else {
-                    num_str
-                        .parse()
-                        .map_err(|_| format!("invalid number: {num_str}"))?
-                };
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                self.time_from = now.saturating_sub(hours * 3_600_000);
-                self.time_to = now;
-                self.request_delta_refresh();
-                Ok(format!("time range set to {hours}h"))
+                    // No "to" — single duration (backward compat)
+                    let ms = parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
+                    let now = now_in_millis();
+                    self.time_from = now.saturating_sub(ms);
+                    self.time_to = now;
+                    self.time_custom = true;
+                    self.time_custom_label = format_duration_label(ms);
+                    self.request_delta_refresh();
+                    Ok(format!("time range: in {}", self.time_custom_label))
+                }
             }
             "Scan" => {
                 if self.scanning {

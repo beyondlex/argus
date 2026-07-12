@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, FilterFocus, FilterMode, Focus, DELTA_UNIT_LABELS};
+use crate::app::{App, AppMode, FilterFocus, SearchMode, Focus, DELTA_UNIT_LABELS};
 use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar};
 use crate::handler;
 use crate::util::key_hints;
@@ -37,7 +37,7 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             Duration::MAX
         };
 
-        let time_to_cursor = if app.filter_mode == FilterMode::Input || app.mode == AppMode::Command
+        let time_to_cursor = if app.search_mode == SearchMode::Input || app.mode == AppMode::Command
         {
             let elapsed = last_cursor_tick.elapsed();
             cursor_blink_rate.saturating_sub(elapsed)
@@ -95,7 +95,7 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Cursor blink for filter input
-        if app.filter_mode == FilterMode::Input && last_cursor_tick.elapsed() >= cursor_blink_rate {
+        if app.search_mode == SearchMode::Input && last_cursor_tick.elapsed() >= cursor_blink_rate {
             cursor_visible = !cursor_visible;
             last_cursor_tick = Instant::now();
             dirty = true;
@@ -105,7 +105,7 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             last_cursor_tick = Instant::now();
             dirty = true;
         }
-        if app.filter_mode != FilterMode::Input && app.mode != AppMode::Command {
+        if app.search_mode != SearchMode::Input && app.mode != AppMode::Command {
             cursor_visible = true;
         }
 
@@ -166,8 +166,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         app.scroll_offset,
         app.sort_mode,
         &app.view_root_path,
-        &app.filter_word,
-        app.filter_mode,
+        &app.search_word,
+        app.search_mode,
         &app.match_indices,
         app.current_match,
         cursor_visible,
@@ -303,13 +303,17 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         return;
     }
 
-    let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
-    let _time_label_len = time_label.len();
-    let time_style = if is_focused && app.filter_focus == FilterFocus::TimePreset {
-        Style::default().fg(Color::Black).bg(Color::LightYellow)
+    let time_label = if app.time_custom {
+        format!(" Time: {} ", app.time_custom_label)
     } else {
-        Style::default().fg(Color::White).bg(default_bg)
+        format!(" Time: in {} ", App::time_preset_label(app.time_preset))
     };
+    let time_style =
+        if is_focused && app.filter_focus == FilterFocus::TimePreset && !app.time_custom {
+            Style::default().fg(Color::Black).bg(Color::LightYellow)
+        } else {
+            Style::default().fg(Color::White).bg(default_bg)
+        };
 
     let delta_value_style = if is_focused && app.filter_focus == FilterFocus::DeltaValue {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
