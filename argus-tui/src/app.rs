@@ -13,10 +13,6 @@ use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 use crate::ipc_client::IpcClient;
 use crate::time_utils::*;
 
-/// Directories with more children than this won't have their subtree matched or expanded
-/// during search navigation. Prevents n/N from hanging when jumping into massive directories.
-const MAX_DIR_CHILDREN: usize = 2000;
-
 // ── Data types ──────────────────────────────────────────────────────────────
 
 /// Messages from background tasks to the UI
@@ -332,8 +328,9 @@ impl App {
         } else {
             match argus_core::list_dir(&self.view_root_path) {
                 Ok(mut snap) => {
-                    let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
-                    enrich_snapshot_sizes(
+                    let root_scan_tree =
+                        crate::tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+                    crate::tree_ops::enrich_snapshot_sizes(
                         &mut snap,
                         ROOT_NODE,
                         &self.scan_cache,
@@ -366,8 +363,9 @@ impl App {
         let lines = match &self.tree_root {
             Some(TreeNode::Snapshot(snap_arc, idx)) => {
                 let mut lines = Vec::new();
-                let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
-                flatten_snapshot_tree(
+                let root_scan_tree =
+                    crate::tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+                crate::tree_ops::flatten_snapshot_tree(
                     snap_arc,
                     *idx,
                     0,
@@ -495,7 +493,7 @@ impl App {
         let mut walk_index = 0usize;
         let mut visible_count = 0usize;
         let mut current_path = vec![snap_arc.node(*root_idx).name.clone()];
-        collect_matches_in_order(
+        crate::search::collect_matches_in_order(
             snap_arc,
             *root_idx,
             query,
@@ -531,7 +529,10 @@ impl App {
             return false;
         };
         let node = snap_arc.node(dir_idx);
-        if !node.is_dir || node.children.is_empty() || node.children.len() > MAX_DIR_CHILDREN {
+        if !node.is_dir
+            || node.children.is_empty()
+            || node.children.len() > crate::tree_ops::MAX_DIR_CHILDREN
+        {
             return false;
         }
 
@@ -559,16 +560,23 @@ impl App {
         } else {
             Some(&self.delta_cache)
         };
-        sort_children_snapshot(&mut children, snap_arc, self.sort_mode, path, delta_cache);
+        crate::tree_ops::sort_children_snapshot(
+            &mut children,
+            snap_arc,
+            self.sort_mode,
+            path,
+            delta_cache,
+        );
 
         let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
-        let root_scan_tree = resolve_scan_tree(&self.scan_cache, &self.view_root_path);
+        let root_scan_tree =
+            crate::tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
 
         let mut new_lines = Vec::new();
         let mut child_path = path.to_vec();
         for (_name, child_idx) in children {
-            flatten_snapshot_tree(
+            crate::tree_ops::flatten_snapshot_tree(
                 snap_arc,
                 child_idx,
                 path.len(),
@@ -755,7 +763,7 @@ impl App {
             let lower = self.command_input.to_lowercase();
             self.command_matches = Self::COMMANDS
                 .iter()
-                .filter(|c| fuzzy_match(&lower, &c.to_lowercase()))
+                .filter(|c| crate::search::fuzzy_match(&lower, &c.to_lowercase()))
                 .copied()
                 .collect();
         }
@@ -796,159 +804,169 @@ impl App {
         let name_lower = name.to_lowercase();
 
         match name_lower.as_str() {
-            "filterclear" => {
-                if self.server_mode {
-                    self.clear_filter_pane();
-                    Ok("filter cleared".into())
-                } else {
-                    Err("not in server mode".into())
-                }
-            }
-            "filterfocus" => {
-                if self.server_mode {
-                    self.focus = Focus::FilterPane;
-                    self.filter_focus = FilterFocus::TimePreset;
-                    Ok("filter pane focused".into())
-                } else {
-                    Err("not in server mode".into())
-                }
-            }
-            "help" => {
-                self.mode = AppMode::Help;
-                Ok("help opened".into())
-            }
-            "delta" => {
-                if !self.server_mode {
-                    return Err("not in server mode".into());
-                }
-                let (num_str, unit) = match parts.get(1).copied() {
-                    Some(arg) if arg.ends_with('k') || arg.ends_with('K') => {
-                        (&arg[..arg.len() - 1], 0usize)
-                    }
-                    Some(arg) if arg.ends_with('m') || arg.ends_with('M') => {
-                        (&arg[..arg.len() - 1], 1usize)
-                    }
-                    Some(arg) if arg.ends_with('g') || arg.ends_with('G') => {
-                        (&arg[..arg.len() - 1], 2usize)
-                    }
-                    Some(arg) => (arg, 1usize),
-                    None => ("0", 0usize),
-                };
-                let value: u64 = num_str
-                    .parse()
-                    .map_err(|_| format!("invalid number: {num_str}"))?;
-                self.delta_filter_active = true;
-                self.delta_filter_value = value;
-                self.delta_filter_unit = unit;
-                self.refresh_filtered_lines();
-                Ok(format!(
-                    "delta filter set to {}{}",
-                    value,
-                    ["KB", "MB", "GB"][unit]
-                ))
-            }
-            "time" => {
-                if !self.server_mode {
-                    return Err("not in server mode".into());
-                }
-                let arg = match parts.get(1) {
-                    Some(a) => *a,
-                    None => {
-                        self.mode = AppMode::TimeHelp;
-                        return Ok("time help opened".into());
-                    }
-                };
-                let rest: String = parts[1..].join(" ");
-                let to_lower = rest.to_lowercase();
-                let to_marker = " to ";
-                if let Some(pos) = to_lower.find(to_marker) {
-                    let left = rest[..pos].trim();
-                    let right = rest[pos + to_marker.len()..].trim();
-                    if left.is_empty() || right.is_empty() {
-                        return Err("invalid time range: empty side".into());
-                    }
-                    let left_parsed = parse_single_time_arg(left)?;
-                    let (to_ms, right_label) = if is_time_only(right) {
-                        let date = left_parsed
-                            .date
-                            .ok_or("cannot inherit date for time-only right side")?;
-                        let parts: Vec<&str> = right.split(':').collect();
-                        let h: u32 = parts[0].parse().unwrap_or(0);
-                        let min: u32 = parts[1].parse().unwrap_or(0);
-                        (
-                            datetime_to_millis(date.0, date.1, h, min),
-                            format!("{:02}:{:02}", h, min),
-                        )
-                    } else {
-                        let parsed = parse_single_time_arg(right)?;
-                        (parsed.ms, parsed.label)
-                    };
-                    self.time_from = left_parsed.ms;
-                    self.time_to = to_ms;
-                    self.time_custom = true;
-                    self.time_custom_label = format_time_label(&left_parsed.label, &right_label);
-                    self.request_delta_refresh();
-                    Ok(format!("time range: {}", self.time_custom_label))
-                } else {
-                    let parsed = parse_single_time_arg(arg)?;
-                    let now = now_in_millis();
-                    self.time_from = parsed.ms;
-                    self.time_to = now;
-                    self.time_custom = true;
-                    if parsed.date.is_some() {
-                        self.time_custom_label = format!("{} ~ now", parsed.label);
-                    } else {
-                        self.time_custom_label = parsed.label;
-                    }
-                    self.request_delta_refresh();
-                    if parsed.date.is_some() {
-                        Ok(format!("time range: {}", self.time_custom_label))
-                    } else {
-                        Ok(format!("time range: in {}", self.time_custom_label))
-                    }
-                }
-            }
-            "sort" | "s" => {
-                let sub = parts.get(1).copied().unwrap_or("");
-                match sub.to_lowercase().as_str() {
-                    "d" | "delta" => self.sort_mode = SortMode::Delta,
-                    "s" | "size" => self.sort_mode = SortMode::Size,
-                    "n" | "name" => self.sort_mode = SortMode::Name,
-                    "" => self.sort_mode = self.sort_mode.toggle(),
-                    _ => return Err(format!("unknown sort mode: {sub}")),
-                }
-                self.update_tree_lines();
-                Ok(format!("Sort: {}", self.sort_mode.label()))
-            }
-            "sd" => {
-                self.sort_mode = SortMode::Delta;
-                self.update_tree_lines();
-                Ok("Sort: Delta".into())
-            }
-            "ss" => {
-                self.sort_mode = SortMode::Size;
-                self.update_tree_lines();
-                Ok("Sort: Size".into())
-            }
-            "sn" => {
-                self.sort_mode = SortMode::Name;
-                self.update_tree_lines();
-                Ok("Sort: Name".into())
-            }
-            "scan" => {
-                if self.scanning {
-                    return Err("already scanning".into());
-                }
-                Ok("scan started".into())
-            }
-            "consolidate" => {
-                if !self.server_mode {
-                    return Err("not in server mode".into());
-                }
-                Ok("consolidation requested".into())
-            }
+            "filterclear" => self.cmd_filterclear(),
+            "filterfocus" => self.cmd_filterfocus(),
+            "help" => self.cmd_help(),
+            "delta" => self.cmd_delta(&parts),
+            "time" => self.cmd_time(&parts),
+            "sort" | "s" => self.cmd_sort(&parts),
+            "sd" => self.cmd_sort_quick(SortMode::Delta, "Delta"),
+            "ss" => self.cmd_sort_quick(SortMode::Size, "Size"),
+            "sn" => self.cmd_sort_quick(SortMode::Name, "Name"),
+            "scan" => self.cmd_scan(),
+            "consolidate" => self.cmd_consolidate(),
             _ => Err(format!("unknown command: {name}")),
         }
+    }
+
+    fn cmd_filterclear(&mut self) -> Result<String, String> {
+        if self.server_mode {
+            self.clear_filter_pane();
+            Ok("filter cleared".into())
+        } else {
+            Err("not in server mode".into())
+        }
+    }
+
+    fn cmd_filterfocus(&mut self) -> Result<String, String> {
+        if self.server_mode {
+            self.focus = Focus::FilterPane;
+            self.filter_focus = FilterFocus::TimePreset;
+            Ok("filter pane focused".into())
+        } else {
+            Err("not in server mode".into())
+        }
+    }
+
+    fn cmd_help(&mut self) -> Result<String, String> {
+        self.mode = AppMode::Help;
+        Ok("help opened".into())
+    }
+
+    fn cmd_delta(&mut self, parts: &[&str]) -> Result<String, String> {
+        if !self.server_mode {
+            return Err("not in server mode".into());
+        }
+        let (num_str, unit) = match parts.get(1).copied() {
+            Some(arg) if arg.ends_with('k') || arg.ends_with('K') => {
+                (&arg[..arg.len() - 1], 0usize)
+            }
+            Some(arg) if arg.ends_with('m') || arg.ends_with('M') => {
+                (&arg[..arg.len() - 1], 1usize)
+            }
+            Some(arg) if arg.ends_with('g') || arg.ends_with('G') => {
+                (&arg[..arg.len() - 1], 2usize)
+            }
+            Some(arg) => (arg, 1usize),
+            None => ("0", 0usize),
+        };
+        let value: u64 = num_str
+            .parse()
+            .map_err(|_| format!("invalid number: {num_str}"))?;
+        self.delta_filter_active = true;
+        self.delta_filter_value = value;
+        self.delta_filter_unit = unit;
+        self.refresh_filtered_lines();
+        Ok(format!(
+            "delta filter set to {}{}",
+            value,
+            ["KB", "MB", "GB"][unit]
+        ))
+    }
+
+    fn cmd_time(&mut self, parts: &[&str]) -> Result<String, String> {
+        if !self.server_mode {
+            return Err("not in server mode".into());
+        }
+        let arg = match parts.get(1) {
+            Some(a) => *a,
+            None => {
+                self.mode = AppMode::TimeHelp;
+                return Ok("time help opened".into());
+            }
+        };
+        let rest: String = parts[1..].join(" ");
+        let to_lower = rest.to_lowercase();
+        let to_marker = " to ";
+        if let Some(pos) = to_lower.find(to_marker) {
+            let left = rest[..pos].trim();
+            let right = rest[pos + to_marker.len()..].trim();
+            if left.is_empty() || right.is_empty() {
+                return Err("invalid time range: empty side".into());
+            }
+            let left_parsed = parse_single_time_arg(left)?;
+            let (to_ms, right_label) = if is_time_only(right) {
+                let date = left_parsed
+                    .date
+                    .ok_or("cannot inherit date for time-only right side")?;
+                let parts: Vec<&str> = right.split(':').collect();
+                let h: u32 = parts[0].parse().unwrap_or(0);
+                let min: u32 = parts[1].parse().unwrap_or(0);
+                (
+                    datetime_to_millis(date.0, date.1, h, min),
+                    format!("{:02}:{:02}", h, min),
+                )
+            } else {
+                let parsed = parse_single_time_arg(right)?;
+                (parsed.ms, parsed.label)
+            };
+            self.time_from = left_parsed.ms;
+            self.time_to = to_ms;
+            self.time_custom = true;
+            self.time_custom_label = format_time_label(&left_parsed.label, &right_label);
+            self.request_delta_refresh();
+            Ok(format!("time range: {}", self.time_custom_label))
+        } else {
+            let parsed = parse_single_time_arg(arg)?;
+            let now = now_in_millis();
+            self.time_from = parsed.ms;
+            self.time_to = now;
+            self.time_custom = true;
+            if parsed.date.is_some() {
+                self.time_custom_label = format!("{} ~ now", parsed.label);
+            } else {
+                self.time_custom_label = parsed.label;
+            }
+            self.request_delta_refresh();
+            if parsed.date.is_some() {
+                Ok(format!("time range: {}", self.time_custom_label))
+            } else {
+                Ok(format!("time range: in {}", self.time_custom_label))
+            }
+        }
+    }
+
+    fn cmd_sort(&mut self, parts: &[&str]) -> Result<String, String> {
+        let sub = parts.get(1).copied().unwrap_or("");
+        match sub.to_lowercase().as_str() {
+            "d" | "delta" => self.sort_mode = SortMode::Delta,
+            "s" | "size" => self.sort_mode = SortMode::Size,
+            "n" | "name" => self.sort_mode = SortMode::Name,
+            "" => self.sort_mode = self.sort_mode.toggle(),
+            _ => return Err(format!("unknown sort mode: {sub}")),
+        }
+        self.update_tree_lines();
+        Ok(format!("Sort: {}", self.sort_mode.label()))
+    }
+
+    fn cmd_sort_quick(&mut self, mode: SortMode, label: &str) -> Result<String, String> {
+        self.sort_mode = mode;
+        self.update_tree_lines();
+        Ok(format!("Sort: {label}"))
+    }
+
+    fn cmd_scan(&mut self) -> Result<String, String> {
+        if self.scanning {
+            return Err("already scanning".into());
+        }
+        Ok("scan started".into())
+    }
+
+    fn cmd_consolidate(&mut self) -> Result<String, String> {
+        if !self.server_mode {
+            return Err("not in server mode".into());
+        }
+        Ok("consolidation requested".into())
     }
 
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
@@ -961,200 +979,6 @@ impl App {
         }
         Some(path)
     }
-}
-
-// ── Tree flattening ─────────────────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn flatten_snapshot_tree(
-    snap_arc: &Arc<Snapshot>,
-    idx: NodeIndex,
-    depth: usize,
-    expanded: &HashSet<Vec<String>>,
-    sort_mode: SortMode,
-    lines: &mut Vec<TreeLine>,
-    scan_cache: &HashMap<PathBuf, Snapshot>,
-    view_root_path: &Path,
-    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
-    delta_cache: Option<&HashMap<Vec<String>, i64>>,
-    path: &mut Vec<String>,
-) {
-    let node = snap_arc.node(idx);
-    path.push(node.name.clone());
-    let path_key = path.clone();
-    let is_expanded = depth == 0 || expanded.contains(&path_key);
-
-    let node_has_scan =
-        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some();
-
-    lines.push(TreeLine {
-        depth,
-        node: TreeNode::Snapshot(Arc::clone(snap_arc), idx),
-        expanded: is_expanded && node.is_dir && !node.children.is_empty(),
-        has_scan_data: node_has_scan || !node.is_dir,
-        path: path.clone(),
-    });
-
-    if is_expanded && node.is_dir {
-        let mut children: Vec<(&String, NodeIndex)> =
-            node.children.iter().map(|(n, i)| (n, *i)).collect();
-        sort_children_snapshot(&mut children, snap_arc, sort_mode, path, delta_cache);
-        for (_name, child_idx) in children {
-            flatten_snapshot_tree(
-                snap_arc,
-                child_idx,
-                depth + 1,
-                expanded,
-                sort_mode,
-                lines,
-                scan_cache,
-                view_root_path,
-                root_scan_tree,
-                delta_cache,
-                path,
-            );
-        }
-    }
-
-    path.pop();
-}
-
-fn enrich_snapshot_sizes(
-    snap: &mut Snapshot,
-    idx: NodeIndex,
-    scan_cache: &HashMap<PathBuf, Snapshot>,
-    view_root_path: &Path,
-    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
-    path: &mut Vec<String>,
-) {
-    let name = snap.node(idx).name.clone();
-    path.push(name);
-
-    if let Some(size) = size_for_path(scan_cache, view_root_path, root_scan_tree, path) {
-        snap.node_mut(idx).size = size;
-    }
-
-    if snap.node(idx).is_dir {
-        let children: Vec<NodeIndex> = snap
-            .node(idx)
-            .children
-            .iter()
-            .map(|(_, idx)| *idx)
-            .collect();
-        for child_idx in children {
-            enrich_snapshot_sizes(
-                snap,
-                child_idx,
-                scan_cache,
-                view_root_path,
-                root_scan_tree,
-                path,
-            );
-        }
-    }
-
-    path.pop();
-}
-
-fn size_for_path(
-    scan_cache: &HashMap<PathBuf, Snapshot>,
-    view_root_path: &Path,
-    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
-    path_key: &[String],
-) -> Option<u64> {
-    if path_key.is_empty() {
-        return None;
-    }
-
-    let mut path = view_root_path.to_path_buf();
-    for component in path_key.iter().skip(1) {
-        path.push(component);
-    }
-
-    if let Some(snapshot) = scan_cache.get(&path) {
-        return Some(snapshot.node(ROOT_NODE).size);
-    }
-
-    root_scan_tree.and_then(|(snap, idx)| {
-        snap.find_node(idx, path_key)
-            .map(|found_idx| snap.node(found_idx).size)
-    })
-}
-
-/// Find the best-available scan tree node for a view path.
-///
-/// First tries an exact match in scan_cache. If not found, walks up
-/// the path hierarchy to find a parent-level scan, then walks down
-/// the scan tree to find the subtree matching the view root.
-pub(crate) fn resolve_scan_tree<'a>(
-    scan_cache: &'a HashMap<PathBuf, Snapshot>,
-    view_root_path: &Path,
-) -> Option<(&'a Snapshot, NodeIndex)> {
-    if let Some(snapshot) = scan_cache.get(view_root_path) {
-        return Some((snapshot, ROOT_NODE));
-    }
-
-    let mut parent = view_root_path.parent()?;
-    loop {
-        if let Some(snapshot) = scan_cache.get(parent) {
-            let relative = view_root_path.strip_prefix(parent).ok()?;
-            let mut idx = ROOT_NODE;
-            for component in relative.components() {
-                let name = component.as_os_str().to_str()?;
-                idx = snapshot.node(idx).child_idx(name)?;
-            }
-            return Some((snapshot, idx));
-        }
-        parent = parent.parent()?;
-    }
-}
-
-fn sort_children_snapshot(
-    children: &mut Vec<(&String, NodeIndex)>,
-    snap: &Snapshot,
-    mode: SortMode,
-    parent_path: &[String],
-    delta_cache: Option<&HashMap<Vec<String>, i64>>,
-) {
-    match mode {
-        SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
-        SortMode::Size => children.sort_by(|a, b| {
-            let a_size = snap.node(a.1).size;
-            let b_size = snap.node(b.1).size;
-            b_size.cmp(&a_size)
-        }),
-        SortMode::Delta => {
-            let mut with_delta: Vec<(i64, &String, NodeIndex)> = children
-                .iter()
-                .map(|(name, idx)| {
-                    let mut child_path = parent_path.to_vec();
-                    child_path.push((*name).clone());
-                    let delta = delta_cache
-                        .and_then(|c| c.get(&child_path))
-                        .copied()
-                        .unwrap_or(0);
-                    (delta, *name, *idx)
-                })
-                .collect();
-            with_delta.sort_unstable_by(|a, b| b.0.abs().cmp(&a.0.abs()));
-            children.clear();
-            for (_, name, idx) in with_delta {
-                children.push((name, idx));
-            }
-        }
-    }
-}
-
-pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
-    if query.is_empty() {
-        return None;
-    }
-    let target_lc = target.to_lowercase();
-    let query_lc = query.to_lowercase();
-    let byte_pos = target_lc.find(&query_lc)?;
-    let start = target_lc[..byte_pos].chars().count();
-    let end = start + query_lc.chars().count();
-    Some((start..end).collect())
 }
 
 /// Default path for the log file: ~/.config/argus/argus.log
@@ -1179,99 +1003,6 @@ pub fn log_msg(log_path: &Path, msg: &str) {
         .append(true)
         .open(log_path)
         .and_then(|mut f| f.write_all(line.as_bytes()));
-}
-
-/// Walk the full tree in depth-first display order (children sorted by sort_mode).
-/// - `visible_count`: tracks position in tree_lines for visible nodes
-/// - Matches are pushed in walk order so n/N follows natural top-to-bottom flow
-/// - Visible matches get `tree_idx = Some(pos)`, collapsed matches get `None`
-#[allow(clippy::too_many_arguments)]
-fn collect_matches_in_order(
-    snap: &Snapshot,
-    idx: NodeIndex,
-    query: &str,
-    expanded: &HashSet<Vec<String>>,
-    sort_mode: SortMode,
-    path: &mut Vec<String>,
-    walk_index: &mut usize,
-    visible_count: &mut usize,
-    result: &mut Vec<SearchMatch>,
-    path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
-    delta_cache: Option<&HashMap<Vec<String>, i64>>,
-) {
-    let node = snap.node(idx);
-    let is_visible = path_is_visible(path, expanded);
-
-    // Cache walk_idx for every node so n/N jumping is O(1) instead of O(n).
-    path_to_walk_idx.insert(path.clone(), *walk_index);
-
-    if fuzzy_match_indices(query, &node.name).is_some() {
-        result.push(SearchMatch {
-            path: path.clone(),
-            tree_idx: if is_visible {
-                Some(*visible_count)
-            } else {
-                None
-            },
-            walk_idx: *walk_index,
-        });
-    }
-
-    if is_visible {
-        *visible_count += 1;
-    }
-    *walk_index += 1;
-
-    if node.is_dir {
-        // Skip subtrees with too many siblings — prevents n/N from trying to
-        // expand a massive directory and hanging the UI.
-        let skip_subtree = node.children.len() > MAX_DIR_CHILDREN;
-
-        if !skip_subtree {
-            let mut children: Vec<(&String, NodeIndex)> =
-                node.children.iter().map(|(n, i)| (n, *i)).collect();
-            sort_children_snapshot(&mut children, snap, sort_mode, path, delta_cache);
-            for (name, child_idx) in children {
-                path.push(name.clone());
-                collect_matches_in_order(
-                    snap,
-                    child_idx,
-                    query,
-                    expanded,
-                    sort_mode,
-                    path,
-                    walk_index,
-                    visible_count,
-                    result,
-                    path_to_walk_idx,
-                    delta_cache,
-                );
-                path.pop();
-            }
-        }
-    }
-}
-
-fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
-    if path.len() <= 1 {
-        return true;
-    }
-
-    (1..path.len()).all(|len| expanded.contains(&path[..len].to_vec()))
-}
-
-fn fuzzy_match(query: &str, target: &str) -> bool {
-    let mut chars = target.chars();
-    for qc in query.chars() {
-        loop {
-            match chars.next() {
-                Some(tc) if tc == qc => break,
-                Some(_) => continue,
-                None => return false,
-            }
-        }
-    }
-    true
 }
 
 #[cfg(test)]
@@ -1299,46 +1030,6 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
         }
-    }
-
-    #[test]
-    fn test_enrich_snapshot_sizes_recurses_into_deep_children() {
-        let root_path = PathBuf::from("/tmp/test");
-
-        // Live tree arena (simulating list_dir output — dirs have 0 size)
-        let live_arena = vec![
-            node("test", true, 0, vec![("target", 1)]),
-            node("target", true, 0, vec![("debug", 2)]),
-            node("debug", true, 0, vec![("build", 3)]),
-            node("build", true, 0, vec![("build-script-build", 4)]),
-            node("build-script-build", false, 475_880, vec![]),
-        ];
-        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
-
-        // Scan snapshot arena (has proper sizes from a real scan)
-        let scan_arena = vec![
-            node("test", true, 475_880, vec![("target", 1)]),
-            node("target", true, 475_880, vec![("debug", 2)]),
-            node("debug", true, 475_880, vec![("build", 3)]),
-            node("build", true, 475_880, vec![("build-script-build", 4)]),
-            node("build-script-build", false, 475_880, vec![]),
-        ];
-        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880);
-        let mut scan_cache = HashMap::new();
-        scan_cache.insert(root_path.clone(), scan_snap);
-        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
-
-        enrich_snapshot_sizes(
-            &mut live_snap,
-            ROOT_NODE,
-            &scan_cache,
-            &root_path,
-            root_scan_tree,
-            &mut Vec::new(),
-        );
-
-        // build dir (index 3) should now have the file's size
-        assert_eq!(live_snap.node(3).size, 475_880);
     }
 
     #[test]
@@ -1563,64 +1254,5 @@ mod tests {
             app.execute_command("filterclear"),
             Err("not in server mode".into())
         );
-    }
-
-    // ── size_for_path / has_snapshot_for_path tests ────────────────────────────
-
-    #[test]
-    fn test_size_for_path_cache_hit() {
-        let root_path = PathBuf::from("/tmp/test");
-        let sub_path = root_path.join("src");
-        let mut scan_cache = HashMap::new();
-        scan_cache.insert(
-            sub_path.clone(),
-            Snapshot::new(sub_path, vec![node("src", true, 100, vec![])], 100),
-        );
-        let size = size_for_path(
-            &scan_cache,
-            &root_path,
-            None,
-            &["test".into(), "src".into()],
-        );
-        assert_eq!(size, Some(100));
-    }
-
-    #[test]
-    fn test_size_for_path_scan_tree_fallback() {
-        let root_path = PathBuf::from("/tmp/test");
-        let mut scan_cache = HashMap::new();
-        let snap = Snapshot::new(
-            root_path.clone(),
-            vec![
-                node("test", true, 200, vec![("src", 1)]),
-                node("src", true, 200, vec![]),
-            ],
-            200,
-        );
-        scan_cache.insert(root_path.clone(), snap);
-        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
-        let size = size_for_path(
-            &scan_cache,
-            &root_path,
-            root_scan_tree,
-            &["test".into(), "src".into()],
-        );
-        assert_eq!(size, Some(200));
-    }
-
-    #[test]
-    fn test_size_for_path_no_match() {
-        let root_path = PathBuf::from("/tmp/test");
-        let mut scan_cache = HashMap::new();
-        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0);
-        scan_cache.insert(root_path.clone(), snap);
-        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
-        let size = size_for_path(
-            &scan_cache,
-            &root_path,
-            root_scan_tree,
-            &["test".into(), "nonexistent".into()],
-        );
-        assert_eq!(size, None);
     }
 }

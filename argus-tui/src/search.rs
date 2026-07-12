@@ -1,6 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
-use crate::app::App;
+use argus_core::{NodeIndex, Snapshot};
+
+use crate::app::{App, SearchMatch, SortMode};
 use crate::event::SHOULD_QUIT;
 
 pub fn jump_to_next_match(app: &mut App, delta: isize) {
@@ -120,6 +123,114 @@ fn expand_ancestor_prefixes(
         }
     }
     expanded_paths
+}
+
+// ── Search functions moved from app.rs ───────────────────────────────────────
+
+/// Walk tree in depth-first display order, collecting search matches.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_matches_in_order(
+    snap: &Snapshot,
+    idx: NodeIndex,
+    query: &str,
+    expanded: &HashSet<Vec<String>>,
+    sort_mode: SortMode,
+    path: &mut Vec<String>,
+    walk_index: &mut usize,
+    visible_count: &mut usize,
+    result: &mut Vec<SearchMatch>,
+    path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
+) {
+    let node = snap.node(idx);
+    let is_visible = path_is_visible(path, expanded);
+
+    path_to_walk_idx.insert(path.clone(), *walk_index);
+
+    if fuzzy_match_indices(query, &node.name).is_some() {
+        result.push(SearchMatch {
+            path: path.clone(),
+            tree_idx: if is_visible {
+                Some(*visible_count)
+            } else {
+                None
+            },
+            walk_idx: *walk_index,
+        });
+    }
+
+    if is_visible {
+        *visible_count += 1;
+    }
+    *walk_index += 1;
+
+    if node.is_dir {
+        let skip_subtree = node.children.len() > crate::tree_ops::MAX_DIR_CHILDREN;
+
+        if !skip_subtree {
+            let mut children: Vec<(&String, NodeIndex)> =
+                node.children.iter().map(|(n, i)| (n, *i)).collect();
+            crate::tree_ops::sort_children_snapshot(
+                &mut children,
+                snap,
+                sort_mode,
+                path,
+                delta_cache,
+            );
+            for (name, child_idx) in children {
+                path.push(name.clone());
+                collect_matches_in_order(
+                    snap,
+                    child_idx,
+                    query,
+                    expanded,
+                    sort_mode,
+                    path,
+                    walk_index,
+                    visible_count,
+                    result,
+                    path_to_walk_idx,
+                    delta_cache,
+                );
+                path.pop();
+            }
+        }
+    }
+}
+
+fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
+    if path.len() <= 1 {
+        return true;
+    }
+    (1..path.len()).all(|len| expanded.contains(&path[..len].to_vec()))
+}
+
+/// Simple substring-based match returning character indices for highlighting.
+pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
+    if query.is_empty() {
+        return None;
+    }
+    let target_lc = target.to_lowercase();
+    let query_lc = query.to_lowercase();
+    let byte_pos = target_lc.find(&query_lc)?;
+    let start = target_lc[..byte_pos].chars().count();
+    let end = start + query_lc.chars().count();
+    Some((start..end).collect())
+}
+
+/// Fuzzy substring match for command autocomplete filtering.
+pub(crate) fn fuzzy_match(query: &str, target: &str) -> bool {
+    let mut chars = target.chars();
+    for qc in query.chars() {
+        loop {
+            match chars.next() {
+                Some(tc) if tc == qc => break,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]

@@ -9,7 +9,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{fuzzy_match_indices, SearchMatch, SearchMode, TreeLine};
+use crate::app::{SearchMatch, SearchMode, TreeLine};
+use crate::search::fuzzy_match_indices;
 use crate::util;
 use crate::util::key_hints;
 

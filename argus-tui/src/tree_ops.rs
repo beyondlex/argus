@@ -1,10 +1,14 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
-use crate::app::{App, TreeNode};
+use crate::app::{App, SortMode, TreeLine, TreeNode};
+
+/// Directories with more children than this won't have their subtree matched or expanded
+/// during search navigation. Prevents n/N from hanging when jumping into massive directories.
+pub(crate) const MAX_DIR_CHILDREN: usize = 2000;
 
 pub fn expand_node(app: &mut App) {
     let Some(line) = app.selected_line().cloned() else {
@@ -44,7 +48,7 @@ pub fn expand_node(app: &mut App) {
                     let mut enrich: HashMap<String, u64> = HashMap::new();
                     if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &app.tree_root {
                         let root_scan_tree =
-                            crate::app::resolve_scan_tree(&app.scan_cache, &app.view_root_path);
+                            resolve_scan_tree(&app.scan_cache, &app.view_root_path);
                         for (name, child_idx) in &listed.node(ROOT_NODE).children {
                             if listed.node(*child_idx).is_dir {
                                 let mut child_path = path_key.clone();
@@ -262,10 +266,193 @@ fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
     total
 }
 
+// ── Tree flattening / size enrichment / sorting ──────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flatten_snapshot_tree(
+    snap_arc: &Arc<Snapshot>,
+    idx: NodeIndex,
+    depth: usize,
+    expanded: &HashSet<Vec<String>>,
+    sort_mode: SortMode,
+    lines: &mut Vec<TreeLine>,
+    scan_cache: &HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
+    path: &mut Vec<String>,
+) {
+    let node = snap_arc.node(idx);
+    path.push(node.name.clone());
+    let path_key = path.clone();
+    let is_expanded = depth == 0 || expanded.contains(&path_key);
+
+    let node_has_scan =
+        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some();
+
+    lines.push(TreeLine {
+        depth,
+        node: TreeNode::Snapshot(Arc::clone(snap_arc), idx),
+        expanded: is_expanded && node.is_dir && !node.children.is_empty(),
+        has_scan_data: node_has_scan || !node.is_dir,
+        path: path.clone(),
+    });
+
+    if is_expanded && node.is_dir {
+        let mut children: Vec<(&String, NodeIndex)> =
+            node.children.iter().map(|(n, i)| (n, *i)).collect();
+        sort_children_snapshot(&mut children, snap_arc, sort_mode, path, delta_cache);
+        for (_name, child_idx) in children {
+            flatten_snapshot_tree(
+                snap_arc,
+                child_idx,
+                depth + 1,
+                expanded,
+                sort_mode,
+                lines,
+                scan_cache,
+                view_root_path,
+                root_scan_tree,
+                delta_cache,
+                path,
+            );
+        }
+    }
+
+    path.pop();
+}
+
+pub(crate) fn enrich_snapshot_sizes(
+    snap: &mut Snapshot,
+    idx: NodeIndex,
+    scan_cache: &HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    path: &mut Vec<String>,
+) {
+    let name = snap.node(idx).name.clone();
+    path.push(name);
+
+    if let Some(size) = size_for_path(scan_cache, view_root_path, root_scan_tree, path) {
+        snap.node_mut(idx).size = size;
+    }
+
+    if snap.node(idx).is_dir {
+        let children: Vec<NodeIndex> = snap
+            .node(idx)
+            .children
+            .iter()
+            .map(|(_, idx)| *idx)
+            .collect();
+        for child_idx in children {
+            enrich_snapshot_sizes(
+                snap,
+                child_idx,
+                scan_cache,
+                view_root_path,
+                root_scan_tree,
+                path,
+            );
+        }
+    }
+
+    path.pop();
+}
+
+pub(crate) fn size_for_path(
+    scan_cache: &HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    path_key: &[String],
+) -> Option<u64> {
+    if path_key.is_empty() {
+        return None;
+    }
+
+    let mut path = view_root_path.to_path_buf();
+    for component in path_key.iter().skip(1) {
+        path.push(component);
+    }
+
+    if let Some(snapshot) = scan_cache.get(&path) {
+        return Some(snapshot.node(ROOT_NODE).size);
+    }
+
+    root_scan_tree.and_then(|(snap, idx)| {
+        snap.find_node(idx, path_key)
+            .map(|found_idx| snap.node(found_idx).size)
+    })
+}
+
+/// Find the best-available scan tree node for a view path.
+///
+/// First tries an exact match in scan_cache. If not found, walks up
+/// the path hierarchy to find a parent-level scan, then walks down
+/// the scan tree to find the subtree matching the view root.
+pub(crate) fn resolve_scan_tree<'a>(
+    scan_cache: &'a HashMap<PathBuf, Snapshot>,
+    view_root_path: &Path,
+) -> Option<(&'a Snapshot, NodeIndex)> {
+    if let Some(snapshot) = scan_cache.get(view_root_path) {
+        return Some((snapshot, ROOT_NODE));
+    }
+
+    let mut parent = view_root_path.parent()?;
+    loop {
+        if let Some(snapshot) = scan_cache.get(parent) {
+            let relative = view_root_path.strip_prefix(parent).ok()?;
+            let mut idx = ROOT_NODE;
+            for component in relative.components() {
+                let name = component.as_os_str().to_str()?;
+                idx = snapshot.node(idx).child_idx(name)?;
+            }
+            return Some((snapshot, idx));
+        }
+        parent = parent.parent()?;
+    }
+}
+
+pub(crate) fn sort_children_snapshot(
+    children: &mut Vec<(&String, NodeIndex)>,
+    snap: &Snapshot,
+    mode: SortMode,
+    parent_path: &[String],
+    delta_cache: Option<&HashMap<Vec<String>, i64>>,
+) {
+    match mode {
+        SortMode::Name => children.sort_by(|a, b| a.0.cmp(b.0)),
+        SortMode::Size => children.sort_by(|a, b| {
+            let a_size = snap.node(a.1).size;
+            let b_size = snap.node(b.1).size;
+            b_size.cmp(&a_size)
+        }),
+        SortMode::Delta => {
+            let mut with_delta: Vec<(i64, &String, NodeIndex)> = children
+                .iter()
+                .map(|(name, idx)| {
+                    let mut child_path = parent_path.to_vec();
+                    child_path.push((*name).clone());
+                    let delta = delta_cache
+                        .and_then(|c| c.get(&child_path))
+                        .copied()
+                        .unwrap_or(0);
+                    (delta, *name, *idx)
+                })
+                .collect();
+            with_delta.sort_unstable_by(|a, b| b.0.abs().cmp(&a.0.abs()));
+            children.clear();
+            for (_, name, idx) in with_delta {
+                children.push((name, idx));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -304,6 +491,118 @@ mod tests {
         app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
         app.update_tree_lines();
         app
+    }
+
+    fn node(name: &str, is_dir: bool, size: u64, children: Vec<(&str, NodeIndex)>) -> FileNode {
+        FileNode {
+            name: name.to_string(),
+            parent: None,
+            is_dir,
+            file_type: if is_dir {
+                FileType::Directory
+            } else {
+                FileType::File
+            },
+            size,
+            children: children
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_enrich_snapshot_sizes_recurses_into_deep_children() {
+        let root_path = PathBuf::from("/tmp/test");
+
+        let live_arena = vec![
+            node("test", true, 0, vec![("target", 1)]),
+            node("target", true, 0, vec![("debug", 2)]),
+            node("debug", true, 0, vec![("build", 3)]),
+            node("build", true, 0, vec![("build-script-build", 4)]),
+            node("build-script-build", false, 475_880, vec![]),
+        ];
+        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
+
+        let scan_arena = vec![
+            node("test", true, 475_880, vec![("target", 1)]),
+            node("target", true, 475_880, vec![("debug", 2)]),
+            node("debug", true, 475_880, vec![("build", 3)]),
+            node("build", true, 475_880, vec![("build-script-build", 4)]),
+            node("build-script-build", false, 475_880, vec![]),
+        ];
+        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880);
+        let mut scan_cache = HashMap::new();
+        scan_cache.insert(root_path.clone(), scan_snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
+
+        enrich_snapshot_sizes(
+            &mut live_snap,
+            ROOT_NODE,
+            &scan_cache,
+            &root_path,
+            root_scan_tree,
+            &mut Vec::new(),
+        );
+
+        assert_eq!(live_snap.node(3).size, 475_880);
+    }
+
+    #[test]
+    fn test_size_for_path_cache_hit() {
+        let root_path = PathBuf::from("/tmp/test");
+        let sub_path = root_path.join("src");
+        let mut scan_cache = HashMap::new();
+        scan_cache.insert(
+            sub_path.clone(),
+            Snapshot::new(sub_path, vec![node("src", true, 100, vec![])], 100),
+        );
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            None,
+            &["test".into(), "src".into()],
+        );
+        assert_eq!(size, Some(100));
+    }
+
+    #[test]
+    fn test_size_for_path_scan_tree_fallback() {
+        let root_path = PathBuf::from("/tmp/test");
+        let mut scan_cache = HashMap::new();
+        let snap = Snapshot::new(
+            root_path.clone(),
+            vec![
+                node("test", true, 200, vec![("src", 1)]),
+                node("src", true, 200, vec![]),
+            ],
+            200,
+        );
+        scan_cache.insert(root_path.clone(), snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            root_scan_tree,
+            &["test".into(), "src".into()],
+        );
+        assert_eq!(size, Some(200));
+    }
+
+    #[test]
+    fn test_size_for_path_no_match() {
+        let root_path = PathBuf::from("/tmp/test");
+        let mut scan_cache = HashMap::new();
+        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0);
+        scan_cache.insert(root_path.clone(), snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            root_scan_tree,
+            &["test".into(), "nonexistent".into()],
+        );
+        assert_eq!(size, None);
     }
 
     #[test]
