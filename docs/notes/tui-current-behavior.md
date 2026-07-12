@@ -42,9 +42,11 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 - Tree size, metadata size, and scan summary size should use the same root snapshot size.
 - Whenever the current root changes, rebuild the tree from FS (no DB load).
 - Any daemon-driven refresh should update the in-memory cache; the TUI can then materialize the latest state from `scan_cache`.
+- Delta display must treat `is_agg` rows as subtree coverage, not as extra child rows. If a parent directory already has an aggregate delta row, descendant rows in the same subtree must not be summed again when building the visible delta cache.
 
 ## Good README / Wiki Targets
 
 - README "TUI" overview: current root, in-memory scan, tree size semantics, status bar behavior.
 - Wiki "How scanning works": in-memory flow, `scan_cache`, session scope.
+- README/daemon notes: directory delta is a subtree-wide coverage value, not the sum of visible leaf rows.
 - Wiki "Troubleshooting": why a root shows no size before pressing `s`.

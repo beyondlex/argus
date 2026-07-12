@@ -63,9 +63,23 @@ pub fn query_delta_total(
 ) -> Result<i64, DbError> {
     let path_str = path.to_string_lossy();
     let prefix = format!("{}/%", path_str);
+    // IMPORTANT:
+    // `is_agg = 1` rows represent subtree coverage, not extra additive events.
+    // If a parent directory already has an aggregate row, descendants covered by
+    // that row must not be counted again here, or the TUI will double count.
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(delta_size), 0) FROM delta_events
-         WHERE (path = ?1 OR path LIKE ?2) AND timestamp >= ?3 AND timestamp <= ?4",
+         WHERE (path = ?1 OR path LIKE ?2)
+           AND timestamp >= ?3 AND timestamp <= ?4
+           AND NOT EXISTS (
+               SELECT 1
+               FROM delta_events AS agg
+               WHERE agg.is_agg = 1
+                 AND (agg.path = ?1 OR agg.path LIKE ?2)
+                 AND agg.path <> delta_events.path
+                 AND substr(delta_events.path, 1, length(agg.path)) = agg.path
+                 AND substr(delta_events.path, length(agg.path) + 1, 1) = '/'
+           )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
         |row| row.get(0),
     )?;
@@ -80,9 +94,21 @@ pub fn query_delta_detail(
 ) -> Result<Vec<DeltaEntry>, DbError> {
     let path_str = path.to_string_lossy();
     let prefix = format!("{}/%", path_str);
+    // Keep this filter in lockstep with `query_delta_total`.
+    // The UI expects both calls to expose the same subtree coverage semantics.
     let mut stmt = conn.prepare(
         "SELECT path, delta_size, event_type, timestamp, is_agg FROM delta_events
-         WHERE (path = ?1 OR path LIKE ?2) AND timestamp >= ?3 AND timestamp <= ?4
+         WHERE (path = ?1 OR path LIKE ?2)
+           AND timestamp >= ?3 AND timestamp <= ?4
+           AND NOT EXISTS (
+               SELECT 1
+               FROM delta_events AS agg
+               WHERE agg.is_agg = 1
+                 AND (agg.path = ?1 OR agg.path LIKE ?2)
+                 AND agg.path <> delta_events.path
+                 AND substr(delta_events.path, 1, length(agg.path)) = agg.path
+                 AND substr(delta_events.path, length(agg.path) + 1, 1) = '/'
+           )
          ORDER BY timestamp ASC",
     )?;
 
@@ -178,6 +204,9 @@ pub fn consolidate_events(conn: &mut Connection, threshold: u64) -> Result<u64, 
             .max()
             .unwrap_or(0);
 
+        // We intentionally keep aggregation local to one parent path.
+        // Do not try to infer or merge descendant aggregate rows here; the
+        // query layer treats each aggregate row as a subtree-wide coverage value.
         let parent_prefix = format!("{}/%", parent);
         let nested_prefix = format!("{}/%/", parent);
         tx.execute(
@@ -584,5 +613,42 @@ mod tests {
         let (mut conn, _) = setup_db();
         let consolidated = consolidate_events(&mut conn, 1).unwrap();
         assert_eq!(consolidated, 0);
+    }
+
+    #[test]
+    fn test_query_delta_detail_prefers_agg_over_descendants() {
+        let (mut conn, _) = setup_db();
+
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
+            params!["/tmp/dir", 300, "agg", 1200],
+        )
+        .unwrap();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/leaf-a.bin"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/nested/leaf-b.bin"),
+                delta_size: 200,
+                event_type: "create".into(),
+                timestamp: 1100,
+                is_agg: false,
+            },
+        ];
+        insert_events(&conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 300);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].delta_size, 300);
+        assert!(entries[0].is_agg);
     }
 }

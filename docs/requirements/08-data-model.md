@@ -37,12 +37,24 @@ CREATE INDEX idx_delta_timestamp ON delta_events(timestamp);
 - `0`: 普通事件（来自 watcher 的原始数据）
 - `1`: 合并后的事件（由后台合并任务生成）
 
+### 覆盖口径
+
+`is_agg = 1` 的记录表示“这个路径已经代表了一整棵子树的汇总值”。查询和渲染时必须把它当作覆盖层，而不是再与同一子树下的叶子明细叠加一次。
+
+规则如下：
+
+- 同一子树内，如果父目录已有 `is_agg = 1` 行，则它下面的后代明细不应再参与同一次聚合结果。
+- `query_delta_total` 和 `query_delta_detail` 的结果必须使用同一套口径，否则 TUI 会把同一批变化算两遍。
+- 回归测试应覆盖“父目录汇总行 + 子孙明细同存”场景，确认不会再次出现重复计数。
+
 ## Delta 查询
 
 - `query_delta_total(conn, path, from, to)` → `i64`：按路径前缀 + 时间范围求和
-- `query_delta_detail(conn, path, from, to)` → `Vec<DeltaEntry>`：返回所有匹配行
+- `query_delta_detail(conn, path, from, to)` → `Vec<DeltaEntry>`：返回与 `query_delta_total` 同口径的匹配行
 
-两者都使用 `WHERE (path = ? OR path LIKE ? || '/%') AND timestamp BETWEEN ? AND ?` 语义。
+注意：这里的“匹配行”不是“简单前缀扫描后把所有祖先都加起来”，而是要先排除被更高层 `is_agg` 记录覆盖的后代明细。
+
+两者都以路径前缀 + 时间范围为基础，但实际结果集必须去重，避免父目录汇总与子孙明细重复出现。
 
 ## 数据保留
 
@@ -59,6 +71,15 @@ CREATE INDEX idx_delta_timestamp ON delta_events(timestamp);
    - DELETE 所有直接子级事件（不递归子目录）
    - 如果该目录已有 agg 条目则 UPDATE 累加，否则 INSERT 新 agg 条目
 4. 使用 SQLite 事务保证原子性
+
+### 易错点
+
+`consolidate_events` 生成的父目录 `is_agg = 1` 行，和它子树内仍保留的叶子行不能在同一次查询里一起按“独立增量”解释。否则：
+
+1. `query_delta_total` 会把父目录值和子孙值同时算进去。
+2. TUI 再把这些值向上聚合一次时，父目录会翻倍。
+
+这类问题最容易在 `target/debug/`、`build/`、`deps/` 这类“父目录本身就有聚合行，同时下面还有大量叶子”的路径上暴露出来。
 
 ### 合并示例
 
