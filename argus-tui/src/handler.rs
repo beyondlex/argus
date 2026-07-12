@@ -246,43 +246,33 @@ fn handle_copy_path(app: &mut App) {
 }
 
 fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some(path) = app.delete_target_path.clone() {
-                match trash::delete(&path) {
-                    Ok(_) => {
-                        app.set_error(format!("deleted: {}", path.display()), 3);
-                        apply_deletion_to_state(app, &path);
-                        app.update_tree_lines();
-                    }
-                    Err(e) => {
-                        app.set_error(format!("delete failed: {}", e), 5);
-                    }
-                }
-            }
-            app.delete_target_path = None;
-            app.mode = AppMode::Browsing;
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.delete_target_path = None;
-            app.mode = AppMode::Browsing;
-        }
-        _ => {}
-    }
+    handle_delete_common(key, app, |path| {
+        trash::delete(path).map_err(|e| e.to_string())?;
+        Ok(format!("deleted: {}", path.display()))
+    });
 }
 
 fn handle_delete_permanent_prompt_key(key: KeyEvent, app: &mut App) {
+    handle_delete_common(key, app, |path| {
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        Ok(format!("permanently deleted: {}", path.display()))
+    });
+}
+
+fn handle_delete_common<F>(key: KeyEvent, app: &mut App, delete_fn: F)
+where
+    F: Fn(&Path) -> Result<String, String>,
+{
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             if let Some(path) = app.delete_target_path.clone() {
-                let result = if path.is_dir() {
-                    std::fs::remove_dir_all(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                match result {
-                    Ok(_) => {
-                        app.set_error(format!("permanently deleted: {}", path.display()), 3);
+                match delete_fn(&path) {
+                    Ok(msg) => {
+                        app.set_error(msg, 3);
                         apply_deletion_to_state(app, &path);
                         app.update_tree_lines();
                     }
@@ -470,36 +460,10 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
     let skip_time = app.time_custom;
     match key.code {
         KeyCode::Tab | KeyCode::Char('\t') => {
-            let next = if skip_time {
-                match app.filter_focus {
-                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
-                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
-                    _ => FilterFocus::DeltaValue,
-                }
-            } else {
-                match app.filter_focus {
-                    FilterFocus::TimePreset => FilterFocus::DeltaValue,
-                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
-                    FilterFocus::DeltaUnit => FilterFocus::TimePreset,
-                }
-            };
-            app.filter_focus = next;
+            app.filter_focus = cycle_filter_focus(app.filter_focus, skip_time, true);
         }
         KeyCode::BackTab => {
-            let next = if skip_time {
-                match app.filter_focus {
-                    FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
-                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
-                    _ => FilterFocus::DeltaValue,
-                }
-            } else {
-                match app.filter_focus {
-                    FilterFocus::TimePreset => FilterFocus::DeltaUnit,
-                    FilterFocus::DeltaValue => FilterFocus::TimePreset,
-                    FilterFocus::DeltaUnit => FilterFocus::DeltaValue,
-                }
-            };
-            app.filter_focus = next;
+            app.filter_focus = cycle_filter_focus(app.filter_focus, skip_time, false);
         }
         KeyCode::Char(ch) if ch.is_ascii_digit() && app.filter_focus == FilterFocus::DeltaValue => {
             let digit = (ch as u8 - b'0') as u64;
@@ -523,53 +487,8 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             }
             app.refresh_filtered_lines();
         }
-        KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
-            FilterFocus::TimePreset if !skip_time => {
-                let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
-                let label = App::time_preset_label(next);
-                crate::app::log_msg(
-                    &app.log_path,
-                    &format!("filter: j key, preset={next} ({label})"),
-                );
-                app.set_time_preset(next);
-                app.request_delta_refresh();
-            }
-            FilterFocus::TimePreset => {}
-            FilterFocus::DeltaValue => {
-                app.delta_filter_active = true;
-                app.delta_filter_inc();
-                app.refresh_filtered_lines();
-            }
-            FilterFocus::DeltaUnit => {
-                app.delta_filter_active = true;
-                app.delta_filter_cycle_unit();
-                app.refresh_filtered_lines();
-            }
-        },
-        KeyCode::Char('k') | KeyCode::Up => match app.filter_focus {
-            FilterFocus::TimePreset if !skip_time => {
-                let count = crate::app::TIME_PRESET_COUNT;
-                let next = (app.time_preset + count - 1) % count;
-                let label = App::time_preset_label(next);
-                crate::app::log_msg(
-                    &app.log_path,
-                    &format!("filter: k key, preset={next} ({label})"),
-                );
-                app.set_time_preset(next);
-                app.request_delta_refresh();
-            }
-            FilterFocus::TimePreset => {}
-            FilterFocus::DeltaValue => {
-                app.delta_filter_active = true;
-                app.delta_filter_dec();
-                app.refresh_filtered_lines();
-            }
-            FilterFocus::DeltaUnit => {
-                app.delta_filter_active = true;
-                app.delta_filter_unit = (app.delta_filter_unit + 2) % 3;
-                app.refresh_filtered_lines();
-            }
-        },
+        KeyCode::Char('j') | KeyCode::Down => adjust_filter_focus(app, true),
+        KeyCode::Char('k') | KeyCode::Up => adjust_filter_focus(app, false),
         KeyCode::Char('c') => {
             app.clear_filter_pane();
         }
@@ -593,6 +512,71 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             app.update_command_matches();
         }
         _ => {}
+    }
+}
+
+fn cycle_filter_focus(current: FilterFocus, skip_time: bool, forward: bool) -> FilterFocus {
+    if skip_time {
+        match current {
+            FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
+            _ => FilterFocus::DeltaValue,
+        }
+    } else {
+        let order = [
+            FilterFocus::TimePreset,
+            FilterFocus::DeltaValue,
+            FilterFocus::DeltaUnit,
+        ];
+        let pos = order.iter().position(|f| *f == current).unwrap_or(0);
+        let next = if forward {
+            (pos + 1) % 3
+        } else {
+            (pos + 2) % 3
+        };
+        order[next]
+    }
+}
+
+fn adjust_filter_focus(app: &mut App, forward: bool) {
+    let skip_time = app.time_custom;
+    match app.filter_focus {
+        FilterFocus::TimePreset if !skip_time => {
+            let count = crate::app::TIME_PRESET_COUNT;
+            let next = if forward {
+                (app.time_preset + 1) % count
+            } else {
+                (app.time_preset + count - 1) % count
+            };
+            let label = App::time_preset_label(next);
+            crate::app::log_msg(
+                &app.log_path,
+                &format!(
+                    "filter: {} key, preset={next} ({label})",
+                    if forward { "j" } else { "k" }
+                ),
+            );
+            app.set_time_preset(next);
+            app.request_delta_refresh();
+        }
+        FilterFocus::TimePreset => {}
+        FilterFocus::DeltaValue => {
+            app.delta_filter_active = true;
+            if forward {
+                app.delta_filter_inc();
+            } else {
+                app.delta_filter_dec();
+            }
+            app.refresh_filtered_lines();
+        }
+        FilterFocus::DeltaUnit => {
+            app.delta_filter_active = true;
+            if forward {
+                app.delta_filter_cycle_unit();
+            } else {
+                app.delta_filter_unit = (app.delta_filter_unit + 2) % 3;
+            }
+            app.refresh_filtered_lines();
+        }
     }
 }
 
@@ -1469,5 +1453,263 @@ mod tests {
             .children
             .iter()
             .any(|(n, _)| n == "delete.bin"));
+    }
+
+    // ── filter pane key handlers ─────────────────────────────────────────────
+
+    #[test]
+    fn test_filter_tab_cycles_forward() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+
+        app.filter_focus = FilterFocus::TimePreset;
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
+
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
+
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
+    }
+
+    #[test]
+    fn test_filter_backtab_cycles_reverse() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+
+        app.filter_focus = FilterFocus::TimePreset;
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
+    }
+
+    #[test]
+    fn test_filter_tab_skips_time_when_custom() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.time_custom = true;
+
+        app.filter_focus = FilterFocus::TimePreset;
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
+
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
+
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
+    }
+
+    #[test]
+    fn test_filter_esc_returns_to_tree() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+
+        handle_filter_pane_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.focus, Focus::Tree);
+    }
+
+    #[test]
+    fn test_filter_enter_confirms_to_tree() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.focus, Focus::Tree);
+    }
+
+    #[test]
+    fn test_filter_digit_input_sets_value() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::DeltaValue;
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Char('4'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert!(app.delta_filter_active);
+        assert_eq!(app.delta_filter_value, 4);
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.delta_filter_value, 42);
+    }
+
+    #[test]
+    fn test_filter_backspace_removes_digit() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::DeltaValue;
+        app.delta_filter_active = true;
+        app.delta_filter_value = 42;
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.delta_filter_value, 4);
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert!(!app.delta_filter_active);
+    }
+
+    #[test]
+    fn test_filter_clear_resets_state() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.delta_filter_active = true;
+        app.delta_filter_value = 500;
+
+        handle_filter_pane_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert!(!app.delta_filter_active);
+        assert_eq!(app.focus, Focus::Tree);
+    }
+
+    // ── delete prompt handlers ────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_prompt_no_dismisses() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeletePrompt;
+        app.delete_target_path = Some(PathBuf::from("/tmp/test_file"));
+
+        handle_delete_prompt_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_prompt_esc_dismisses() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeletePrompt;
+        app.delete_target_path = Some(PathBuf::from("/tmp/test_file"));
+
+        handle_delete_prompt_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_permanent_prompt_no_dismisses() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeletePermanentPrompt;
+        app.delete_target_path = Some(PathBuf::from("/tmp/test_file"));
+
+        handle_delete_permanent_prompt_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_permanent_prompt_esc_dismisses() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeletePermanentPrompt;
+        app.delete_target_path = Some(PathBuf::from("/tmp/test_file"));
+
+        handle_delete_permanent_prompt_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_permanent_prompt_yes_removes_file() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test_file.txt");
+        fs::write(&file_path, "content").unwrap();
+        assert!(file_path.exists());
+
+        let root_path = PathBuf::from("/tmp/test");
+        let arena = vec![dir_node("test", vec![])];
+        let snap = Snapshot::new(root_path.clone(), arena, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.mode = AppMode::DeletePermanentPrompt;
+        app.delete_target_path = Some(file_path.clone());
+
+        handle_delete_permanent_prompt_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!file_path.exists());
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_prompt_yes_with_trash() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("trash_test.txt");
+        fs::write(&file_path, "content").unwrap();
+        assert!(file_path.exists());
+
+        let root_path = PathBuf::from("/tmp/test");
+        let arena = vec![dir_node("test", vec![])];
+        let snap = Snapshot::new(root_path.clone(), arena, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.mode = AppMode::DeletePrompt;
+        app.delete_target_path = Some(file_path.clone());
+
+        handle_delete_prompt_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!file_path.exists());
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
     }
 }

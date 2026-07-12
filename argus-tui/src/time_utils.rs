@@ -142,6 +142,44 @@ pub(crate) fn format_absolute_label(month: u32, day: u32, hour: u32, minute: u32
     }
 }
 
+pub struct ParsedTimeArg {
+    pub ms: u64,
+    pub label: String,
+    pub date: Option<(u32, u32)>,
+}
+
+pub fn parse_single_time_arg(arg: &str) -> Result<ParsedTimeArg, String> {
+    if is_time_only(arg) {
+        let parts: Vec<&str> = arg.split(':').collect();
+        let h: u32 = parts[0]
+            .parse()
+            .map_err(|_| format!("invalid hour: {arg}"))?;
+        let min: u32 = parts[1]
+            .parse()
+            .map_err(|_| format!("invalid minute: {arg}"))?;
+        let (m, d) = today_md();
+        Ok(ParsedTimeArg {
+            ms: datetime_to_millis(m, d, h, min),
+            label: format!("{:02}:{:02}", h, min),
+            date: Some((m, d)),
+        })
+    } else if let Ok(ms) = parse_duration(arg) {
+        let now = now_in_millis();
+        Ok(ParsedTimeArg {
+            ms: now.saturating_sub(ms),
+            label: format_duration_label(ms),
+            date: None,
+        })
+    } else {
+        let (m, d, h, min) = parse_date_time(arg).map_err(|e| format!("invalid date-time: {e}"))?;
+        Ok(ParsedTimeArg {
+            ms: datetime_to_millis(m, d, h, min),
+            label: format_absolute_label(m, d, h, min),
+            date: Some((m, d)),
+        })
+    }
+}
+
 pub(crate) fn today_md() -> (u32, u32) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

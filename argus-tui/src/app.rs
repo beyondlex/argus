@@ -853,115 +853,51 @@ impl App {
                     }
                 };
                 let rest: String = parts[1..].join(" ");
-
-                // Split on " to " (case-insensitive)
                 let to_lower = rest.to_lowercase();
                 let to_marker = " to ";
                 if let Some(pos) = to_lower.find(to_marker) {
-                    let left = &rest[..pos];
-                    let right = &rest[pos + to_marker.len()..];
-                    let left = left.trim();
-                    let right = right.trim();
-
+                    let left = rest[..pos].trim();
+                    let right = rest[pos + to_marker.len()..].trim();
                     if left.is_empty() || right.is_empty() {
                         return Err("invalid time range: empty side".into());
                     }
-
-                    // Parse left side
-                    let (from_ms, left_label, left_date) = if is_time_only(left) {
-                        let time_parts: Vec<&str> = left.split(':').collect();
-                        let h: u32 = time_parts[0]
-                            .parse()
-                            .map_err(|_| format!("invalid hour: {left}"))?;
-                        let min: u32 = time_parts[1]
-                            .parse()
-                            .map_err(|_| format!("invalid minute: {left}"))?;
-                        let (m, d) = today_md();
-                        let label = format!("{:02}:{:02}", h, min);
-                        (datetime_to_millis(m, d, h, min), label, Some((m, d)))
-                    } else if let Ok(ms) = parse_duration(left) {
-                        (
-                            now_in_millis().saturating_sub(ms),
-                            format_duration_label(ms),
-                            None,
-                        )
-                    } else {
-                        let (m, d, h, min) =
-                            parse_date_time(left).map_err(|e| format!("invalid left side: {e}"))?;
-                        (
-                            datetime_to_millis(m, d, h, min),
-                            format_absolute_label(m, d, h, min),
-                            Some((m, d)),
-                        )
-                    };
-
-                    // Parse right side
+                    let left_parsed = parse_single_time_arg(left)?;
                     let (to_ms, right_label) = if is_time_only(right) {
-                        let date =
-                            left_date.ok_or("cannot inherit date for time-only right side")?;
-                        let time_parts: Vec<&str> = right.split(':').collect();
-                        let h: u32 = time_parts[0].parse().unwrap_or(0);
-                        let min: u32 = time_parts[1].parse().unwrap_or(0);
+                        let date = left_parsed
+                            .date
+                            .ok_or("cannot inherit date for time-only right side")?;
+                        let parts: Vec<&str> = right.split(':').collect();
+                        let h: u32 = parts[0].parse().unwrap_or(0);
+                        let min: u32 = parts[1].parse().unwrap_or(0);
                         (
                             datetime_to_millis(date.0, date.1, h, min),
                             format!("{:02}:{:02}", h, min),
                         )
-                    } else if let Ok(ms) = parse_duration(right) {
-                        (
-                            now_in_millis().saturating_sub(ms),
-                            format_duration_label(ms),
-                        )
                     } else {
-                        let (m, d, h, min) = parse_date_time(right)
-                            .map_err(|e| format!("invalid right side: {e}"))?;
-                        (
-                            datetime_to_millis(m, d, h, min),
-                            format_absolute_label(m, d, h, min),
-                        )
+                        let parsed = parse_single_time_arg(right)?;
+                        (parsed.ms, parsed.label)
                     };
-
-                    self.time_from = from_ms;
+                    self.time_from = left_parsed.ms;
                     self.time_to = to_ms;
                     self.time_custom = true;
-                    self.time_custom_label = format_time_label(&left_label, &right_label);
+                    self.time_custom_label = format_time_label(&left_parsed.label, &right_label);
                     self.request_delta_refresh();
                     Ok(format!("time range: {}", self.time_custom_label))
                 } else {
-                    // No "to" — single arg
+                    let parsed = parse_single_time_arg(arg)?;
                     let now = now_in_millis();
-                    if is_time_only(arg) {
-                        let time_parts: Vec<&str> = arg.split(':').collect();
-                        let h: u32 = time_parts[0]
-                            .parse()
-                            .map_err(|_| format!("invalid hour: {arg}"))?;
-                        let min: u32 = time_parts[1]
-                            .parse()
-                            .map_err(|_| format!("invalid minute: {arg}"))?;
-                        let (m, d) = today_md();
-                        let from_ms = datetime_to_millis(m, d, h, min);
-                        self.time_from = from_ms;
-                        self.time_to = now;
-                        self.time_custom = true;
-                        self.time_custom_label = format!("{:02}:{:02} ~ now", h, min);
-                        self.request_delta_refresh();
-                        Ok(format!("time range: {}", self.time_custom_label))
-                    } else if let Ok((m, d, h, min)) = parse_date_time(arg) {
-                        let from_ms = datetime_to_millis(m, d, h, min);
-                        self.time_from = from_ms;
-                        self.time_to = now;
-                        self.time_custom = true;
-                        self.time_custom_label =
-                            format!("{} ~ now", format_absolute_label(m, d, h, min));
-                        self.request_delta_refresh();
+                    self.time_from = parsed.ms;
+                    self.time_to = now;
+                    self.time_custom = true;
+                    if parsed.date.is_some() {
+                        self.time_custom_label = format!("{} ~ now", parsed.label);
+                    } else {
+                        self.time_custom_label = parsed.label;
+                    }
+                    self.request_delta_refresh();
+                    if parsed.date.is_some() {
                         Ok(format!("time range: {}", self.time_custom_label))
                     } else {
-                        let ms =
-                            parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
-                        self.time_from = now.saturating_sub(ms);
-                        self.time_to = now;
-                        self.time_custom = true;
-                        self.time_custom_label = format_duration_label(ms);
-                        self.request_delta_refresh();
                         Ok(format!("time range: in {}", self.time_custom_label))
                     }
                 }
@@ -1043,7 +979,7 @@ fn flatten_snapshot_tree(
     let is_expanded = depth == 0 || expanded.contains(&path_key);
 
     let node_has_scan =
-        has_snapshot_for_path(scan_cache, view_root_path, root_scan_tree, &path_key);
+        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some();
 
     lines.push(TreeLine {
         depth,
@@ -1137,30 +1073,6 @@ fn size_for_path(
         snap.find_node(idx, path_key)
             .map(|found_idx| snap.node(found_idx).size)
     })
-}
-
-fn has_snapshot_for_path(
-    scan_cache: &HashMap<PathBuf, Snapshot>,
-    view_root_path: &Path,
-    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
-    path_key: &[String],
-) -> bool {
-    if path_key.is_empty() {
-        return false;
-    }
-
-    let mut path = view_root_path.to_path_buf();
-    for component in path_key.iter().skip(1) {
-        path.push(component);
-    }
-
-    if scan_cache.contains_key(&path) {
-        return true;
-    }
-
-    root_scan_tree
-        .and_then(|(snap, idx)| snap.find_node(idx, path_key))
-        .is_some()
 }
 
 /// Find the best-available scan tree node for a view path.
@@ -1463,5 +1375,246 @@ mod tests {
         assert!(build_line.node.is_dir());
         assert!(!build_line.has_scan_data);
         assert_eq!(build_line.node.current_size(), 0);
+    }
+
+    // ── execute_command tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_execute_empty_command() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.execute_command(""), Err("empty command".into()));
+    }
+
+    #[test]
+    fn test_execute_unknown_command() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        let result = app.execute_command("foobar");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown command"));
+    }
+
+    #[test]
+    fn test_execute_help() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.execute_command("help").is_ok());
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn test_execute_time_not_in_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(
+            app.execute_command("time 2h"),
+            Err("not in server mode".into())
+        );
+    }
+
+    #[test]
+    fn test_execute_time_no_arg_opens_help() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("time").is_ok());
+        assert_eq!(app.mode, AppMode::TimeHelp);
+    }
+
+    #[test]
+    fn test_execute_time_duration() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.delta_pending = true;
+        let result = app.execute_command("time 2h");
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("2h"));
+        assert!(app.time_custom);
+    }
+
+    #[test]
+    fn test_execute_time_time_only() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.delta_pending = true;
+        let result = app.execute_command("time 14:30");
+        assert!(result.is_ok());
+        assert!(app.time_custom);
+        assert!(app.time_custom_label.contains("14:30"));
+    }
+
+    #[test]
+    fn test_execute_time_absolute() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.delta_pending = true;
+        let result = app.execute_command("time 07-04");
+        assert!(result.is_ok());
+        assert!(app.time_custom);
+    }
+
+    #[test]
+    fn test_execute_time_range_time_to_time() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.delta_pending = true;
+        let result = app.execute_command("time 09:00 to 17:00");
+        assert!(result.is_ok());
+        assert!(app.time_custom);
+        assert!(app.time_custom_label.contains("09:00"));
+        assert!(app.time_custom_label.contains("17:00"));
+    }
+
+    #[test]
+    fn test_execute_time_range_absolute_to_absolute() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.delta_pending = true;
+        let result = app.execute_command("time 07-04 to 07-05");
+        assert!(result.is_ok());
+        assert!(app.time_custom);
+        assert!(app.time_custom_label.contains("07-04"));
+        assert!(app.time_custom_label.contains("07-05"));
+    }
+
+    #[test]
+    fn test_execute_time_range_duration_to_date_errors() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        // 2h as left (duration, left_date=None) and 09:00 as right (time-only needs left_date)
+        let result = app.execute_command("time 2h to 09:00");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_time_invalid_duration() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        let result = app.execute_command("time 2x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_sort_name() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.execute_command("sort n").is_ok());
+        assert_eq!(app.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn test_execute_sort_toggle() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.sort_mode = SortMode::Name;
+        assert!(app.execute_command("sort").is_ok());
+        assert_eq!(app.sort_mode, SortMode::Size);
+    }
+
+    #[test]
+    fn test_execute_sort_unknown() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        let result = app.execute_command("sort x");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown sort mode"));
+    }
+
+    #[test]
+    fn test_execute_delta_with_unit() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("delta 500k").is_ok());
+        assert_eq!(app.delta_filter_value, 500);
+        assert_eq!(app.delta_filter_unit, 0);
+        assert!(app.delta_filter_active);
+    }
+
+    #[test]
+    fn test_execute_delta_not_in_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(
+            app.execute_command("delta 100m"),
+            Err("not in server mode".into())
+        );
+    }
+
+    #[test]
+    fn test_execute_filterclear_not_in_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(
+            app.execute_command("filterclear"),
+            Err("not in server mode".into())
+        );
+    }
+
+    // ── size_for_path / has_snapshot_for_path tests ────────────────────────────
+
+    #[test]
+    fn test_size_for_path_cache_hit() {
+        let root_path = PathBuf::from("/tmp/test");
+        let sub_path = root_path.join("src");
+        let mut scan_cache = HashMap::new();
+        scan_cache.insert(
+            sub_path.clone(),
+            Snapshot::new(sub_path, vec![node("src", true, 100, vec![])], 100),
+        );
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            None,
+            &["test".into(), "src".into()],
+        );
+        assert_eq!(size, Some(100));
+    }
+
+    #[test]
+    fn test_size_for_path_scan_tree_fallback() {
+        let root_path = PathBuf::from("/tmp/test");
+        let mut scan_cache = HashMap::new();
+        let snap = Snapshot::new(
+            root_path.clone(),
+            vec![
+                node("test", true, 200, vec![("src", 1)]),
+                node("src", true, 200, vec![]),
+            ],
+            200,
+        );
+        scan_cache.insert(root_path.clone(), snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            root_scan_tree,
+            &["test".into(), "src".into()],
+        );
+        assert_eq!(size, Some(200));
+    }
+
+    #[test]
+    fn test_size_for_path_no_match() {
+        let root_path = PathBuf::from("/tmp/test");
+        let mut scan_cache = HashMap::new();
+        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0);
+        scan_cache.insert(root_path.clone(), snap);
+        let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
+        let size = size_for_path(
+            &scan_cache,
+            &root_path,
+            root_scan_tree,
+            &["test".into(), "nonexistent".into()],
+        );
+        assert_eq!(size, None);
     }
 }
