@@ -190,6 +190,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         app.last_scan_summary.as_ref(),
         error_str,
         app.server_connected,
+        app.sort_mode,
     );
 
     // Overlays

@@ -1,12 +1,12 @@
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
     Frame,
 };
 
-use crate::app::{AppMode, ScanSummary};
+use crate::app::{AppMode, ScanSummary, SortMode};
 use crate::util;
 use crate::util::key_hints;
 use std::path::Path;
@@ -27,6 +27,7 @@ pub fn render(
     scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
     server_connected: bool,
+    sort_mode: SortMode,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
@@ -128,9 +129,32 @@ pub fn render(
         ));
     }
 
-    // Use full width for the single status line
-    let left_line = Line::from(left_spans);
+    // Right side: sort mode indicator
+    let right_spans = vec![
+        Span::raw(" Sort: "),
+        Span::styled(
+            sort_mode.label(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::raw(" "),
+    ];
+    let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
+    let right_line = Line::from(right_spans);
 
     let block = Block::default().style(Style::default().bg(Color::Black));
-    f.render_widget(Paragraph::new(left_line).block(block), area);
+    if right_width + 4 < area.width {
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_width)])
+                .flex(Flex::SpaceBetween)
+                .areas(area);
+        f.render_widget(
+            Paragraph::new(Line::from(left_spans)).block(block.clone()),
+            left_area,
+        );
+        f.render_widget(Paragraph::new(right_line), right_area);
+    } else {
+        f.render_widget(Paragraph::new(Line::from(left_spans)).block(block), area);
+    }
 }
