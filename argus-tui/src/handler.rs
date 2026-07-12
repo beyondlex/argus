@@ -31,12 +31,74 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    // Filter pane has focus — handle its keys
     if app.focus == Focus::FilterPane {
         handle_filter_pane_key(key, app);
         return;
     }
 
+    if handle_search_keys(key, app) {
+        return;
+    }
+
+    if app.search_mode == SearchMode::Inactive {
+        if let KeyCode::Char('/') = key.code {
+            app.search_mode = SearchMode::Input;
+            return;
+        }
+    }
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => move_cursor(app, 1),
+        KeyCode::Char('k') | KeyCode::Up => move_cursor(app, -1),
+        KeyCode::Char('g') => handle_gg_double_tap(app),
+        KeyCode::Char('G') => {
+            if !app.filtered_tree_lines.is_empty() {
+                app.cursor = app.filtered_tree_lines.len() - 1;
+            }
+            app.pending_gg = false;
+        }
+        KeyCode::Char('l') | KeyCode::Right => expand_node(app),
+        KeyCode::Char('h') | KeyCode::Left => collapse_or_navigate_up(app),
+        KeyCode::Char('H') => collapse_all_children(app),
+        KeyCode::Char('u') => navigate_up_root(app),
+        KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
+        KeyCode::Char('s') => start_scan(app),
+        KeyCode::Char('.') => set_root_to_selected(app),
+        KeyCode::Char('o') => {
+            app.sort_mode = app.sort_mode.toggle();
+            app.update_tree_lines();
+        }
+        KeyCode::Char('d') => handle_delete_action(app, false),
+        KeyCode::Char('D') => handle_delete_action(app, true),
+        KeyCode::Char('?') => app.mode = AppMode::Help,
+        KeyCode::Char(':') => {
+            app.mode = AppMode::Command;
+            app.command_input.clear();
+            app.command_selected = 0;
+            app.command_history_idx = None;
+            app.update_command_matches();
+        }
+        KeyCode::Char('t') if app.server_mode => handle_time_toggle(app),
+        KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
+        KeyCode::Char('i') => handle_info_popup(app),
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('y') => handle_copy_path(app),
+        KeyCode::Char('f') if app.server_mode => {
+            app.focus = Focus::FilterPane;
+            app.filter_focus = FilterFocus::TimePreset;
+        }
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
+        KeyCode::Char('c') => app.clear_filter_pane(),
+        KeyCode::Esc => app.info_data = None,
+        _ => {}
+    }
+    if key.code != KeyCode::Char('g') {
+        app.pending_gg = false;
+    }
+}
+
+/// Handle search-mode input keys. Returns true if the key was consumed.
+fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
     match app.search_mode {
         SearchMode::Input => {
             match key.code {
@@ -63,16 +125,12 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 }
                 _ => {}
             }
-            return;
+            true
         }
         SearchMode::Active => {
             match key.code {
-                KeyCode::Char('n') => {
-                    jump_to_next_match(app, 1);
-                }
-                KeyCode::Char('N') => {
-                    jump_to_next_match(app, -1);
-                }
+                KeyCode::Char('n') => jump_to_next_match(app, 1),
+                KeyCode::Char('N') => jump_to_next_match(app, -1),
                 KeyCode::Char('/') => {
                     app.search_word.clear();
                     app.recompute_matches();
@@ -82,196 +140,108 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                     app.search_word.clear();
                     app.recompute_matches();
                     app.search_mode = SearchMode::Inactive;
-                    return;
+                    return true;
                 }
                 _ => {}
             }
-            // Don't return for other keys — let navigation keys pass through
+            false // let other keys pass through
         }
-        SearchMode::Inactive => {}
+        SearchMode::Inactive => false,
     }
+}
 
-    // Only '/' triggers filter from Inactive; other keys ignored if already handled above
-    if app.search_mode == SearchMode::Inactive {
-        if let KeyCode::Char('/') = key.code {
-            app.search_mode = SearchMode::Input;
-            return;
-        }
+fn handle_delete_action(app: &mut App, permanent: bool) {
+    let Some(line) = app.selected_line() else {
+        return;
+    };
+    let root_name = app
+        .view_root_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if line.node.is_dir() && line.node.name() == root_name {
+        app.set_error("cannot delete root directory".into(), 3);
+        return;
     }
-
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            move_cursor(app, 1);
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            move_cursor(app, -1);
-        }
-        KeyCode::Char('g') => {
-            if app.pending_gg {
-                app.cursor = 0;
-                app.pending_gg = false;
-            } else {
-                app.pending_gg = true;
-            }
-        }
-        KeyCode::Char('G') => {
-            if !app.filtered_tree_lines.is_empty() {
-                app.cursor = app.filtered_tree_lines.len() - 1;
-            }
-            app.pending_gg = false;
-        }
-        KeyCode::Char('l') | KeyCode::Right => {
-            expand_node(app);
-        }
-        KeyCode::Char('h') | KeyCode::Left => {
-            collapse_or_navigate_up(app);
-        }
-        KeyCode::Char('H') => {
-            collapse_all_children(app);
-        }
-        KeyCode::Char('u') => {
-            navigate_up_root(app);
-        }
-        KeyCode::Enter if !app.search_word.is_empty() => {
-            app.search_mode = SearchMode::Input;
-        }
-        KeyCode::Char('s') => {
-            start_scan(app);
-        }
-        KeyCode::Char('.') => {
-            set_root_to_selected(app);
-        }
-        KeyCode::Char('o') => {
-            app.sort_mode = app.sort_mode.toggle();
-            app.update_tree_lines();
-        }
-        KeyCode::Char('d') => {
-            if let Some(line) = app.selected_line() {
-                let root_name = app
-                    .view_root_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if line.node.is_dir() && line.node.name() == root_name {
-                    app.set_error("cannot delete root directory".into(), 3);
-                } else if let Some(full_path) = app.selected_node_full_path() {
-                    if crate::util::is_protected_path(&full_path) {
-                        app.set_error("protected path, cannot delete".into(), 3);
-                    } else {
-                        app.delete_target_path = Some(full_path);
-                        app.mode = AppMode::DeletePrompt;
-                    }
-                }
-            }
-        }
-        KeyCode::Char('D') => {
-            if let Some(line) = app.selected_line() {
-                let root_name = app
-                    .view_root_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if line.node.is_dir() && line.node.name() == root_name {
-                    app.set_error("cannot delete root directory".into(), 3);
-                } else if let Some(full_path) = app.selected_node_full_path() {
-                    if crate::util::is_protected_path(&full_path) {
-                        app.set_error("protected path, cannot delete".into(), 3);
-                    } else {
-                        app.delete_target_path = Some(full_path);
-                        app.mode = AppMode::DeletePermanentPrompt;
-                    }
-                }
-            }
-        }
-
-        KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
-        }
-        KeyCode::Char(':') => {
-            app.mode = AppMode::Command;
-            app.command_input.clear();
-            app.command_selected = 0;
-            app.command_history_idx = None;
-            app.update_command_matches();
-        }
-        KeyCode::Char('t') if app.server_mode => {
-            if app.time_custom {
-                app.set_time_preset(0);
-                app.set_error(format!("time range: {}", App::time_preset_label(0)), 2);
-            } else {
-                let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
-                app.set_time_preset(next);
-                app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
-            }
-            app.request_delta_refresh();
-        }
-        KeyCode::Char('R') if !app.server_mode => {
-            let path = crate::config::TuiConfig::default().daemon.uds_path.clone();
-            let path_clone = path.clone();
-            let tx = app.tx.clone();
-            tokio::spawn(async move {
-                if let Ok(mut client) = IpcClient::connect(&path_clone).await {
-                    if client.ping().await.is_ok() {
-                        let _ = tx.send(AppMessage::DaemonConnected(client)).await;
-                        return;
-                    }
-                }
-                let _ = tx
-                    .send(AppMessage::Error("daemon reconnect failed".into()))
-                    .await;
-            });
-        }
-        KeyCode::Char('i') => {
-            if let Some(path) = app.selected_node_full_path() {
-                match std::fs::metadata(&path) {
-                    Ok(meta) => {
-                        app.info_data = Some((path, meta));
-                    }
-                    Err(e) => {
-                        app.set_error(format!("stat failed: {}", e), 3);
-                    }
-                }
-            }
-        }
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-        }
-        KeyCode::Char('y') => {
-            if let Some(path) = app.selected_node_full_path() {
-                match arboard::Clipboard::new() {
-                    Ok(mut cb) => {
-                        let path_str = path.display().to_string();
-                        if cb.set_text(path_str.clone()).is_ok() {
-                            app.set_error(format!("copied: {}", path_str), 2);
-                        } else {
-                            app.set_error("clipboard write failed".into(), 3);
-                        }
-                    }
-                    Err(_) => {
-                        app.set_error("clipboard unavailable".into(), 3);
-                    }
-                }
-            }
-        }
-        KeyCode::Char('f') if app.server_mode => {
-            app.focus = Focus::FilterPane;
-            app.filter_focus = FilterFocus::TimePreset;
-        }
-        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
-            app.should_quit = true;
-        }
-        KeyCode::Char('c') => {
-            app.clear_filter_pane();
-        }
-        KeyCode::Esc => {
-            app.info_data = None;
-        }
-
-        _ => {}
+    let Some(full_path) = app.selected_node_full_path() else {
+        return;
+    };
+    if crate::util::is_protected_path(&full_path) {
+        app.set_error("protected path, cannot delete".into(), 3);
+        return;
     }
-    // Reset gg double-tap on any key other than g
-    if key.code != KeyCode::Char('g') {
+    app.delete_target_path = Some(full_path);
+    app.mode = if permanent {
+        AppMode::DeletePermanentPrompt
+    } else {
+        AppMode::DeletePrompt
+    };
+}
+
+fn handle_gg_double_tap(app: &mut App) {
+    if app.pending_gg {
+        app.cursor = 0;
         app.pending_gg = false;
+    } else {
+        app.pending_gg = true;
+    }
+}
+
+fn handle_time_toggle(app: &mut App) {
+    if app.time_custom {
+        app.set_time_preset(0);
+        app.set_error(format!("time range: {}", App::time_preset_label(0)), 2);
+    } else {
+        let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
+        app.set_time_preset(next);
+        app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
+    }
+    app.request_delta_refresh();
+}
+
+fn handle_daemon_reconnect(app: &mut App) {
+    let path = crate::config::TuiConfig::default().daemon.uds_path.clone();
+    let path_clone = path.clone();
+    let tx = app.tx.clone();
+    tokio::spawn(async move {
+        if let Ok(mut client) = IpcClient::connect(&path_clone).await {
+            if client.ping().await.is_ok() {
+                let _ = tx.send(AppMessage::DaemonConnected(client)).await;
+                return;
+            }
+        }
+        let _ = tx
+            .send(AppMessage::Error("daemon reconnect failed".into()))
+            .await;
+    });
+}
+
+fn handle_info_popup(app: &mut App) {
+    let Some(path) = app.selected_node_full_path() else {
+        return;
+    };
+    match std::fs::metadata(&path) {
+        Ok(meta) => app.info_data = Some((path, meta)),
+        Err(e) => app.set_error(format!("stat failed: {}", e), 3),
+    }
+}
+
+fn handle_copy_path(app: &mut App) {
+    let Some(path) = app.selected_node_full_path() else {
+        return;
+    };
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => {
+            let path_str = path.display().to_string();
+            if cb.set_text(path_str.clone()).is_ok() {
+                app.set_error(format!("copied: {}", path_str), 2);
+            } else {
+                app.set_error("clipboard write failed".into(), 3);
+            }
+        }
+        Err(_) => {
+            app.set_error("clipboard unavailable".into(), 3);
+        }
     }
 }
 
@@ -665,7 +635,8 @@ fn expand_node(app: &mut App) {
 
     // Lazy-load children from disk when the tree node has no children.
     let needs_listing = match &app.tree_root {
-        Some(TreeNode::Snapshot(snap_arc, root_idx)) => find_node(snap_arc, *root_idx, &path_key)
+        Some(TreeNode::Snapshot(snap_arc, root_idx)) => snap_arc
+            .find_node(*root_idx, &path_key)
             .map(|found_idx| {
                 let node = snap_arc.node(found_idx);
                 node.children.is_empty()
@@ -695,12 +666,12 @@ fn expand_node(app: &mut App) {
                                 if let Some(val) = from_cache {
                                     enrich.insert(name.clone(), val);
                                 } else if let Some(scanned_idx) = root_scan_tree
-                                    .and_then(|(tree, idx)| find_node(tree, idx, &child_path))
+                                    .and_then(|(tree, idx)| tree.find_node(idx, &child_path))
                                 {
                                     let (tree, _) = root_scan_tree.unwrap();
                                     enrich.insert(name.clone(), tree.node(scanned_idx).size);
                                 } else if let Some(found_idx) =
-                                    find_node(snap_arc, *root_idx, &child_path)
+                                    snap_arc.find_node(*root_idx, &child_path)
                                 {
                                     enrich.insert(name.clone(), snap_arc.node(found_idx).size);
                                 }
@@ -711,7 +682,7 @@ fn expand_node(app: &mut App) {
                     // Merge listed children into the tree root's arena
                     if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &mut app.tree_root {
                         let snap = Arc::make_mut(snap_arc);
-                        if let Some(target_idx) = find_node(snap, *root_idx, &path_key) {
+                        if let Some(target_idx) = snap.find_node(*root_idx, &path_key) {
                             let child_nodes: Vec<(String, FileNode)> = listed
                                 .node(ROOT_NODE)
                                 .children
@@ -741,19 +712,6 @@ fn expand_node(app: &mut App) {
 
     app.expanded.insert(path_key);
     app.update_tree_lines();
-}
-
-fn find_node(snap: &Snapshot, idx: NodeIndex, target_path: &[String]) -> Option<NodeIndex> {
-    let node = snap.node(idx);
-    let (head, tail) = target_path.split_first()?;
-    if node.name != *head {
-        return None;
-    }
-    if tail.is_empty() {
-        return Some(idx);
-    }
-    let child_idx = node.child_idx(&tail[0])?;
-    find_node(snap, child_idx, tail)
 }
 
 fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {

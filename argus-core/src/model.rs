@@ -112,6 +112,20 @@ impl Snapshot {
         };
         Ok(serde_json::from_str(&json)?)
     }
+
+    /// Walk the snapshot arena along a path of component names, starting from `idx`.
+    pub fn find_node(&self, idx: NodeIndex, target_path: &[String]) -> Option<NodeIndex> {
+        let node = self.node(idx);
+        let (head, tail) = target_path.split_first()?;
+        if node.name != *head {
+            return None;
+        }
+        if tail.is_empty() {
+            return Some(idx);
+        }
+        let child_idx = node.child_idx(&tail[0])?;
+        self.find_node(child_idx, tail)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

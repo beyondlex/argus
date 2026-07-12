@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::ipc_client::IpcClient;
+use crate::time_utils::*;
 
 /// Directories with more children than this won't have their subtree matched or expanded
 /// during search navigation. Prevents n/N from hanging when jumping into massive directories.
@@ -69,167 +70,6 @@ pub fn delta_unit_multiplier(unit: usize) -> u64 {
 pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
 
 pub const TIME_PRESET_COUNT: usize = 7;
-
-pub fn now_in_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn parse_duration(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    let (num_str, mult) = if s.ends_with('w') || s.ends_with('W') {
-        (&s[..s.len() - 1], 604_800_000u64)
-    } else if s.ends_with('d') || s.ends_with('D') {
-        (&s[..s.len() - 1], 86_400_000u64)
-    } else if s.ends_with('h') || s.ends_with('H') {
-        (&s[..s.len() - 1], 3_600_000u64)
-    } else {
-        (s, 3_600_000u64)
-    };
-    let n: u64 = num_str
-        .parse()
-        .map_err(|_| format!("invalid number: {num_str}"))?;
-    Ok(n * mult)
-}
-
-fn parse_date_time(s: &str) -> Result<(u32, u32, u32, u32), String> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    match parts.len() {
-        1 => {
-            let date_parts: Vec<&str> = parts[0].split('-').collect();
-            if date_parts.len() == 2 {
-                let month: u32 = date_parts[0]
-                    .parse()
-                    .map_err(|_| format!("invalid month: {}", date_parts[0]))?;
-                let day: u32 = date_parts[1]
-                    .parse()
-                    .map_err(|_| format!("invalid day: {}", date_parts[1]))?;
-                Ok((month, day, 0, 0))
-            } else {
-                Err(format!("invalid date: {}", s))
-            }
-        }
-        2 => {
-            let date_parts: Vec<&str> = parts[0].split('-').collect();
-            if date_parts.len() != 2 {
-                return Err(format!("invalid date: {}", parts[0]));
-            }
-            let month: u32 = date_parts[0]
-                .parse()
-                .map_err(|_| format!("invalid month: {}", date_parts[0]))?;
-            let day: u32 = date_parts[1]
-                .parse()
-                .map_err(|_| format!("invalid day: {}", date_parts[1]))?;
-            let time_parts: Vec<&str> = parts[1].split(':').collect();
-            if time_parts.len() != 2 {
-                return Err(format!("invalid time: {}", parts[1]));
-            }
-            let hour: u32 = time_parts[0]
-                .parse()
-                .map_err(|_| format!("invalid hour: {}", time_parts[0]))?;
-            let minute: u32 = time_parts[1]
-                .parse()
-                .map_err(|_| format!("invalid minute: {}", time_parts[1]))?;
-            Ok((month, day, hour, minute))
-        }
-        _ => Err(format!("invalid date-time: {s}")),
-    }
-}
-
-fn is_time_only(s: &str) -> bool {
-    let parts: Vec<&str> = s.split(':').collect();
-    parts.len() == 2
-        && parts[0].chars().all(|c| c.is_ascii_digit())
-        && parts[1].chars().all(|c| c.is_ascii_digit())
-}
-
-fn datetime_to_millis(month: u32, day: u32, hour: u32, minute: u32) -> u64 {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    // Use current year, if result is in the future try previous year
-    for year_offset in [0i64, -1] {
-        let year = 1970 + (now as f64 / 31557600.0) as i64 + year_offset;
-        if let Some(ms) = date_to_millis(year as i32, month, day, hour, minute) {
-            if ms <= now as u64 * 1000 || year_offset < 0 {
-                return ms;
-            }
-        }
-    }
-    0
-}
-
-fn date_to_millis(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<u64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-
-    let days = days_since_epoch(year, month, day)?;
-    Some((days as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60) * 1000)
-}
-
-fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) {
-        return None;
-    }
-    let y = if month <= 2 {
-        year as i64 - 1
-    } else {
-        year as i64
-    };
-    let m = if month <= 2 {
-        month as i64 + 12
-    } else {
-        month as i64
-    };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (m - 3) + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days)
-}
-
-fn format_time_label(left: &str, right: &str) -> String {
-    format!("{} ~ {}", left, right)
-}
-
-fn format_duration_label(ms: u64) -> String {
-    if ms % 604_800_000 == 0 {
-        format!("{}w", ms / 604_800_000)
-    } else if ms % 86_400_000 == 0 {
-        format!("{}d", ms / 86_400_000)
-    } else {
-        format!("{}h", ms / 3_600_000)
-    }
-}
-
-fn format_absolute_label(month: u32, day: u32, hour: u32, minute: u32) -> String {
-    if hour == 0 && minute == 0 {
-        format!("{month:02}-{day:02}")
-    } else {
-        format!("{month:02}-{day:02} {hour:02}:{minute:02}")
-    }
-}
-
-fn today_md() -> (u32, u32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = now / 86400 + 719468;
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    (month, day)
-}
 
 /// Tree search mode
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -687,7 +527,7 @@ impl App {
         let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &self.tree_root else {
             return false;
         };
-        let Some(dir_idx) = find_snapshot_node(snap_arc, *root_idx, path) else {
+        let Some(dir_idx) = snap_arc.find_node(*root_idx, path) else {
             return false;
         };
         let node = snap_arc.node(dir_idx);
@@ -1169,118 +1009,6 @@ impl App {
         }
     }
 
-    /// Request delta data from daemon — single query to root path, build full map locally
-    pub fn request_delta_refresh(&mut self) {
-        if self.delta_pending {
-            return;
-        }
-        let view_root = self.view_root_path.clone();
-        if !view_root.exists() {
-            return;
-        }
-        let from = self.time_from;
-        let to = self.time_to;
-        let tx = self.tx.clone();
-        let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
-        let log_path = self.log_path.clone();
-        self.delta_pending = true;
-        log_msg(
-            &log_path,
-            &format!(
-                "request_delta_refresh: from={from} to={to} root={}",
-                view_root.display()
-            ),
-        );
-        tokio::spawn(async move {
-            let t0 = Instant::now();
-            match Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await {
-                Some(deltas) => {
-                    log_msg(
-                        &log_path,
-                        &format!(
-                            "fetch_deltas done: {} paths in {:?}",
-                            deltas.len(),
-                            t0.elapsed()
-                        ),
-                    );
-                    let _ = tx.send(AppMessage::DeltaData(deltas)).await;
-                }
-                None => {
-                    let _ = tx.send(AppMessage::DaemonDisconnected).await;
-                }
-            }
-        });
-    }
-
-    async fn fetch_deltas(
-        uds: &str,
-        view_root: &std::path::Path,
-        from: u64,
-        to: u64,
-        log_path: &Path,
-    ) -> Option<HashMap<Vec<String>, i64>> {
-        let t0 = Instant::now();
-        let mut client = match IpcClient::connect(uds).await {
-            Ok(c) => c,
-            Err(e) => {
-                log_msg(log_path, &format!("fetch_deltas: connect failed: {e}"));
-                return None;
-            }
-        };
-        let t1 = Instant::now();
-        log_msg(
-            log_path,
-            &format!("fetch_deltas: connected in {:?}", t1 - t0),
-        );
-        let (_total, entries) = match client.get_delta(view_root, from, to).await {
-            Ok(r) => r,
-            Err(e) => {
-                log_msg(log_path, &format!("fetch_deltas: query failed: {e}"));
-                return None;
-            }
-        };
-        let t2 = Instant::now();
-        log_msg(
-            log_path,
-            &format!(
-                "fetch_deltas: query returned {} entries in {:?}",
-                entries.len(),
-                t2 - t1
-            ),
-        );
-        let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
-        for entry in &entries {
-            *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
-        }
-        let mut deltas: HashMap<Vec<String>, i64> = HashMap::new();
-        for (abs_path, delta) in &file_deltas {
-            let relative = abs_path.strip_prefix(view_root).ok();
-            let Some(relative) = relative else { continue };
-            let mut components: Vec<String> = Vec::new();
-            components.push(
-                view_root
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            );
-            for comp in relative.components() {
-                components.push(comp.as_os_str().to_string_lossy().to_string());
-            }
-            for i in 1..=components.len() {
-                let ancestor = components[..i].to_vec();
-                *deltas.entry(ancestor).or_insert(0) += delta;
-            }
-        }
-        log_msg(
-            log_path,
-            &format!(
-                "fetch_deltas: map build done, {} paths in {:?}",
-                deltas.len(),
-                t2.elapsed()
-            ),
-        );
-        Some(deltas)
-    }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();
         let relative = self.tree_line_relative_path(self.cursor)?;
@@ -1406,7 +1134,8 @@ fn size_for_path(
     }
 
     root_scan_tree.and_then(|(snap, idx)| {
-        find_snapshot_node(snap, idx, path_key).map(|found_idx| snap.node(found_idx).size)
+        snap.find_node(idx, path_key)
+            .map(|found_idx| snap.node(found_idx).size)
     })
 }
 
@@ -1430,7 +1159,7 @@ fn has_snapshot_for_path(
     }
 
     root_scan_tree
-        .and_then(|(snap, idx)| find_snapshot_node(snap, idx, path_key))
+        .and_then(|(snap, idx)| snap.find_node(idx, path_key))
         .is_some()
 }
 
@@ -1460,24 +1189,6 @@ pub(crate) fn resolve_scan_tree<'a>(
         }
         parent = parent.parent()?;
     }
-}
-
-fn find_snapshot_node(
-    snap: &Snapshot,
-    idx: NodeIndex,
-    target_path: &[String],
-) -> Option<NodeIndex> {
-    let node = snap.node(idx);
-    let (head, tail) = target_path.split_first()?;
-    if node.name != *head {
-        return None;
-    }
-    if tail.is_empty() {
-        return Some(idx);
-    }
-
-    let child_idx = node.child_idx(&tail[0])?;
-    find_snapshot_node(snap, child_idx, tail)
 }
 
 fn sort_children_snapshot(
