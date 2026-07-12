@@ -37,6 +37,7 @@ pub enum AppMode {
     DeletePrompt,
     DeletePermanentPrompt,
     Help,
+    TimeHelp,
     Command,
 }
 
@@ -875,9 +876,10 @@ impl App {
 
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         let name = parts[0];
+        let name_lower = name.to_lowercase();
 
-        match name {
-            "FilterClear" => {
+        match name_lower.as_str() {
+            "filterclear" => {
                 if self.server_mode {
                     self.clear_filter_pane();
                     Ok("filter cleared".into())
@@ -885,7 +887,7 @@ impl App {
                     Err("not in server mode".into())
                 }
             }
-            "FilterFocus" => {
+            "filterfocus" => {
                 if self.server_mode {
                     self.focus = Focus::FilterPane;
                     self.filter_focus = FilterFocus::TimePreset;
@@ -894,11 +896,11 @@ impl App {
                     Err("not in server mode".into())
                 }
             }
-            "Help" => {
+            "help" => {
                 self.mode = AppMode::Help;
                 Ok("help opened".into())
             }
-            "Delta" => {
+            "delta" => {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }
@@ -928,13 +930,17 @@ impl App {
                     ["KB", "MB", "GB"][unit]
                 ))
             }
-            "Time" => {
+            "time" => {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }
-                let arg = parts
-                    .get(1)
-                    .ok_or("usage: Time <N>[h|d|w] | <from> to <to>")?;
+                let arg = match parts.get(1) {
+                    Some(a) => *a,
+                    None => {
+                        self.mode = AppMode::TimeHelp;
+                        return Ok("time help opened".into());
+                    }
+                };
                 let rest: String = parts[1..].join(" ");
 
                 // Split on " to " (case-insensitive)
@@ -1018,13 +1024,13 @@ impl App {
                     Ok(format!("time range: in {}", self.time_custom_label))
                 }
             }
-            "Scan" => {
+            "scan" => {
                 if self.scanning {
                     return Err("already scanning".into());
                 }
                 Ok("scan started".into())
             }
-            "Consolidate" => {
+            "consolidate" => {
                 if !self.server_mode {
                     return Err("not in server mode".into());
                 }

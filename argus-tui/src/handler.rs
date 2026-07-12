@@ -18,6 +18,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::DeletePrompt => handle_delete_prompt_key(key, app),
         AppMode::DeletePermanentPrompt => handle_delete_permanent_prompt_key(key, app),
         AppMode::Help => handle_help_key(key, app),
+        AppMode::TimeHelp => handle_time_help_key(key, app),
         AppMode::Command => handle_command_key(key, app),
     }
 }
@@ -316,6 +317,15 @@ fn handle_delete_permanent_prompt_key(key: KeyEvent, app: &mut App) {
 fn handle_help_key(key: KeyEvent, app: &mut App) {
     match key.code {
         KeyCode::Char('?') | KeyCode::Esc => {
+            app.mode = AppMode::Browsing;
+        }
+        _ => {}
+    }
+}
+
+fn handle_time_help_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Esc => {
             app.mode = AppMode::Browsing;
         }
         _ => {}

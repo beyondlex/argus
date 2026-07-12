@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::{App, AppMode, FilterFocus, SearchMode, Focus, DELTA_UNIT_LABELS};
-use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar};
+use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
 use crate::handler;
 use crate::util::key_hints;
 use crossterm::event::{self, Event};
@@ -198,6 +198,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Help => help_popup::render(f, area),
+        AppMode::TimeHelp => time_help::render(f, area),
         AppMode::Command => {
             command_bar::render(
                 f,
