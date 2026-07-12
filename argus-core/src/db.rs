@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
 
-use crate::model::DeltaEntry;
+use crate::model::{DeltaEntry, DeltaSummary};
 
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
@@ -125,6 +125,55 @@ pub fn query_delta_detail(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(entries)
+}
+
+/// Summarize raw delta events for a path prefix and time window.
+///
+/// This is a diagnostic aggregate: it does not expand row-by-row items, so it is
+/// suitable for checking whether deletes were recorded and how much churn a
+/// subtree produced.
+pub fn query_delta_summary(
+    conn: &Connection,
+    path: &Path,
+    from_ms: u64,
+    to_ms: u64,
+) -> Result<DeltaSummary, DbError> {
+    let path_str = path.to_string_lossy();
+    let prefix = format!("{}/%", path_str);
+    conn.query_row(
+        "SELECT
+            COUNT(*) AS event_count,
+            COALESCE(SUM(CASE WHEN event_type = 'create' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN event_type = 'modify' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN event_type = 'delete' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN is_agg = 1 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN delta_size > 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN delta_size < 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN delta_size = 0 THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(delta_size), 0),
+            COALESCE(SUM(CASE WHEN delta_size > 0 THEN delta_size ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN delta_size < 0 THEN delta_size ELSE 0 END), 0)
+         FROM delta_events
+         WHERE (path = ?1 OR path LIKE ?2)
+           AND timestamp >= ?3 AND timestamp <= ?4",
+        params![path_str.as_ref(), prefix, from_ms, to_ms],
+        |row| {
+            Ok(DeltaSummary {
+                event_count: row.get::<_, u64>(0)?,
+                create_count: row.get::<_, u64>(1)?,
+                modify_count: row.get::<_, u64>(2)?,
+                delete_count: row.get::<_, u64>(3)?,
+                agg_count: row.get::<_, u64>(4)?,
+                positive_events: row.get::<_, u64>(5)?,
+                negative_events: row.get::<_, u64>(6)?,
+                zero_events: row.get::<_, u64>(7)?,
+                total_delta: row.get::<_, i64>(8)?,
+                positive_delta: row.get::<_, i64>(9)?,
+                negative_delta: row.get::<_, i64>(10)?,
+            })
+        },
+    )
+    .map_err(DbError::from)
 }
 
 pub fn insert_events(conn: &Connection, events: &[DeltaEntry]) -> Result<(), DbError> {
@@ -376,6 +425,49 @@ mod tests {
         let entries = query_delta_detail(&conn, Path::new("/tmp/test.txt"), 1500, 2500).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].delta_size, 50);
+    }
+
+    #[test]
+    fn test_query_delta_summary() {
+        let (mut conn, _) = setup_db();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/file_a.txt"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/file_a.txt"),
+                delta_size: 50,
+                event_type: "modify".into(),
+                timestamp: 2000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/file_b.txt"),
+                delta_size: -25,
+                event_type: "delete".into(),
+                timestamp: 2500,
+                is_agg: false,
+            },
+        ];
+        insert_events(&conn, &events).unwrap();
+
+        let summary = query_delta_summary(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
+        assert_eq!(summary.event_count, 3);
+        assert_eq!(summary.create_count, 1);
+        assert_eq!(summary.modify_count, 1);
+        assert_eq!(summary.delete_count, 1);
+        assert_eq!(summary.agg_count, 0);
+        assert_eq!(summary.positive_events, 2);
+        assert_eq!(summary.negative_events, 1);
+        assert_eq!(summary.zero_events, 0);
+        assert_eq!(summary.total_delta, 125);
+        assert_eq!(summary.positive_delta, 150);
+        assert_eq!(summary.negative_delta, -25);
     }
 
     #[test]

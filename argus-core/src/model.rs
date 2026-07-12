@@ -189,6 +189,21 @@ pub struct DeltaEntry {
     pub is_agg: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeltaSummary {
+    pub event_count: u64,
+    pub create_count: u64,
+    pub modify_count: u64,
+    pub delete_count: u64,
+    pub agg_count: u64,
+    pub positive_events: u64,
+    pub negative_events: u64,
+    pub zero_events: u64,
+    pub total_delta: i64,
+    pub positive_delta: i64,
+    pub negative_delta: i64,
+}
+
 pub const SNAPSHOT_VERSION: u32 = 2;
 
 pub fn hash_root_path(path: &Path) -> String {
