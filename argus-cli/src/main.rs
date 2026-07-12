@@ -7,13 +7,21 @@ use clap::{Parser, Subcommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use argus_core::{scan_path, DaemonRequest, DaemonResponse, NodeIndex, ROOT_NODE};
+use argus_core::{
+    default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
+    DeltaSummary, NodeIndex, ROOT_NODE,
+};
 
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Scan { path } => cmd_scan(path),
+        Commands::DeltaSummary {
+            path,
+            from_ms,
+            to_ms,
+        } => cmd_delta_summary(path, *from_ms, *to_ms),
         Commands::Help => cmd_help(),
         Commands::Consolidate => cmd_consolidate(),
     };
@@ -28,6 +36,7 @@ fn main() {
 }
 
 #[derive(Parser)]
+#[command(disable_help_subcommand = true)]
 #[command(name = "argus", version, about = "Disk usage scanner")]
 struct Cli {
     #[command(subcommand)]
@@ -40,6 +49,15 @@ enum Commands {
     Scan {
         #[arg(long, help = "Path to scan")]
         path: PathBuf,
+    },
+    /// Print a delta summary for a path without listing items.
+    DeltaSummary {
+        #[arg(long, help = "Path to summarize")]
+        path: PathBuf,
+        #[arg(long, help = "Inclusive lower bound timestamp in milliseconds")]
+        from_ms: Option<u64>,
+        #[arg(long, help = "Inclusive upper bound timestamp in milliseconds")]
+        to_ms: Option<u64>,
     },
     /// Print usage information.
     Help,
@@ -72,6 +90,7 @@ fn cmd_help() -> Result<i32> {
     println!();
     println!("Commands:");
     println!("  scan --path <PATH>    Scan a path and print summary");
+    println!("  delta-summary --path <PATH>  Print delta summary for a path");
     println!("  help                  Print this help text");
     println!("  consolidate           Request daemon to consolidate delta events");
     println!();
@@ -84,6 +103,21 @@ fn cmd_help() -> Result<i32> {
     println!("  :Time <from> to <to> Set time range (absolute or mixed)");
     println!("  :Consolidate          Request event consolidation");
     println!("  :Help                 Show help overlay");
+    Ok(0)
+}
+
+fn cmd_delta_summary(path: &PathBuf, from_ms: Option<u64>, to_ms: Option<u64>) -> Result<i32> {
+    let path = std::fs::canonicalize(path)
+        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
+    let db_path = default_db_path();
+    let conn =
+        open_db(&db_path).with_context(|| format!("failed to open {}", db_path.display()))?;
+    let from_ms = from_ms.unwrap_or(0);
+    let to_ms = to_ms.unwrap_or(i64::MAX as u64);
+    let summary = query_delta_summary(&conn, &path, from_ms, to_ms)
+        .with_context(|| format!("failed to query summary for {}", path.display()))?;
+
+    print_delta_summary(&path, from_ms, to_ms, &summary);
     Ok(0)
 }
 
@@ -154,4 +188,33 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.2} {}", size, UNITS[unit_idx])
     }
+}
+
+fn format_signed_size(bytes: i64) -> String {
+    let sign = if bytes < 0 { "-" } else { "+" };
+    let abs = bytes.unsigned_abs();
+    format!("{sign}{}", format_size(abs))
+}
+
+fn print_delta_summary(path: &PathBuf, from_ms: u64, to_ms: u64, summary: &DeltaSummary) {
+    println!("delta summary path: {}", path.display());
+    println!("window: {}..{}", from_ms, to_ms);
+    println!("events: {}", summary.event_count);
+    println!(
+        "create/modify/delete/agg: {}/{}/{}/{}",
+        summary.create_count, summary.modify_count, summary.delete_count, summary.agg_count
+    );
+    println!(
+        "positive/negative/zero events: {}/{}/{}",
+        summary.positive_events, summary.negative_events, summary.zero_events
+    );
+    println!("total delta: {}", format_signed_size(summary.total_delta));
+    println!(
+        "positive delta: {}",
+        format_signed_size(summary.positive_delta)
+    );
+    println!(
+        "negative delta: {}",
+        format_signed_size(summary.negative_delta)
+    );
 }

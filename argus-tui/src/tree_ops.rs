@@ -104,8 +104,10 @@ pub fn expand_node(app: &mut App) {
         }
     }
 
-    app.expanded.insert(path_key);
-    app.update_tree_lines();
+    app.expanded.insert(path_key.clone());
+    if !app.expand_path_in_tree(&path_key) {
+        app.update_tree_lines();
+    }
 }
 
 pub fn collapse_or_navigate_up(app: &mut App) {
@@ -287,8 +289,11 @@ pub(crate) fn flatten_snapshot_tree(
     let path_key = path.clone();
     let is_expanded = depth == 0 || expanded.contains(&path_key);
 
-    let node_has_scan =
-        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some();
+    let node_has_scan = if node.is_dir {
+        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some()
+    } else {
+        false
+    };
 
     lines.push(TreeLine {
         depth,
