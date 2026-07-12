@@ -1,6 +1,43 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ratatui::style::{Color, Style};
+use ratatui::text::Span;
+
+/// Map common key names to symbolic representations
+pub fn key_symbol(key: &'static str) -> &'static str {
+    match key {
+        "Tab" => "⇥",
+        "S-Tab" => "⇧⇥",
+        "Esc" => "⎋",
+        "Enter" => "⏎",
+        _ => key,
+    }
+}
+
+/// Create a styled key hint pair: `key` (green) `label` (DarkGray)
+pub fn key_hint(key: &'static str, label: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            format!(" {}", key_symbol(key)),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(format!(" {} ", label), Style::default().fg(Color::DarkGray)),
+    ]
+}
+
+/// Create a sequence of key hint pairs separated by double spaces
+pub fn key_hints(hints: &[(&'static str, &str)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.extend(key_hint(key, label));
+    }
+    spans
+}
+
 /// Format bytes into human-readable string (e.g., "1.5 GB", "800 KB")
 pub fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];

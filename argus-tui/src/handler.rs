@@ -98,6 +98,9 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     }
 
     match key.code {
+        KeyCode::Char('c') => {
+            app.clear_filter_pane();
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             move_cursor(app, 1);
         }
@@ -327,6 +330,28 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             };
             app.filter_focus = next;
         }
+        KeyCode::Char(ch) if ch.is_ascii_digit() && app.filter_focus == FilterFocus::DeltaValue => {
+            let digit = (ch as u8 - b'0') as u64;
+            if app.delta_filter_active {
+                app.delta_filter_value = app
+                    .delta_filter_value
+                    .saturating_mul(10)
+                    .saturating_add(digit);
+            } else {
+                app.delta_filter_active = true;
+                app.delta_filter_value = digit;
+            }
+            app.refresh_filtered_lines();
+        }
+        KeyCode::Backspace
+            if app.filter_focus == FilterFocus::DeltaValue && app.delta_filter_active =>
+        {
+            app.delta_filter_value /= 10;
+            if app.delta_filter_value == 0 {
+                app.delta_filter_active = false;
+            }
+            app.refresh_filtered_lines();
+        }
         KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
             FilterFocus::TimePreset => {
                 let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
@@ -364,6 +389,12 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
         },
         KeyCode::Char('c') => {
             app.clear_filter_pane();
+        }
+        KeyCode::Enter => {
+            if app.filter_focus == FilterFocus::DeltaValue && app.delta_filter_active {
+                app.refresh_filtered_lines();
+            }
+            app.focus = Focus::Tree;
         }
         KeyCode::Esc => {
             app.focus = Focus::Tree;

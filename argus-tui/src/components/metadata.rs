@@ -13,6 +13,7 @@ use ratatui::{
 
 use crate::components::help_popup::centered_rect;
 use crate::util;
+use crate::util::key_hints;
 
 /// Render a centered popup with file metadata
 pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metadata) {
@@ -83,10 +84,7 @@ pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metada
             Span::styled(perm_str, Style::default().fg(Color::White)),
         ]),
         Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            "[Esc] Close",
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(key_hints(&[("Esc", "Close")])),
     ];
 
     let text = Paragraph::new(lines).block(block);

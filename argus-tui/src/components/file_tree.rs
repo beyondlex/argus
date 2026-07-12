@@ -11,6 +11,7 @@ use ratatui::{
 
 use crate::app::{fuzzy_match_indices, FilterMode, SearchMatch, SortMode, TreeLine};
 use crate::util;
+use crate::util::key_hints;
 
 const SCROLL_MARGIN: usize = 3;
 
@@ -32,11 +33,7 @@ pub fn render(
     focus: bool,
     delta_cache: Option<&HashMap<Vec<String>, i64>>,
 ) {
-    let title = if delta_cache.is_some() {
-        format!(" {}  [Δ column] ", view_root_path.display())
-    } else {
-        format!(" {} ", view_root_path.display())
-    };
+    let title = format!(" {} ", view_root_path.display());
     let title_style = Style::default().fg(if focus { Color::Magenta } else { Color::Gray });
     let border_style = Style::default().fg(if focus {
         Color::Magenta
@@ -154,18 +151,21 @@ fn filter_status_line<'a>(
             ])
         }
         FilterMode::Active => {
-            let count = format!(
-                " ({}/{})  [n]next  [N]prev [ESC]clear [Enter]edit ",
-                match_indices.len(),
-                lines.len()
-            );
-            Line::from(vec![
+            let count = format!(" ({}/{}) ", match_indices.len(), lines.len());
+            let mut spans: Vec<Span> = vec![
                 Span::styled(
                     format!("  {}", filter_word.to_string()),
                     Style::default().fg(Color::Green),
                 ),
-                Span::styled(count, Style::default().fg(Color::Magenta)),
-            ])
+                Span::styled(count, Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend(key_hints(&[
+                ("n", "next"),
+                ("N", "prev"),
+                ("Esc", "clear"),
+                ("Enter", "edit"),
+            ]));
+            Line::from(spans)
         }
     }
 }

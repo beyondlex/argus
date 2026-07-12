@@ -6,6 +6,8 @@ use ratatui::{
     Frame,
 };
 
+use crate::util::key_hints;
+
 /// Render the help popup overlay
 pub fn render(f: &mut Frame, area: Rect) {
     let popup_area = centered_rect(60, 80, area);
@@ -28,66 +30,24 @@ pub fn render(f: &mut Frame, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled("j/k          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Move cursor up/down"),
-        ]),
-        Line::from(vec![
-            Span::styled("h            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Collapse directory"),
-        ]),
-        Line::from(vec![
-            Span::styled("H            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Collapse all directories"),
-        ]),
-        Line::from(vec![
-            Span::styled("u            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Go to parent directory"),
-        ]),
-        Line::from(vec![
-            Span::styled("l / Right   ", Style::default().fg(Color::Yellow)),
-            Span::raw("Expand directory / enter child"),
-        ]),
-        Line::from(vec![
-            Span::styled("Enter       ", Style::default().fg(Color::Yellow)),
-            Span::raw("Edit filter word"),
-        ]),
-        Line::from(vec![
-            Span::styled(".            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Set cursor dir as tree root"),
-        ]),
-        Line::from(vec![
-            Span::styled("s            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Scan directory"),
-        ]),
-        Line::from(vec![
-            Span::styled("o            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle sort mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("d            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Delete selected item"),
-        ]),
-        Line::from(vec![
-            Span::styled("Tab          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Focus next panel"),
-        ]),
-        Line::from(vec![
-            Span::styled("/            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Filter items in tree"),
-        ]),
-        Line::from(vec![
-            Span::styled("n/N          ", Style::default().fg(Color::Yellow)),
-            Span::raw("Next/prev match (with filter)"),
-        ]),
-        Line::from(vec![
-            Span::styled("?            ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle this help"),
-        ]),
-        Line::from(vec![
-            Span::styled("q / Ctrl+C  ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit"),
-        ]),
+        Line::from(key_hints(&[("j/k", "Move cursor up/down")])),
+        Line::from(key_hints(&[("h", "Collapse directory")])),
+        Line::from(key_hints(&[("H", "Collapse all directories")])),
+        Line::from(key_hints(&[("u", "Go to parent directory")])),
+        Line::from(key_hints(&[(
+            "l / Right",
+            "Expand directory / enter child",
+        )])),
+        Line::from(key_hints(&[("Enter", "Edit filter word")])),
+        Line::from(key_hints(&[(".", "Set cursor dir as tree root")])),
+        Line::from(key_hints(&[("s", "Scan directory")])),
+        Line::from(key_hints(&[("o", "Toggle sort mode")])),
+        Line::from(key_hints(&[("d", "Delete selected item")])),
+        Line::from(key_hints(&[("Tab", "Focus next panel")])),
+        Line::from(key_hints(&[("/", "Filter items in tree")])),
+        Line::from(key_hints(&[("n/N", "Next/prev match (with filter)")])),
+        Line::from(key_hints(&[("?", "Toggle this help")])),
+        Line::from(key_hints(&[("q / Ctrl+C", "Quit")])),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
             "Sort Modes:",
@@ -113,10 +73,7 @@ pub fn render(f: &mut Frame, area: Rect) {
         )]),
         Line::from(vec![Span::raw("  Press 'Clear' to reset filters")]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled(
-            "Press ? or Esc to close",
-            Style::default().fg(Color::DarkGray),
-        )]),
+        Line::from(key_hints(&[("? / Esc", "Close")])),
     ];
 
     let text = Paragraph::new(lines)

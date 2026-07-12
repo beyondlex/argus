@@ -1,12 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event};
-use ratatui::Frame;
-
 use crate::app::{App, AppMode, FilterFocus, FilterMode, Focus, DELTA_UNIT_LABELS};
 use crate::components::{file_tree, help_popup, metadata, status_bar};
 use crate::handler;
+use crate::util::key_hints;
+use crossterm::event::{self, Event};
+use ratatui::layout::Alignment;
+use ratatui::Frame;
 
 pub static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
 
@@ -210,7 +211,7 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
         widgets::Paragraph,
     };
 
-    let line = Line::from(vec![
+    let mut header_spans: Vec<Span> = vec![
         Span::styled(
             " Argus v0.1.0 ",
             Style::default()
@@ -218,10 +219,9 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("[?] Help", Style::default().fg(Color::DarkGray)),
-        Span::raw("  "),
-        Span::styled("[Q] Quit", Style::default().fg(Color::DarkGray)),
-    ]);
+    ];
+    header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")]));
+    let line = Line::from(header_spans);
     f.render_widget(Paragraph::new(line), area);
 }
 
@@ -240,38 +240,42 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     } else {
         Color::DarkGray
     });
+
+    let hint: Vec<Span> = if is_focused {
+        key_hints(&[("Tab", "cycle"), ("Esc", "Files"), ("c", "Clear")])
+    } else {
+        key_hints(&[("f", "Focus"), ("c", "Clear")])
+    };
+
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(border_style);
+        .border_style(border_style)
+        .title(Line::from(hint))
+        .title_alignment(Alignment::Right);
     let inner = block.inner(area);
 
     let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
-    let time_label_len = time_label.len();
+    let _time_label_len = time_label.len();
+    let default_bg = Color::Black;
     let time_style = if is_focused && app.filter_focus == FilterFocus::TimePreset {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::White).bg(Color::Black)
+        Style::default().fg(Color::White).bg(default_bg)
     };
 
     let delta_value_style = if is_focused && app.filter_focus == FilterFocus::DeltaValue {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::Yellow).bg(Color::Black)
+        Style::default().fg(Color::Yellow).bg(default_bg)
     };
 
     let delta_unit_style = if is_focused && app.filter_focus == FilterFocus::DeltaUnit {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
-        Style::default().fg(Color::Cyan).bg(Color::Black)
+        Style::default().fg(Color::Cyan).bg(default_bg)
     };
 
-    let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
-
-    let hint = format!(
-        " [{}]Focus [Tab]cycle [c]Clear ",
-        if is_focused { "Esc" } else { "f" }
-    );
-    let hint_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
+    let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(default_bg);
 
     let line = Line::from(vec![
         Span::styled(time_label, time_style),
@@ -298,17 +302,17 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             },
             delta_unit_style,
         ),
-        Span::styled(
-            " ".repeat(
-                (inner.width as usize)
-                    .saturating_sub(3 + time_label_len + 2 + 9 + 6 + 2 + hint.len()),
-            ),
-            Style::default().bg(Color::Black),
-        ),
-        Span::styled(hint, hint_style),
+        // Span::styled(
+        //     " ".repeat(
+        //         (inner.width as usize)
+        //             .saturating_sub(3 + time_label_len + 2 + 9 + 6 + 2 + hint.len()),
+        //     ),
+        //     Style::default().bg(default_bg),
+        // ),
+        // Span::styled(hint, hint_style),
     ]);
     f.render_widget(
-        Paragraph::new(line).style(Style::default().bg(Color::Black)),
+        Paragraph::new(line).style(Style::default().bg(default_bg)),
         inner,
     );
     f.render_widget(block, area);
@@ -363,23 +367,7 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
             Style::default().fg(Color::White),
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled(
-                "y",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" - {}  ", confirm_label),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                "n",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" - Cancel", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])),
     ])
     .block(block)
     .alignment(Alignment::Center);

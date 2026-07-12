@@ -187,6 +187,7 @@ pub struct App {
     pub delta_filter_active: bool,
     pub delta_filter_value: u64,
     pub delta_filter_unit: usize, // 0=KB, 1=MB, 2=GB
+    pub delta_pending: bool,
     pub filtered_tree_lines: Vec<usize>,
 
     // Tree filter (fuzzy search)
@@ -263,6 +264,7 @@ impl App {
             delta_filter_active: false,
             delta_filter_value: 100,
             delta_filter_unit: 1,
+            delta_pending: false,
             filtered_tree_lines: Vec::new(),
             filter_word: String::new(),
             filter_mode: FilterMode::Inactive,
@@ -405,6 +407,7 @@ impl App {
                 self.request_delta_refresh();
             }
             AppMessage::DeltaData(deltas) => {
+                self.delta_pending = false;
                 self.delta_cache = deltas;
                 self.refresh_filtered_lines();
             }
@@ -550,7 +553,7 @@ impl App {
             .map(|line| line.path.clone())
     }
 
-    /// Set time range preset (0=1h, 1=6h, 2=12h, 3=24h, 4=1d, 5=3d, 6=7d)
+    /// Set time range preset (0=1h, 1=6h, 2=12h, 3=1d, 4=3d, 5=7d)
     pub fn set_time_preset(&mut self, preset: usize) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -562,10 +565,9 @@ impl App {
             0 => now.saturating_sub(3_600_000),   // 1h
             1 => now.saturating_sub(21_600_000),  // 6h
             2 => now.saturating_sub(43_200_000),  // 12h
-            3 => now.saturating_sub(86_400_000),  // 24h
-            4 => now.saturating_sub(86_400_000),  // 1d (same as 24h)
-            5 => now.saturating_sub(259_200_000), // 3d
-            6 => now.saturating_sub(604_800_000), // 7d
+            3 => now.saturating_sub(86_400_000),  // 1d (same as 24h)
+            4 => now.saturating_sub(259_200_000), // 3d
+            5 => now.saturating_sub(604_800_000), // 7d
             _ => now.saturating_sub(3_600_000),
         };
     }
@@ -579,10 +581,9 @@ impl App {
             0 => "1h",
             1 => "6h",
             2 => "12h",
-            3 => "24h",
-            4 => "1d",
-            5 => "3d",
-            6 => "7d",
+            3 => "1d",
+            4 => "3d",
+            5 => "7d",
             _ => "1h",
         }
     }
@@ -661,6 +662,9 @@ impl App {
 
     /// Request delta data from daemon — single query to root path, build full map locally
     pub fn request_delta_refresh(&mut self) {
+        if self.delta_pending {
+            return;
+        }
         let view_root = self.view_root_path.clone();
         if !view_root.exists() {
             return;
@@ -668,46 +672,52 @@ impl App {
         let from = self.time_from;
         let to = self.time_to;
         let tx = self.tx.clone();
-        let uds = crate::config::TuiConfig::default().daemon.uds_path.clone();
+        let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
+        self.delta_pending = true;
         tokio::spawn(async move {
-            let mut client = match IpcClient::connect(&uds).await {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            // Single query: get all entries under root path (prefix matching in daemon)
-            let (_total, entries) = match client.get_delta(&view_root, from, to).await {
-                Ok(r) => r,
-                Err(_) => return,
-            };
-            // Sum entries by path to get per-file delta
-            let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
-            for entry in &entries {
-                *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
-            }
-            // Build tree-path-keyed delta map, propagating to ancestors
-            let mut deltas: HashMap<Vec<String>, i64> = HashMap::new();
-            for (abs_path, delta) in &file_deltas {
-                // Convert absolute path to tree path components (relative to root)
-                let relative = abs_path.strip_prefix(&view_root).ok();
-                let Some(relative) = relative else { continue };
-                let mut components: Vec<String> = Vec::new();
-                components.push(
-                    view_root
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                );
-                for comp in relative.components() {
-                    components.push(comp.as_os_str().to_string_lossy().to_string());
-                }
-                // Propagate to all ancestors
-                for i in 1..=components.len() {
-                    let ancestor = components[..i].to_vec();
-                    *deltas.entry(ancestor).or_insert(0) += delta;
-                }
-            }
+            let deltas = Self::fetch_deltas(&uds_path, &view_root, from, to).await;
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
         });
+    }
+
+    async fn fetch_deltas(
+        uds: &str,
+        view_root: &std::path::Path,
+        from: u64,
+        to: u64,
+    ) -> HashMap<Vec<String>, i64> {
+        let mut client = match IpcClient::connect(uds).await {
+            Ok(c) => c,
+            Err(_) => return HashMap::new(),
+        };
+        let (_total, entries) = match client.get_delta(view_root, from, to).await {
+            Ok(r) => r,
+            Err(_) => return HashMap::new(),
+        };
+        let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
+        for entry in &entries {
+            *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
+        }
+        let mut deltas: HashMap<Vec<String>, i64> = HashMap::new();
+        for (abs_path, delta) in &file_deltas {
+            let relative = abs_path.strip_prefix(view_root).ok();
+            let Some(relative) = relative else { continue };
+            let mut components: Vec<String> = Vec::new();
+            components.push(
+                view_root
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            );
+            for comp in relative.components() {
+                components.push(comp.as_os_str().to_string_lossy().to_string());
+            }
+            for i in 1..=components.len() {
+                let ancestor = components[..i].to_vec();
+                *deltas.entry(ancestor).or_insert(0) += delta;
+            }
+        }
+        deltas
     }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();

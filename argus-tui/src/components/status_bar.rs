@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::{AppMode, ScanSummary};
 use crate::util;
+use crate::util::key_hints;
 use std::path::Path;
 use std::time::Duration;
 
@@ -46,7 +47,10 @@ pub fn render(
     }
 
     if scanning {
-        left_spans.push(Span::raw(" | "));
+        left_spans.push(Span::styled(
+            format!("  {}", SPINNER_FRAMES[scan_spinner as usize]),
+            Style::default().fg(Color::Yellow),
+        ));
         left_spans.push(Span::styled(
             util::display_path(view_root_path),
             Style::default().fg(Color::Gray),
@@ -74,16 +78,9 @@ pub fn render(
             ),
             Style::default().fg(Color::Yellow),
         ));
-        left_spans.push(Span::styled(
-            format!("  {}", SPINNER_FRAMES[scan_spinner as usize]),
-            Style::default().fg(Color::Yellow),
-        ));
-        left_spans.push(Span::styled(
-            " (press esc cancel)",
-            Style::default().fg(Color::DarkGray),
-        ));
+        left_spans.extend(key_hints(&[("Esc", "cancel")]));
     } else if let Some(summary) = scan_summary {
-        left_spans.push(Span::raw(" | "));
+        left_spans.push(Span::raw("   "));
         left_spans.push(Span::styled(
             util::display_path(&summary.root_path),
             Style::default().fg(Color::Gray),
@@ -116,7 +113,7 @@ pub fn render(
     }
 
     if let Some(err) = has_error {
-        left_spans.push(Span::raw(" | "));
+        left_spans.push(Span::raw("   "));
         left_spans.push(Span::styled(
             err,
             Style::default().fg(Color::Red).bg(Color::Black),
@@ -135,7 +132,7 @@ pub fn render(
         } else {
             Color::Red
         };
-        left_spans.push(Span::raw(" | "));
+        left_spans.push(Span::raw("   "));
         left_spans.push(Span::styled(status, Style::default().fg(status_color)));
     }
 
