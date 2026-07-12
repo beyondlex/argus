@@ -19,6 +19,18 @@ fn section(text: &str) -> Span<'static> {
 
 fn all_lines() -> Vec<Line<'static>> {
     vec![
+
+        Line::from(vec![section("Examples:")]),
+        Line::from(vec![Span::raw("  :time 1w")]),
+        Line::from(vec![Span::raw("  :time 1w to 3d")]),
+        Line::from(vec![Span::raw("  :time 06-12 12:00 to 13:00")]),
+        Line::from(vec![Span::raw("  :time 06-12 to 06-13")]),
+        Line::from(vec![Span::raw(
+            "  :time 6-12 12:00 to 06-13 12:00",
+        )]),
+        Line::from(vec![Span::raw("  :time 12:00 to 13:00")]),
+        Line::from(vec![Span::raw("")]),
+        
         Line::from(vec![section("Usage:")]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::raw(
@@ -27,7 +39,7 @@ fn all_lines() -> Vec<Line<'static>> {
         Line::from(vec![Span::raw(
             "  :Time <from> to <to>     range with 'to' separator",
         )]),
-        Line::from(vec![Span::raw("")]),
+
         Line::from(vec![section("Duration formats:")]),
         Line::from(vec![Span::raw("  <N>      N hours (e.g. 1, 24)")]),
         Line::from(vec![Span::raw("  <N>h     N hours (e.g. 1h, 12h)")]),
@@ -43,17 +55,6 @@ fn all_lines() -> Vec<Line<'static>> {
             "  HH:MM            time only (inherits date from left, or today)",
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![section("Examples:")]),
-        Line::from(vec![Span::raw("  :time 1w")]),
-        Line::from(vec![Span::raw("  :time 1w to 3d")]),
-        Line::from(vec![Span::raw("  :time 06-12 12:00 to 13:00")]),
-        Line::from(vec![Span::raw("  :time 06-12 to 06-13")]),
-        Line::from(vec![Span::raw(
-            "  :time 6-12 12:00 to 06-13 12:00",
-        )]),
-        Line::from(vec![Span::raw("  :time 12:00 to 13:00")]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(key_hints(&[("j/k", "scroll"), ("Esc", "Close")])),
     ]
 }
 
@@ -99,8 +100,10 @@ pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
+        .title_style(Style::default().fg(Color::Cyan))
         .title_alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Cyan).bg(Color::Black));
+        .title_bottom(key_hints(&[("j/k", "scroll"), ("Esc", "Close")]))
+        .style(Style::default().fg(Color::Gray).bg(Color::Black));
 
     let text = Paragraph::new(visible_lines)
         .block(block)
