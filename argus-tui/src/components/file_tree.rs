@@ -101,7 +101,7 @@ pub fn render(
         search_word,
         cursor_visible,
         match_indices,
-        tree_lines,
+        filtered_indices.len(),
     );
 
     let status_area = Rect {
@@ -169,7 +169,7 @@ fn search_status_line<'a>(
     search_word: &'a str,
     cursor_visible: bool,
     match_indices: &'a [SearchMatch],
-    lines: &'a [TreeLine],
+    total_visible: usize,
 ) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
     match search_mode {
         SearchMode::Inactive => (
@@ -182,7 +182,7 @@ fn search_status_line<'a>(
         SearchMode::Input => {
             let mut display = search_word.to_string();
             display.push(if cursor_visible { '▎' } else { ' ' });
-            let count = format!(" ({}/{})", match_indices.len(), lines.len());
+            let count = format!(" ({}/{})", match_indices.len(), total_visible);
             (
                 vec![
                     Span::styled(format!("  {display}"), Style::default().fg(Color::Yellow)),
@@ -192,7 +192,7 @@ fn search_status_line<'a>(
             )
         }
         SearchMode::Active => {
-            let count = format!(" ({}/{}) ", match_indices.len(), lines.len());
+            let count = format!(" ({}/{}) ", match_indices.len(), total_visible);
             let left = vec![
                 Span::styled(
                     format!("  {}", search_word.to_string()),

@@ -813,6 +813,15 @@ impl App {
         if self.cursor >= self.filtered_tree_lines.len() && !self.filtered_tree_lines.is_empty() {
             self.cursor = self.filtered_tree_lines.len() - 1;
         }
+        // Keep search matches in sync: only show matches that are in the filtered view
+        if !self.match_indices.is_empty() {
+            let visible: HashSet<usize> = self.filtered_tree_lines.iter().copied().collect();
+            self.match_indices
+                .retain(|m| m.tree_idx.is_some_and(|idx| visible.contains(&idx)));
+            self.current_match = self
+                .current_match
+                .min(self.match_indices.len().saturating_sub(1));
+        }
     }
     /// Get the current delta filter threshold in bytes, or 0 if inactive
     pub fn delta_filter_threshold(&self) -> u64 {

@@ -908,12 +908,34 @@ fn jump_to_next_match(app: &mut App, delta: isize) {
         .iter()
         .position(|line| line.path == target_path)
     {
-        // Map tree_lines position to filtered view position
-        app.cursor = app
-            .filtered_tree_lines
+        // Map tree_lines position to filtered view position.
+        // If this match was filtered out, skip to the next visible match.
+        if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
+            app.cursor = cursor_pos;
+            return;
+        }
+    }
+
+    // Current match is not in the filtered view — find the next visible match
+    let total = app.match_indices.len();
+    for offset in 1..total {
+        let try_idx = if delta >= 0 {
+            (new_idx + offset) % total
+        } else {
+            (new_idx + total - offset) % total
+        };
+        let try_path = &app.match_indices[try_idx].path;
+        if let Some(pos) = app
+            .tree_lines
             .iter()
-            .position(|&i| i == pos)
-            .unwrap_or(0);
+            .position(|line| line.path == *try_path)
+        {
+            if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
+                app.current_match = try_idx;
+                app.cursor = cursor_pos;
+                return;
+            }
+        }
     }
 }
 
