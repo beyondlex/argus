@@ -239,6 +239,23 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('q') => {
             app.should_quit = true;
         }
+        KeyCode::Char('y') => {
+            if let Some(path) = app.selected_node_full_path() {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => {
+                        let path_str = path.display().to_string();
+                        if cb.set_text(path_str.clone()).is_ok() {
+                            app.set_error(format!("copied: {}", path_str), 2);
+                        } else {
+                            app.set_error("clipboard write failed".into(), 3);
+                        }
+                    }
+                    Err(_) => {
+                        app.set_error("clipboard unavailable".into(), 3);
+                    }
+                }
+            }
+        }
         KeyCode::Char('f') if app.server_mode => {
             app.focus = Focus::FilterPane;
             app.filter_focus = FilterFocus::TimePreset;
