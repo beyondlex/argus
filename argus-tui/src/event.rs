@@ -141,10 +141,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
     // Header
     render_header(f, chunks[0]);
 
-    // Filter pane (only when in server mode with delta data)
-    if app.server_mode {
-        render_filter_pane(f, chunks[1], app);
-    }
+    // Filter pane (always shown)
+    render_filter_pane(f, chunks[1], app);
 
     // Main content: tree takes full width
     let main_chunks = Layout::default()
@@ -269,9 +267,44 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .title_alignment(Alignment::Right);
     let inner = block.inner(area);
 
+    let default_bg = Color::Black;
+
+    let server_status = if app.server_mode {
+        if app.server_connected {
+            Span::styled(
+                " ● Daemon",
+                Style::default().fg(Color::Green).bg(default_bg),
+            )
+        } else {
+            Span::styled(" ○ Daemon", Style::default().fg(Color::Red).bg(default_bg))
+        }
+    } else {
+        Span::styled(
+            " R → Daemon",
+            Style::default().fg(Color::DarkGray).bg(default_bg),
+        )
+    };
+
+    if !app.server_mode {
+        let line = Line::from(vec![
+            Span::styled(" ", Style::default().bg(default_bg)),
+            Span::styled(
+                "Press R to connect to daemon",
+                Style::default().fg(Color::DarkGray).bg(default_bg),
+            ),
+            Span::raw(" ".repeat((inner.width as usize).saturating_sub(28).saturating_sub(12))),
+            server_status,
+        ]);
+        f.render_widget(
+            Paragraph::new(line).style(Style::default().bg(default_bg)),
+            inner,
+        );
+        f.render_widget(block, area);
+        return;
+    }
+
     let time_label = format!(" Time: in {} ", App::time_preset_label(app.time_preset));
     let _time_label_len = time_label.len();
-    let default_bg = Color::Black;
     let time_style = if is_focused && app.filter_focus == FilterFocus::TimePreset {
         Style::default().fg(Color::Black).bg(Color::LightYellow)
     } else {
@@ -292,7 +325,9 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(default_bg);
 
-    let line = Line::from(vec![
+    let content_width = inner.width as usize;
+
+    let left = vec![
         Span::styled(time_label, time_style),
         Span::raw("  "),
         Span::styled("+Size: >=", delta_prefix_style),
@@ -317,15 +352,15 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             },
             delta_unit_style,
         ),
-        // Span::styled(
-        //     " ".repeat(
-        //         (inner.width as usize)
-        //             .saturating_sub(3 + time_label_len + 2 + 9 + 6 + 2 + hint.len()),
-        //     ),
-        //     Style::default().bg(default_bg),
-        // ),
-        // Span::styled(hint, hint_style),
-    ]);
+    ];
+    let left_len: usize = left.iter().map(|s| s.content.len()).sum();
+    let pad = content_width.saturating_sub(left_len).saturating_sub(12);
+    let mut spans: Vec<Span> = left;
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::raw(" "));
+    spans.push(server_status);
+
+    let line = Line::from(spans);
     f.render_widget(
         Paragraph::new(line).style(Style::default().bg(default_bg)),
         inner,

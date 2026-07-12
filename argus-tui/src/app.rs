@@ -24,6 +24,7 @@ pub enum AppMessage {
     ScanProgress { file_count: u64, total_bytes: u64 },
     ScanComplete(Snapshot),
     DaemonConnected(IpcClient),
+    DaemonDisconnected,
     DeltaData(HashMap<Vec<String>, i64>),
     Error(String),
     Info(String),
@@ -416,6 +417,16 @@ impl App {
                 self.default_time_range();
                 self.set_error("connected to daemon".into(), 2);
                 self.request_delta_refresh();
+            }
+            AppMessage::DaemonDisconnected => {
+                self.server_connected = false;
+                self.server_mode = false;
+                self.daemon_client = None;
+                self.delta_cache.clear();
+                self.delta_filter_active = false;
+                self.focus = Focus::Tree;
+                self.refresh_filtered_lines();
+                self.set_error("daemon disconnected".into(), 4);
             }
             AppMessage::DeltaData(deltas) => {
                 let t0 = Instant::now();
@@ -838,16 +849,22 @@ impl App {
         );
         tokio::spawn(async move {
             let t0 = Instant::now();
-            let deltas = Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await;
-            log_msg(
-                &log_path,
-                &format!(
-                    "fetch_deltas done: {} paths in {:?}",
-                    deltas.len(),
-                    t0.elapsed()
-                ),
-            );
-            let _ = tx.send(AppMessage::DeltaData(deltas)).await;
+            match Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await {
+                Some(deltas) => {
+                    log_msg(
+                        &log_path,
+                        &format!(
+                            "fetch_deltas done: {} paths in {:?}",
+                            deltas.len(),
+                            t0.elapsed()
+                        ),
+                    );
+                    let _ = tx.send(AppMessage::DeltaData(deltas)).await;
+                }
+                None => {
+                    let _ = tx.send(AppMessage::DaemonDisconnected).await;
+                }
+            }
         });
     }
 
@@ -857,13 +874,13 @@ impl App {
         from: u64,
         to: u64,
         log_path: &Path,
-    ) -> HashMap<Vec<String>, i64> {
+    ) -> Option<HashMap<Vec<String>, i64>> {
         let t0 = Instant::now();
         let mut client = match IpcClient::connect(uds).await {
             Ok(c) => c,
             Err(e) => {
                 log_msg(log_path, &format!("fetch_deltas: connect failed: {e}"));
-                return HashMap::new();
+                return None;
             }
         };
         let t1 = Instant::now();
@@ -875,7 +892,7 @@ impl App {
             Ok(r) => r,
             Err(e) => {
                 log_msg(log_path, &format!("fetch_deltas: query failed: {e}"));
-                return HashMap::new();
+                return None;
             }
         };
         let t2 = Instant::now();
@@ -918,7 +935,7 @@ impl App {
                 t2.elapsed()
             ),
         );
-        deltas
+        Some(deltas)
     }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();
