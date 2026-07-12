@@ -26,26 +26,18 @@ pub fn render(
     scan_elapsed: Option<Duration>,
     scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
-    server_mode: bool,
     server_connected: bool,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
-    // Server mode indicator (right-aligned via spaces)
-    if server_mode {
-        let status = if server_connected {
-            "[Server: connected]"
-        } else {
-            "[Server: disconnected]"
-        };
-        let status_color = if server_connected {
-            Color::Green
-        } else {
-            Color::Red
-        };
-        left_spans.push(Span::raw("   "));
-        left_spans.push(Span::styled(status, Style::default().fg(status_color)));
-    }
+    // Daemon status indicator
+    let (status_text, status_color) = if server_connected {
+        (" ● Daemon", Color::Green)
+    } else {
+        (" ○ Daemon", Color::DarkGray)
+    };
+    left_spans.push(Span::raw("   "));
+    left_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
 
     if matches!(mode, AppMode::DeletePrompt | AppMode::DeletePermanentPrompt) {
         left_spans.push(Span::styled(

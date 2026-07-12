@@ -152,7 +152,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
     // File tree
     let file_tree_focused = app.focus == Focus::Tree && app.mode == AppMode::Browsing;
-    let delta_cache = if app.server_mode {
+    let delta_cache = if app.server_connected {
         Some(&app.delta_cache)
     } else {
         None
@@ -189,7 +189,6 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         scan_elapsed,
         app.last_scan_summary.as_ref(),
         error_str,
-        app.server_mode,
         app.server_connected,
     );
 
@@ -242,7 +241,6 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
 /// Render the filter pane (time range + delta filter)
 fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     use ratatui::{
-        layout::{Constraint, Flex, Layout},
         style::{Color, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Paragraph},
@@ -271,46 +269,17 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let default_bg = Color::Black;
 
-    let server_status = if app.server_mode {
-        if app.server_connected {
-            Span::styled(
-                " ● Daemon",
-                Style::default().fg(Color::Green).bg(default_bg),
-            )
-        } else {
-            Span::styled(" ○ Daemon", Style::default().fg(Color::Red).bg(default_bg))
-        }
-    } else {
-        Span::styled(
-            " R → Daemon",
-            Style::default().fg(Color::DarkGray).bg(default_bg),
-        )
-    };
-
-    if !app.server_mode {
-        let left = vec![
+    if !app.server_connected {
+        let line = Line::from(vec![
             Span::styled(" ", Style::default().bg(default_bg)),
             Span::styled(
                 "Press R to connect to daemon",
                 Style::default().fg(Color::DarkGray).bg(default_bg),
             ),
-        ];
-        let right = vec![server_status];
-        let right_width: u16 = right.iter().map(|s| s.content.len() as u16).sum();
-        let [left_area, right_area] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(right_width),
-        ])
-        .flex(Flex::SpaceBetween)
-        .areas(inner);
-
+        ]);
         f.render_widget(
-            Paragraph::new(Line::from(left)).style(Style::default().bg(default_bg)),
-            left_area,
-        );
-        f.render_widget(
-            Paragraph::new(Line::from(right)).style(Style::default().bg(default_bg)),
-            right_area,
+            Paragraph::new(line).style(Style::default().bg(default_bg)),
+            inner,
         );
         f.render_widget(block, area);
         return;
@@ -368,22 +337,10 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             delta_unit_style,
         ),
     ];
-    let right = vec![Span::raw(" "), server_status];
-    let right_width: u16 = right.iter().map(|s| s.content.len() as u16).sum();
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(right_width),
-    ])
-    .flex(Flex::SpaceBetween)
-    .areas(inner);
 
     f.render_widget(
         Paragraph::new(Line::from(left)).style(Style::default().bg(default_bg)),
-        left_area,
-    );
-    f.render_widget(
-        Paragraph::new(Line::from(right)).style(Style::default().bg(default_bg)),
-        right_area,
+        inner,
     );
     f.render_widget(block, area);
 }
