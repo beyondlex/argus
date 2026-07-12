@@ -172,6 +172,7 @@ pub struct DeltaEntry {
     pub delta_size: i64,
     pub event_type: String,
     pub timestamp: u64,
+    pub is_agg: bool,
 }
 
 pub const SNAPSHOT_VERSION: u32 = 2;

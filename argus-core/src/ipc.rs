@@ -18,6 +18,7 @@ pub enum DaemonRequest {
     },
     Ping,
     GetStatus,
+    RequestConsolidation,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -34,6 +35,9 @@ pub enum DaemonResponse {
         version: String,
         watch_dirs: Vec<PathBuf>,
         uptime_secs: u64,
+    },
+    ConsolidationDone {
+        consolidated_count: u64,
     },
     Error {
         message: String,
@@ -155,6 +159,7 @@ mod tests {
                 delta_size: 1024,
                 event_type: "create".into(),
                 timestamp: 1000,
+                is_agg: false,
             }],
         };
         let encoded = bincode::serialize(&resp).unwrap();
@@ -181,12 +186,14 @@ mod tests {
                     delta_size: 100,
                     event_type: "create".into(),
                     timestamp: 1000,
+                    is_agg: false,
                 },
                 DeltaEntry {
                     path: PathBuf::from("/tmp/a.txt"),
                     delta_size: 50,
                     event_type: "modify".into(),
                     timestamp: 2000,
+                    is_agg: false,
                 },
             ],
         };

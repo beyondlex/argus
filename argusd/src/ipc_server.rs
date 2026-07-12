@@ -9,7 +9,9 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-use argus_core::{query_delta_detail, query_delta_total, DaemonRequest, DaemonResponse};
+use argus_core::{
+    consolidate_events, query_delta_detail, query_delta_total, DaemonRequest, DaemonResponse,
+};
 
 pub fn start_ipc_server(uds_path: &str, db: Arc<Mutex<Connection>>) -> tokio::task::JoinHandle<()> {
     let path = uds_path.to_string();
@@ -122,6 +124,18 @@ async fn handle_connection(
                 let conn = db.lock().await;
                 match query_delta_detail(&conn, &path, from_ms, to_ms) {
                     Ok(entries) => DaemonResponse::DeltaDetail { entries },
+                    Err(e) => DaemonResponse::Error {
+                        message: e.to_string(),
+                    },
+                }
+            }
+            DaemonRequest::RequestConsolidation => {
+                let mut conn = db.lock().await;
+                let threshold = 500;
+                match consolidate_events(&mut conn, threshold) {
+                    Ok(count) => DaemonResponse::ConsolidationDone {
+                        consolidated_count: count,
+                    },
                     Err(e) => DaemonResponse::Error {
                         message: e.to_string(),
                     },

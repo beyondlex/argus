@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::{App, AppMode, FilterFocus, FilterMode, Focus, DELTA_UNIT_LABELS};
-use crate::components::{file_tree, help_popup, metadata, status_bar};
+use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar};
 use crate::handler;
 use crate::util::key_hints;
 use crossterm::event::{self, Event};
@@ -37,7 +37,8 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             Duration::MAX
         };
 
-        let time_to_cursor = if app.filter_mode == FilterMode::Input {
+        let time_to_cursor = if app.filter_mode == FilterMode::Input || app.mode == AppMode::Command
+        {
             let elapsed = last_cursor_tick.elapsed();
             cursor_blink_rate.saturating_sub(elapsed)
         } else {
@@ -99,7 +100,12 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             last_cursor_tick = Instant::now();
             dirty = true;
         }
-        if app.filter_mode != FilterMode::Input {
+        if app.mode == AppMode::Command && last_cursor_tick.elapsed() >= cursor_blink_rate {
+            cursor_visible = !cursor_visible;
+            last_cursor_tick = Instant::now();
+            dirty = true;
+        }
+        if app.filter_mode != FilterMode::Input && app.mode != AppMode::Command {
             cursor_visible = true;
         }
 
@@ -194,6 +200,15 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Help => help_popup::render(f, area),
+        AppMode::Command => {
+            command_bar::render(
+                f,
+                area,
+                &app.command_input,
+                &app.command_matches,
+                app.command_selected,
+            );
+        }
         AppMode::Browsing => {}
     }
 

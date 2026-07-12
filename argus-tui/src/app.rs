@@ -26,6 +26,7 @@ pub enum AppMessage {
     DaemonConnected(IpcClient),
     DeltaData(HashMap<Vec<String>, i64>),
     Error(String),
+    Info(String),
 }
 
 /// Application mode
@@ -35,6 +36,7 @@ pub enum AppMode {
     DeletePrompt,
     DeletePermanentPrompt,
     Help,
+    Command,
 }
 
 /// Which panel has focus
@@ -227,6 +229,11 @@ pub struct App {
     // Info popup
     pub info_data: Option<(std::path::PathBuf, std::fs::Metadata)>,
 
+    // Command bar
+    pub command_input: String,
+    pub command_matches: Vec<&'static str>,
+    pub command_selected: usize,
+
     // Quit
     pub should_quit: bool,
 }
@@ -282,6 +289,9 @@ impl App {
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             info_data: None,
+            command_input: String::new(),
+            command_matches: Vec::new(),
+            command_selected: 0,
             rx,
             last_error: None,
             error_clear_at: None,
@@ -412,7 +422,13 @@ impl App {
                 self.delta_pending = false;
                 self.delta_cache = deltas;
                 self.refresh_filtered_lines();
-                log_msg(&self.log_path, &format!("DeltaData applied in {:?}", t0.elapsed()));
+                log_msg(
+                    &self.log_path,
+                    &format!("DeltaData applied in {:?}", t0.elapsed()),
+                );
+            }
+            AppMessage::Info(msg) => {
+                self.set_error(msg, 4);
             }
         }
     }
@@ -663,6 +679,141 @@ impl App {
         self.refresh_filtered_lines();
     }
 
+    // ── Command bar ────────────────────────────────────────────────────────────
+
+    pub const COMMANDS: &'static [&'static str] = &[
+        "FilterClear",
+        "FilterFocus",
+        "Help",
+        "FilterDelta",
+        "FilterTime",
+        "Scan",
+        "Consolidate",
+    ];
+
+    pub fn update_command_matches(&mut self) {
+        if self.command_input.is_empty() {
+            self.command_matches = Self::COMMANDS.to_vec();
+        } else {
+            let lower = self.command_input.to_lowercase();
+            self.command_matches = Self::COMMANDS
+                .iter()
+                .filter(|c| c.to_lowercase().contains(&lower))
+                .copied()
+                .collect();
+        }
+        if self.command_selected >= self.command_matches.len() {
+            self.command_selected = 0;
+        }
+    }
+
+    pub fn execute_command(&mut self, cmd: &str) -> Result<String, String> {
+        let trimmed = cmd.trim();
+        if trimmed.is_empty() {
+            return Err("empty command".into());
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        let name = parts[0];
+
+        match name {
+            "FilterClear" => {
+                if self.server_mode {
+                    self.clear_filter_pane();
+                    Ok("filter cleared".into())
+                } else {
+                    Err("not in server mode".into())
+                }
+            }
+            "FilterFocus" => {
+                if self.server_mode {
+                    self.focus = Focus::FilterPane;
+                    self.filter_focus = FilterFocus::TimePreset;
+                    Ok("filter pane focused".into())
+                } else {
+                    Err("not in server mode".into())
+                }
+            }
+            "Help" => {
+                self.mode = AppMode::Help;
+                Ok("help opened".into())
+            }
+            "FilterDelta" => {
+                if !self.server_mode {
+                    return Err("not in server mode".into());
+                }
+                let arg = *parts.get(1).ok_or("usage: FilterDelta <N>[k|m|g]")?;
+                let (num_str, unit) = if arg.ends_with('k') || arg.ends_with('K') {
+                    (&arg[..arg.len() - 1], 0usize)
+                } else if arg.ends_with('m') || arg.ends_with('M') {
+                    (&arg[..arg.len() - 1], 1usize)
+                } else if arg.ends_with('g') || arg.ends_with('G') {
+                    (&arg[..arg.len() - 1], 2usize)
+                } else {
+                    (arg, 1usize)
+                };
+                let value: u64 = num_str
+                    .parse()
+                    .map_err(|_| format!("invalid number: {num_str}"))?;
+                self.delta_filter_active = true;
+                self.delta_filter_value = value;
+                self.delta_filter_unit = unit;
+                self.refresh_filtered_lines();
+                Ok(format!(
+                    "delta filter set to {}{}",
+                    value,
+                    ["KB", "MB", "GB"][unit]
+                ))
+            }
+            "FilterTime" => {
+                if !self.server_mode {
+                    return Err("not in server mode".into());
+                }
+                let arg = *parts.get(1).ok_or("usage: FilterTime <N>h")?;
+                let num_str = if arg.ends_with('h')
+                    || arg.ends_with('H')
+                    || arg.ends_with('d')
+                    || arg.ends_with('D')
+                {
+                    &arg[..arg.len() - 1]
+                } else {
+                    arg
+                };
+                let hours: u64 = if arg.ends_with('d') || arg.ends_with('D') {
+                    num_str
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid number: {num_str}"))?
+                        * 24
+                } else {
+                    num_str
+                        .parse()
+                        .map_err(|_| format!("invalid number: {num_str}"))?
+                };
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                self.time_from = now.saturating_sub(hours * 3_600_000);
+                self.time_to = now;
+                self.request_delta_refresh();
+                Ok(format!("time range set to {hours}h"))
+            }
+            "Scan" => {
+                if self.scanning {
+                    return Err("already scanning".into());
+                }
+                Ok("scan started".into())
+            }
+            "Consolidate" => {
+                if !self.server_mode {
+                    return Err("not in server mode".into());
+                }
+                Ok("consolidation requested".into())
+            }
+            _ => Err(format!("unknown command: {name}")),
+        }
+    }
+
     /// Request delta data from daemon — single query to root path, build full map locally
     pub fn request_delta_refresh(&mut self) {
         if self.delta_pending {
@@ -678,11 +829,24 @@ impl App {
         let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
         let log_path = self.log_path.clone();
         self.delta_pending = true;
-        log_msg(&log_path, &format!("request_delta_refresh: from={from} to={to} root={}", view_root.display()));
+        log_msg(
+            &log_path,
+            &format!(
+                "request_delta_refresh: from={from} to={to} root={}",
+                view_root.display()
+            ),
+        );
         tokio::spawn(async move {
             let t0 = Instant::now();
             let deltas = Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await;
-            log_msg(&log_path, &format!("fetch_deltas done: {} paths in {:?}", deltas.len(), t0.elapsed()));
+            log_msg(
+                &log_path,
+                &format!(
+                    "fetch_deltas done: {} paths in {:?}",
+                    deltas.len(),
+                    t0.elapsed()
+                ),
+            );
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
         });
     }
@@ -703,7 +867,10 @@ impl App {
             }
         };
         let t1 = Instant::now();
-        log_msg(log_path, &format!("fetch_deltas: connected in {:?}", t1 - t0));
+        log_msg(
+            log_path,
+            &format!("fetch_deltas: connected in {:?}", t1 - t0),
+        );
         let (_total, entries) = match client.get_delta(view_root, from, to).await {
             Ok(r) => r,
             Err(e) => {
@@ -712,7 +879,14 @@ impl App {
             }
         };
         let t2 = Instant::now();
-        log_msg(log_path, &format!("fetch_deltas: query returned {} entries in {:?}", entries.len(), t2 - t1));
+        log_msg(
+            log_path,
+            &format!(
+                "fetch_deltas: query returned {} entries in {:?}",
+                entries.len(),
+                t2 - t1
+            ),
+        );
         let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
         for entry in &entries {
             *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
@@ -736,7 +910,14 @@ impl App {
                 *deltas.entry(ancestor).or_insert(0) += delta;
             }
         }
-        log_msg(log_path, &format!("fetch_deltas: map build done, {} paths in {:?}", deltas.len(), t2.elapsed()));
+        log_msg(
+            log_path,
+            &format!(
+                "fetch_deltas: map build done, {} paths in {:?}",
+                deltas.len(),
+                t2.elapsed()
+            ),
+        );
         deltas
     }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {

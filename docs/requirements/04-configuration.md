@@ -99,6 +99,17 @@ daily_retention_days = 30
 
 # UDS 监听地址
 uds_path = "/tmp/argusd.sock"
+
+# delta 事件保留天数（超过此天数的原始事件会被后台清理）
+delta_retention_days = 30
+
+# 目录级事件合并策略
+# 当某个目录的直接子级变更数超过阈值时，自动合并为一条汇总记录
+[daemon.consolidation]
+# 子级变更数阈值，超过则合并（0 表示禁用合并）
+sibling_threshold = 500
+# 合并任务执行间隔（分钟）
+interval_minutes = 60
 ```
 
 ## 6. Token 消耗统计 `[token_usage]`

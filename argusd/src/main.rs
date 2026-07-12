@@ -1,6 +1,7 @@
 mod config;
 mod debounce;
 mod ipc_server;
+mod retention;
 mod watcher;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,9 @@ async fn main() {
         Duration::from_secs(config.debounce_seconds),
     );
 
+    let retention_db = db.clone();
+    let retention_handle = retention::start_retention_worker(retention_db, config.clone());
+
     let ipc_db = db.clone();
     let ipc_handle = ipc_server::start_ipc_server(&config.uds_path, ipc_db);
 
@@ -54,6 +58,7 @@ async fn main() {
     watcher_handle.store(false, Ordering::Relaxed);
     drop(watcher_handle);
     debounce_handle.await.expect("debounce engine failed");
+    retention_handle.abort();
     ipc_handle.abort();
     tracing::info!("argusd stopped");
 }

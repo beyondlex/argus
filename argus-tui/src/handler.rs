@@ -18,6 +18,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::DeletePrompt => handle_delete_prompt_key(key, app),
         AppMode::DeletePermanentPrompt => handle_delete_permanent_prompt_key(key, app),
         AppMode::Help => handle_help_key(key, app),
+        AppMode::Command => handle_command_key(key, app),
     }
 }
 
@@ -188,6 +189,12 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
+        KeyCode::Char(':') => {
+            app.mode = AppMode::Command;
+            app.command_input.clear();
+            app.command_selected = 0;
+            app.update_command_matches();
+        }
         KeyCode::Char('t') if app.server_mode => {
             let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
             app.set_time_preset(next);
@@ -310,6 +317,107 @@ fn handle_help_key(key: KeyEvent, app: &mut App) {
     }
 }
 
+fn handle_command_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Char(c) if app.command_input.len() < 200 => {
+            app.command_input.push(c);
+            app.update_command_matches();
+        }
+        KeyCode::Backspace => {
+            app.command_input.pop();
+            app.update_command_matches();
+        }
+        KeyCode::Tab if !app.command_matches.is_empty() => {
+            app.command_selected = (app.command_selected + 1) % app.command_matches.len();
+        }
+        KeyCode::BackTab if !app.command_matches.is_empty() => {
+            app.command_selected = if app.command_selected == 0 {
+                app.command_matches.len() - 1
+            } else {
+                app.command_selected - 1
+            };
+        }
+        KeyCode::Enter => {
+            let cmd = if !app.command_matches.is_empty() && app.command_input.is_empty() {
+                app.command_matches[app.command_selected].to_string()
+            } else {
+                app.command_input.clone()
+            };
+            app.mode = AppMode::Browsing;
+            execute_command(app, &cmd);
+        }
+        KeyCode::Esc => {
+            app.command_input.clear();
+            app.command_matches.clear();
+            app.command_selected = 0;
+            app.mode = AppMode::Browsing;
+        }
+        _ => {}
+    }
+}
+
+fn execute_command(app: &mut App, cmd: &str) {
+    let cmd = cmd.trim();
+
+    if cmd.eq_ignore_ascii_case("Scan") {
+        app.command_input.clear();
+        app.command_matches.clear();
+        app.command_selected = 0;
+        start_scan(app);
+        return;
+    }
+
+    if cmd.eq_ignore_ascii_case("Consolidate") {
+        app.command_input.clear();
+        app.command_matches.clear();
+        app.command_selected = 0;
+        if app.server_mode {
+            let uds_path = app
+                .daemon_client
+                .as_ref()
+                .map(|_| crate::config::TuiConfig::default().daemon.uds_path.clone())
+                .unwrap_or_default();
+            let tx = app.tx.clone();
+            tokio::spawn(async move {
+                match IpcClient::connect(&uds_path).await {
+                    Ok(mut client) => match client.request_consolidation().await {
+                        Ok(count) => {
+                            let _ = tx
+                                .send(AppMessage::Info(format!("consolidated {count} events")))
+                                .await;
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(AppMessage::Info(format!("consolidation failed: {e}")))
+                                .await;
+                        }
+                    },
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppMessage::Info(format!("daemon connect failed: {e}")))
+                            .await;
+                    }
+                }
+            });
+        } else {
+            app.set_error("not in server mode".into(), 3);
+        }
+        return;
+    }
+
+    match app.execute_command(cmd) {
+        Ok(msg) => {
+            app.set_error(msg, 3);
+        }
+        Err(e) => {
+            app.set_error(e, 4);
+        }
+    }
+    app.command_input.clear();
+    app.command_matches.clear();
+    app.command_selected = 0;
+}
+
 // ── Filter pane key handling ─────────────────────────────────────────────────
 
 fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
@@ -356,7 +464,10 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             FilterFocus::TimePreset => {
                 let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
                 let label = App::time_preset_label(next);
-                crate::app::log_msg(&app.log_path, &format!("filter: j key, preset={next} ({label})"));
+                crate::app::log_msg(
+                    &app.log_path,
+                    &format!("filter: j key, preset={next} ({label})"),
+                );
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }
@@ -376,7 +487,10 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
                 let count = crate::app::TIME_PRESET_COUNT;
                 let next = (app.time_preset + count - 1) % count;
                 let label = App::time_preset_label(next);
-                crate::app::log_msg(&app.log_path, &format!("filter: k key, preset={next} ({label})"));
+                crate::app::log_msg(
+                    &app.log_path,
+                    &format!("filter: k key, preset={next} ({label})"),
+                );
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }

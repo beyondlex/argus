@@ -9,17 +9,18 @@ pub struct DaemonConfig {
     pub debounce_seconds: u64,
     #[serde(default = "default_uds_path")]
     pub uds_path: String,
-    #[allow(dead_code)]
     #[serde(default)]
     pub snapshot_retention: SnapshotRetention,
+    #[serde(default = "default_delta_retention_days")]
+    pub delta_retention_days: u64,
+    #[serde(default)]
+    pub consolidation: ConsolidationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SnapshotRetention {
-    #[allow(dead_code)]
     #[serde(default = "default_hourly_retention")]
     pub hourly_retention_days: u64,
-    #[allow(dead_code)]
     #[serde(default = "default_daily_retention")]
     pub daily_retention_days: u64,
 }
@@ -29,6 +30,23 @@ impl Default for SnapshotRetention {
         Self {
             hourly_retention_days: default_hourly_retention(),
             daily_retention_days: default_daily_retention(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsolidationConfig {
+    #[serde(default = "default_sibling_threshold")]
+    pub sibling_threshold: u64,
+    #[serde(default = "default_consolidation_interval")]
+    pub interval_minutes: u64,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            sibling_threshold: default_sibling_threshold(),
+            interval_minutes: default_consolidation_interval(),
         }
     }
 }
@@ -43,6 +61,8 @@ impl Default for DaemonConfig {
             debounce_seconds: default_debounce_seconds(),
             uds_path: default_uds_path(),
             snapshot_retention: SnapshotRetention::default(),
+            delta_retention_days: default_delta_retention_days(),
+            consolidation: ConsolidationConfig::default(),
         }
     }
 }
@@ -61,6 +81,18 @@ const fn default_hourly_retention() -> u64 {
 
 const fn default_daily_retention() -> u64 {
     30
+}
+
+const fn default_delta_retention_days() -> u64 {
+    30
+}
+
+const fn default_sibling_threshold() -> u64 {
+    500
+}
+
+const fn default_consolidation_interval() -> u64 {
+    60
 }
 
 fn config_path() -> PathBuf {
@@ -102,5 +134,8 @@ mod tests {
         assert_eq!(config.debounce_seconds, 10);
         assert_eq!(config.uds_path, argus_core::DEFAULT_UDS_PATH);
         assert!(!config.watch_dirs.is_empty());
+        assert_eq!(config.delta_retention_days, 30);
+        assert_eq!(config.consolidation.sibling_threshold, 500);
+        assert_eq!(config.consolidation.interval_minutes, 60);
     }
 }

@@ -64,12 +64,14 @@ impl DebounceEngine {
                         event_type: "delete".into(),
                         timestamp: event.timestamp,
                         path: entry.event.path.clone(),
+                        is_agg: false,
                     },
                     _ => DeltaEntry {
                         path: event.path,
                         delta_size: event.delta_size,
                         event_type: event.event_type,
                         timestamp: event.timestamp,
+                        is_agg: false,
                     },
                 };
                 entry.event = merged;
@@ -84,6 +86,7 @@ impl DebounceEngine {
                             delta_size: event.delta_size,
                             event_type: event.event_type,
                             timestamp: event.timestamp,
+                            is_agg: false,
                         },
                         expires_at,
                     },

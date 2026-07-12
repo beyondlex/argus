@@ -4,14 +4,18 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
-use argus_core::{scan_path, NodeIndex, ROOT_NODE};
+use argus_core::{scan_path, DaemonRequest, DaemonResponse, NodeIndex, ROOT_NODE};
 
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Scan { path } => cmd_scan(path),
+        Commands::Help => cmd_help(),
+        Commands::Consolidate => cmd_consolidate(),
     };
 
     match result {
@@ -37,6 +41,10 @@ enum Commands {
         #[arg(long, help = "Path to scan")]
         path: PathBuf,
     },
+    /// Print usage information.
+    Help,
+    /// Request delta event consolidation on the daemon.
+    Consolidate,
 }
 
 fn cmd_scan(path: &PathBuf) -> Result<i32> {
@@ -57,6 +65,65 @@ fn cmd_scan(path: &PathBuf) -> Result<i32> {
     println!("total size: {}", format_size(snapshot.total_size));
 
     Ok(0)
+}
+
+fn cmd_help() -> Result<i32> {
+    println!("Argus - Disk usage scanner");
+    println!();
+    println!("Commands:");
+    println!("  scan --path <PATH>    Scan a path and print summary");
+    println!("  help                  Print this help text");
+    println!("  consolidate           Request daemon to consolidate delta events");
+    println!();
+    println!("TUI commands (type : inside the TUI):");
+    println!("  :Scan                 Scan current directory");
+    println!("  :FilterClear          Clear delta filter");
+    println!("  :FilterFocus          Focus filter pane");
+    println!("  :FilterDelta <N>[k|m|g]  Set delta threshold");
+    println!("  :FilterTime <N>h      Set time range");
+    println!("  :Consolidate          Request event consolidation");
+    println!("  :Help                 Show help overlay");
+    Ok(0)
+}
+
+fn cmd_consolidate() -> Result<i32> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let uds_path = argus_core::DEFAULT_UDS_PATH;
+        let mut stream = UnixStream::connect(uds_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
+
+        let req = DaemonRequest::RequestConsolidation;
+        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
+        stream
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        stream.write_all(&payload).await?;
+
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let resp_len = u32::from_be_bytes(len_buf) as usize;
+        let mut resp_buf = vec![0u8; resp_len];
+        stream.read_exact(&mut resp_buf).await?;
+
+        let resp: DaemonResponse =
+            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        match resp {
+            DaemonResponse::ConsolidationDone { consolidated_count } => {
+                println!("consolidated {consolidated_count} events");
+                Ok(0i32)
+            }
+            DaemonResponse::Error { message } => {
+                eprintln!("daemon error: {message}");
+                Ok(1)
+            }
+            _ => {
+                eprintln!("unexpected response");
+                Ok(1)
+            }
+        }
+    })
 }
 
 fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {

@@ -112,10 +112,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argus-core",
+ "bincode",
  "chrono",
  "clap",
  "ctrlc",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

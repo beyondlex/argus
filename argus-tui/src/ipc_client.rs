@@ -52,6 +52,17 @@ impl IpcClient {
         }
     }
 
+    pub async fn request_consolidation(&mut self) -> Result<u64, String> {
+        let resp = self
+            .send_request(&DaemonRequest::RequestConsolidation)
+            .await?;
+        match resp {
+            DaemonResponse::ConsolidationDone { consolidated_count } => Ok(consolidated_count),
+            DaemonResponse::Error { message } => Err(message),
+            _ => Err("unexpected response".into()),
+        }
+    }
+
     async fn send_request(&mut self, req: &DaemonRequest) -> Result<DaemonResponse, String> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
