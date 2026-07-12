@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -407,9 +408,11 @@ impl App {
                 self.request_delta_refresh();
             }
             AppMessage::DeltaData(deltas) => {
+                let t0 = Instant::now();
                 self.delta_pending = false;
                 self.delta_cache = deltas;
                 self.refresh_filtered_lines();
+                log_msg(&self.log_path, &format!("DeltaData applied in {:?}", t0.elapsed()));
             }
         }
     }
@@ -673,9 +676,13 @@ impl App {
         let to = self.time_to;
         let tx = self.tx.clone();
         let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
+        let log_path = self.log_path.clone();
         self.delta_pending = true;
+        log_msg(&log_path, &format!("request_delta_refresh: from={from} to={to} root={}", view_root.display()));
         tokio::spawn(async move {
-            let deltas = Self::fetch_deltas(&uds_path, &view_root, from, to).await;
+            let t0 = Instant::now();
+            let deltas = Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await;
+            log_msg(&log_path, &format!("fetch_deltas done: {} paths in {:?}", deltas.len(), t0.elapsed()));
             let _ = tx.send(AppMessage::DeltaData(deltas)).await;
         });
     }
@@ -685,15 +692,27 @@ impl App {
         view_root: &std::path::Path,
         from: u64,
         to: u64,
+        log_path: &Path,
     ) -> HashMap<Vec<String>, i64> {
+        let t0 = Instant::now();
         let mut client = match IpcClient::connect(uds).await {
             Ok(c) => c,
-            Err(_) => return HashMap::new(),
+            Err(e) => {
+                log_msg(log_path, &format!("fetch_deltas: connect failed: {e}"));
+                return HashMap::new();
+            }
         };
+        let t1 = Instant::now();
+        log_msg(log_path, &format!("fetch_deltas: connected in {:?}", t1 - t0));
         let (_total, entries) = match client.get_delta(view_root, from, to).await {
             Ok(r) => r,
-            Err(_) => return HashMap::new(),
+            Err(e) => {
+                log_msg(log_path, &format!("fetch_deltas: query failed: {e}"));
+                return HashMap::new();
+            }
         };
+        let t2 = Instant::now();
+        log_msg(log_path, &format!("fetch_deltas: query returned {} entries in {:?}", entries.len(), t2 - t1));
         let mut file_deltas: HashMap<PathBuf, i64> = HashMap::new();
         for entry in &entries {
             *file_deltas.entry(entry.path.clone()).or_insert(0) += entry.delta_size;
@@ -717,6 +736,7 @@ impl App {
                 *deltas.entry(ancestor).or_insert(0) += delta;
             }
         }
+        log_msg(log_path, &format!("fetch_deltas: map build done, {} paths in {:?}", deltas.len(), t2.elapsed()));
         deltas
     }
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
@@ -953,6 +973,17 @@ pub fn default_log_path() -> PathBuf {
     let dir = config_dir.join("argus");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("argus.log")
+}
+
+/// Append a timestamped message to the log file
+pub fn log_msg(log_path: &Path, msg: &str) {
+    let now = chrono::Local::now();
+    let line = format!("[{}] {}\n", now.format("%Y-%m-%d %H:%M:%S%.3f"), msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 /// Walk the full tree in depth-first display order (children sorted by sort_mode).

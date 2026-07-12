@@ -355,6 +355,8 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('j') | KeyCode::Down => match app.filter_focus {
             FilterFocus::TimePreset => {
                 let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
+                let label = App::time_preset_label(next);
+                crate::app::log_msg(&app.log_path, &format!("filter: j key, preset={next} ({label})"));
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }
@@ -373,6 +375,8 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
             FilterFocus::TimePreset => {
                 let count = crate::app::TIME_PRESET_COUNT;
                 let next = (app.time_preset + count - 1) % count;
+                let label = App::time_preset_label(next);
+                crate::app::log_msg(&app.log_path, &format!("filter: k key, preset={next} ({label})"));
                 app.set_time_preset(next);
                 app.request_delta_refresh();
             }
