@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -190,6 +191,30 @@ pub fn filesize_unit_color(unit: &str) -> Color {
         "GB" => Color::Red,
         _ => Color::Green,
     }
+}
+
+/// Default path for the log file: ~/.config/argus/argus.log
+pub fn default_log_path() -> PathBuf {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
+            PathBuf::from(home).join(".config")
+        });
+    let dir = config_dir.join("argus");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("argus.log")
+}
+
+/// Append a timestamped message to the log file
+pub fn log_msg(log_path: &Path, msg: &str) {
+    let now = chrono::Local::now();
+    let line = format!("[{}] {}\n", now.format("%Y-%m-%d %H:%M:%S%.3f"), msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 #[cfg(test)]

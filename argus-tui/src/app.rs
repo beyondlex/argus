@@ -1,161 +1,17 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
+use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::ipc_client::IpcClient;
 use crate::time_utils::*;
-
-// ── Data types ──────────────────────────────────────────────────────────────
-
-/// Messages from background tasks to the UI
-#[derive(Debug)]
-pub enum AppMessage {
-    ScanProgress { file_count: u64, total_bytes: u64 },
-    ScanComplete(Snapshot),
-    DaemonConnected(IpcClient),
-    DaemonDisconnected,
-    DeltaData(HashMap<Vec<String>, i64>),
-    Error(String),
-    Info(String),
-}
-
-/// Application mode
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AppMode {
-    Browsing,
-    DeletePrompt,
-    DeletePermanentPrompt,
-    Help,
-    TimeHelp,
-    Command,
-}
-
-/// Which panel has focus
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Focus {
-    Tree,
-    FilterPane,
-}
-
-/// Which field in the filter pane has focus
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FilterFocus {
-    TimePreset,
-    DeltaValue,
-    DeltaUnit,
-}
-
-/// Multiplier for delta filter unit index
-pub fn delta_unit_multiplier(unit: usize) -> u64 {
-    match unit {
-        0 => 1024,               // KB
-        1 => 1024 * 1024,        // MB
-        2 => 1024 * 1024 * 1024, // GB
-        _ => 1,
-    }
-}
-
-pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
-
-pub const TIME_PRESET_COUNT: usize = 7;
-
-/// Tree search mode
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SearchMode {
-    Inactive,
-    Input,
-    Active,
-}
-
-/// A match found by the tree search — `path` is the full relative path from the view root.
-#[derive(Debug, Clone)]
-pub struct SearchMatch {
-    pub path: Vec<String>,
-    pub tree_idx: Option<usize>,
-    pub walk_idx: usize,
-}
-
-/// Sort mode for tree children
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SortMode {
-    Name,
-    Size,
-    Delta,
-}
-
-impl SortMode {
-    pub fn toggle(self) -> Self {
-        match self {
-            SortMode::Name => SortMode::Size,
-            SortMode::Size => SortMode::Delta,
-            SortMode::Delta => SortMode::Name,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SortMode::Size => "Size",
-            SortMode::Name => "Name",
-            SortMode::Delta => "Delta",
-        }
-    }
-}
-
-/// Unified tree node for rendering (currently only Snapshot variant, Diff reserved for future daemon mode)
-#[derive(Debug, Clone)]
-pub enum TreeNode {
-    Snapshot(Arc<Snapshot>, NodeIndex),
-}
-
-impl TreeNode {
-    pub fn node(&self) -> &FileNode {
-        match self {
-            TreeNode::Snapshot(snap, idx) => snap.node(*idx),
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.node().name
-    }
-
-    pub fn is_dir(&self) -> bool {
-        self.node().is_dir
-    }
-
-    pub fn file_type(&self) -> FileType {
-        self.node().file_type
-    }
-
-    pub fn current_size(&self) -> u64 {
-        self.node().size
-    }
-}
-
-/// A single line in the flattened tree view
-#[derive(Debug, Clone)]
-pub struct TreeLine {
-    pub depth: usize,
-    pub node: TreeNode,
-    pub expanded: bool,
-    pub has_scan_data: bool,
-    pub path: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScanSummary {
-    pub root_path: PathBuf,
-    pub total_size: u64,
-    pub total_files: u64,
-    pub duration: Duration,
-}
+pub use crate::types::*;
+use crate::util::{default_log_path, log_msg};
 
 // ── App ─────────────────────────────────────────────────────────────────────
 
@@ -743,232 +599,6 @@ impl App {
         self.recompute_matches();
     }
 
-    // ── Command bar ────────────────────────────────────────────────────────────
-
-    pub const COMMANDS: &'static [&'static str] = &[
-        "Consolidate",
-        "Delta",
-        "FilterClear",
-        "FilterFocus",
-        "Help",
-        "Scan",
-        "Sort",
-        "Time",
-    ];
-
-    pub fn update_command_matches(&mut self) {
-        if self.command_input.is_empty() {
-            self.command_matches = Self::COMMANDS.to_vec();
-        } else {
-            let lower = self.command_input.to_lowercase();
-            self.command_matches = Self::COMMANDS
-                .iter()
-                .filter(|c| crate::search::fuzzy_match(&lower, &c.to_lowercase()))
-                .copied()
-                .collect();
-        }
-        if self.command_selected >= self.command_matches.len() {
-            self.command_selected = 0;
-        }
-    }
-
-    pub fn clear_command_state(&mut self) {
-        self.command_input.clear();
-        self.command_matches.clear();
-        self.command_selected = 0;
-    }
-
-    pub fn push_command_history(&mut self, cmd: &str) {
-        let cmd = cmd.trim().to_string();
-        if cmd.is_empty() {
-            return;
-        }
-        if self.command_history.last().map(|s| s.as_str()) == Some(cmd.as_str()) {
-            return;
-        }
-        self.command_history.push(cmd);
-        if self.command_history.len() > 50 {
-            self.command_history.remove(0);
-        }
-        self.command_history_idx = None;
-    }
-
-    pub fn execute_command(&mut self, cmd: &str) -> Result<String, String> {
-        let trimmed = cmd.trim();
-        if trimmed.is_empty() {
-            return Err("empty command".into());
-        }
-
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let name = parts[0];
-        let name_lower = name.to_lowercase();
-
-        match name_lower.as_str() {
-            "filterclear" => self.cmd_filterclear(),
-            "filterfocus" => self.cmd_filterfocus(),
-            "help" => self.cmd_help(),
-            "delta" => self.cmd_delta(&parts),
-            "time" => self.cmd_time(&parts),
-            "sort" | "s" => self.cmd_sort(&parts),
-            "sd" => self.cmd_sort_quick(SortMode::Delta, "Delta"),
-            "ss" => self.cmd_sort_quick(SortMode::Size, "Size"),
-            "sn" => self.cmd_sort_quick(SortMode::Name, "Name"),
-            "scan" => self.cmd_scan(),
-            "consolidate" => self.cmd_consolidate(),
-            _ => Err(format!("unknown command: {name}")),
-        }
-    }
-
-    fn cmd_filterclear(&mut self) -> Result<String, String> {
-        if self.server_mode {
-            self.clear_filter_pane();
-            Ok("filter cleared".into())
-        } else {
-            Err("not in server mode".into())
-        }
-    }
-
-    fn cmd_filterfocus(&mut self) -> Result<String, String> {
-        if self.server_mode {
-            self.focus = Focus::FilterPane;
-            self.filter_focus = FilterFocus::TimePreset;
-            Ok("filter pane focused".into())
-        } else {
-            Err("not in server mode".into())
-        }
-    }
-
-    fn cmd_help(&mut self) -> Result<String, String> {
-        self.mode = AppMode::Help;
-        Ok("help opened".into())
-    }
-
-    fn cmd_delta(&mut self, parts: &[&str]) -> Result<String, String> {
-        if !self.server_mode {
-            return Err("not in server mode".into());
-        }
-        let (num_str, unit) = match parts.get(1).copied() {
-            Some(arg) if arg.ends_with('k') || arg.ends_with('K') => {
-                (&arg[..arg.len() - 1], 0usize)
-            }
-            Some(arg) if arg.ends_with('m') || arg.ends_with('M') => {
-                (&arg[..arg.len() - 1], 1usize)
-            }
-            Some(arg) if arg.ends_with('g') || arg.ends_with('G') => {
-                (&arg[..arg.len() - 1], 2usize)
-            }
-            Some(arg) => (arg, 1usize),
-            None => ("0", 0usize),
-        };
-        let value: u64 = num_str
-            .parse()
-            .map_err(|_| format!("invalid number: {num_str}"))?;
-        self.delta_filter_active = true;
-        self.delta_filter_value = value;
-        self.delta_filter_unit = unit;
-        self.refresh_filtered_lines();
-        Ok(format!(
-            "delta filter set to {}{}",
-            value,
-            ["KB", "MB", "GB"][unit]
-        ))
-    }
-
-    fn cmd_time(&mut self, parts: &[&str]) -> Result<String, String> {
-        if !self.server_mode {
-            return Err("not in server mode".into());
-        }
-        let arg = match parts.get(1) {
-            Some(a) => *a,
-            None => {
-                self.mode = AppMode::TimeHelp;
-                return Ok("time help opened".into());
-            }
-        };
-        let rest: String = parts[1..].join(" ");
-        let to_lower = rest.to_lowercase();
-        let to_marker = " to ";
-        if let Some(pos) = to_lower.find(to_marker) {
-            let left = rest[..pos].trim();
-            let right = rest[pos + to_marker.len()..].trim();
-            if left.is_empty() || right.is_empty() {
-                return Err("invalid time range: empty side".into());
-            }
-            let left_parsed = parse_single_time_arg(left)?;
-            let (to_ms, right_label) = if is_time_only(right) {
-                let date = left_parsed
-                    .date
-                    .ok_or("cannot inherit date for time-only right side")?;
-                let parts: Vec<&str> = right.split(':').collect();
-                let h: u32 = parts[0].parse().unwrap_or(0);
-                let min: u32 = parts[1].parse().unwrap_or(0);
-                (
-                    datetime_to_millis(date.0, date.1, h, min),
-                    format!("{:02}:{:02}", h, min),
-                )
-            } else {
-                let parsed = parse_single_time_arg(right)?;
-                (parsed.ms, parsed.label)
-            };
-            self.time_from = left_parsed.ms;
-            self.time_to = to_ms;
-            self.time_custom = true;
-            self.time_custom_label = format_time_label(&left_parsed.label, &right_label);
-            self.request_delta_refresh();
-            Ok(format!("time range: {}", self.time_custom_label))
-        } else {
-            let parsed = parse_single_time_arg(arg)?;
-            let now = now_in_millis();
-            self.time_from = parsed.ms;
-            self.time_to = now;
-            self.time_custom = true;
-            if parsed.date.is_some() {
-                self.time_custom_label = format!("{} ~ now", parsed.label);
-            } else {
-                self.time_custom_label = parsed.label;
-            }
-            self.request_delta_refresh();
-            if parsed.date.is_some() {
-                Ok(format!("time range: {}", self.time_custom_label))
-            } else {
-                Ok(format!("time range: in {}", self.time_custom_label))
-            }
-        }
-    }
-
-    fn cmd_sort(&mut self, parts: &[&str]) -> Result<String, String> {
-        let sub = parts.get(1).copied().unwrap_or("");
-        match sub.to_lowercase().as_str() {
-            "d" | "delta" => self.sort_mode = SortMode::Delta,
-            "s" | "size" => self.sort_mode = SortMode::Size,
-            "n" | "name" => self.sort_mode = SortMode::Name,
-            "" => self.sort_mode = self.sort_mode.toggle(),
-            _ => return Err(format!("unknown sort mode: {sub}")),
-        }
-        self.update_tree_lines();
-        Ok(format!("Sort: {}", self.sort_mode.label()))
-    }
-
-    fn cmd_sort_quick(&mut self, mode: SortMode, label: &str) -> Result<String, String> {
-        self.sort_mode = mode;
-        self.update_tree_lines();
-        Ok(format!("Sort: {label}"))
-    }
-
-    fn cmd_scan(&mut self) -> Result<String, String> {
-        if self.scanning {
-            return Err("already scanning".into());
-        }
-        Ok("scan started".into())
-    }
-
-    fn cmd_consolidate(&mut self) -> Result<String, String> {
-        if !self.server_mode {
-            return Err("not in server mode".into());
-        }
-        Ok("consolidation requested".into())
-    }
-
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
         let mut path = self.view_root_path.clone();
         let relative = self.tree_line_relative_path(self.cursor)?;
@@ -979,30 +609,6 @@ impl App {
         }
         Some(path)
     }
-}
-
-/// Default path for the log file: ~/.config/argus/argus.log
-pub fn default_log_path() -> PathBuf {
-    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
-            PathBuf::from(home).join(".config")
-        });
-    let dir = config_dir.join("argus");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("argus.log")
-}
-
-/// Append a timestamped message to the log file
-pub fn log_msg(log_path: &Path, msg: &str) {
-    let now = chrono::Local::now();
-    let line = format!("[{}] {}\n", now.format("%Y-%m-%d %H:%M:%S%.3f"), msg);
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 #[cfg(test)]
@@ -1254,5 +860,730 @@ mod tests {
             app.execute_command("filterclear"),
             Err("not in server mode".into())
         );
+    }
+
+    // ── delta filter tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_delta_unit_multiplier_values() {
+        assert_eq!(delta_unit_multiplier(0), 1024);
+        assert_eq!(delta_unit_multiplier(1), 1024 * 1024);
+        assert_eq!(delta_unit_multiplier(2), 1024 * 1024 * 1024);
+        assert_eq!(delta_unit_multiplier(3), 1);
+    }
+
+    #[test]
+    fn test_delta_filter_threshold_inactive() {
+        let (tx, _) = mpsc::channel(1);
+        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.delta_filter_threshold(), 0);
+    }
+
+    #[test]
+    fn test_delta_filter_threshold_active() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_active = true;
+        app.delta_filter_value = 50;
+        app.delta_filter_unit = 1;
+        assert_eq!(app.delta_filter_threshold(), 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_delta_filter_inc_basic() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_value = 5;
+        app.delta_filter_inc();
+        assert_eq!(app.delta_filter_value, 6);
+    }
+
+    #[test]
+    fn test_delta_filter_inc_unit_level_up() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_value = 1024;
+        app.delta_filter_unit = 0;
+        app.delta_filter_inc();
+        assert_eq!(app.delta_filter_value, 1);
+        assert_eq!(app.delta_filter_unit, 1);
+    }
+
+    #[test]
+    fn test_delta_filter_inc_unit_level_up_max_unit() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_value = 1024;
+        app.delta_filter_unit = 2;
+        app.delta_filter_inc();
+        assert_eq!(app.delta_filter_value, 1025);
+        assert_eq!(app.delta_filter_unit, 2);
+    }
+
+    #[test]
+    fn test_delta_filter_dec_basic() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_value = 5;
+        app.delta_filter_dec();
+        assert_eq!(app.delta_filter_value, 4);
+    }
+
+    #[test]
+    fn test_delta_filter_dec_min_zero() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_value = 0;
+        app.delta_filter_dec();
+        assert_eq!(app.delta_filter_value, 0);
+    }
+
+    #[test]
+    fn test_delta_filter_cycle_unit() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.delta_filter_unit, 1);
+        app.delta_filter_cycle_unit();
+        assert_eq!(app.delta_filter_unit, 2);
+        app.delta_filter_cycle_unit();
+        assert_eq!(app.delta_filter_unit, 0);
+        app.delta_filter_cycle_unit();
+        assert_eq!(app.delta_filter_unit, 1);
+    }
+
+    #[test]
+    fn test_cursor_to_tree_idx_maps_through_filtered() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![TreeLine {
+            depth: 0,
+            node: TreeNode::Snapshot(
+                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                ROOT_NODE,
+            ),
+            expanded: false,
+            has_scan_data: false,
+            path: vec!["root".into()],
+        }];
+        app.filtered_tree_lines = vec![0];
+        app.cursor = 0;
+        assert_eq!(app.cursor_to_tree_idx(), 0);
+    }
+
+    #[test]
+    fn test_cursor_to_tree_idx_fallback_zero() {
+        let (tx, _) = mpsc::channel(1);
+        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.cursor_to_tree_idx(), 0);
+    }
+
+    // ── refresh_filtered_lines tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_refresh_filtered_lines_inactive() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["a".into()],
+            },
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["b".into()],
+            },
+        ];
+        app.delta_filter_active = false;
+        app.refresh_filtered_lines();
+        assert_eq!(app.filtered_tree_lines, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_refresh_filtered_lines_active() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["a".into()],
+            },
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["b".into()],
+            },
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["c".into()],
+            },
+        ];
+        app.delta_filter_active = true;
+        app.delta_filter_value = 100;
+        app.delta_filter_unit = 1;
+        app.delta_cache = HashMap::from([
+            (vec!["a".into()], 200_000_000i64),
+            (vec!["b".into()], 50_000_000i64),
+            (vec!["c".into()], 0i64),
+        ]);
+        app.refresh_filtered_lines();
+        // a = 200MB >= 100MB, b = 50MB < 100MB, c = 0 < 100MB
+        assert_eq!(app.filtered_tree_lines, vec![0]);
+    }
+
+    #[test]
+    fn test_refresh_filtered_lines_strict_zero() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["a".into()],
+            },
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["b".into()],
+            },
+        ];
+        app.delta_filter_active = true;
+        app.delta_filter_value = 0;
+        app.delta_filter_unit = 0;
+        app.delta_cache = HashMap::from([(vec!["a".into()], 0i64), (vec!["b".into()], 500i64)]);
+        app.refresh_filtered_lines();
+        // strict mode: delta > 0, so only b passes
+        assert_eq!(app.filtered_tree_lines, vec![1]);
+    }
+
+    #[test]
+    fn test_refresh_filtered_lines_cursor_clamp() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![TreeLine {
+            depth: 0,
+            node: TreeNode::Snapshot(
+                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                ROOT_NODE,
+            ),
+            expanded: false,
+            has_scan_data: false,
+            path: vec!["a".into()],
+        }];
+        app.delta_filter_active = true;
+        app.delta_filter_value = 1;
+        app.delta_filter_unit = 2;
+        app.delta_cache = HashMap::from([(vec!["a".into()], 0i64)]);
+        app.filtered_tree_lines = vec![0];
+        app.cursor = 0;
+        app.refresh_filtered_lines();
+        // line filtered out, cursor should be 0 when filtered_tree_lines is empty
+        assert!(app.filtered_tree_lines.is_empty());
+        assert_eq!(app.cursor, 0);
+    }
+
+    // ── clear_filter_pane tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_clear_filter_pane_resets_state() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.delta_filter_active = true;
+        app.delta_filter_value = 500;
+        app.delta_filter_unit = 2;
+        app.focus = Focus::FilterPane;
+        app.clear_filter_pane();
+        assert!(!app.delta_filter_active);
+        assert_eq!(app.delta_filter_value, 100);
+        assert_eq!(app.delta_filter_unit, 1);
+        assert_eq!(app.focus, Focus::Tree);
+    }
+
+    // ── command history tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_push_command_history_empty() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.push_command_history("");
+        assert!(app.command_history.is_empty());
+    }
+
+    #[test]
+    fn test_push_command_history_trimmed() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.push_command_history("  scan  ");
+        assert_eq!(app.command_history, vec!["scan"]);
+    }
+
+    #[test]
+    fn test_push_command_history_dedup() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.push_command_history("scan");
+        app.push_command_history("scan");
+        assert_eq!(app.command_history.len(), 1);
+    }
+
+    #[test]
+    fn test_push_command_history_cap() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        for i in 0..60 {
+            app.push_command_history(&format!("cmd{i}"));
+        }
+        assert_eq!(app.command_history.len(), 50);
+        assert_eq!(app.command_history[0], "cmd10");
+        assert_eq!(app.command_history[49], "cmd59");
+    }
+
+    #[test]
+    fn test_push_command_history_resets_idx() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.command_history_idx = Some(3);
+        app.push_command_history("scan");
+        assert_eq!(app.command_history_idx, None);
+    }
+
+    #[test]
+    fn test_clear_command_state() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.command_input = "scan".into();
+        app.command_matches = vec!["Scan"];
+        app.command_selected = 1;
+        app.clear_command_state();
+        assert!(app.command_input.is_empty());
+        assert!(app.command_matches.is_empty());
+        assert_eq!(app.command_selected, 0);
+    }
+
+    // ── update_command_matches tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_update_command_matches_empty() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.update_command_matches();
+        assert_eq!(app.command_matches.len(), App::COMMANDS.len());
+    }
+
+    #[test]
+    fn test_update_command_matches_fuzzy() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.command_input = "sc".into();
+        app.update_command_matches();
+        assert!(app.command_matches.contains(&"Scan"));
+    }
+
+    // ── cmd_* direct tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cmd_scan_not_scanning() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.cmd_scan().is_ok());
+    }
+
+    #[test]
+    fn test_cmd_scan_already_scanning() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.scanning = true;
+        assert_eq!(app.cmd_scan(), Err("already scanning".into()));
+    }
+
+    #[test]
+    fn test_cmd_consolidate_not_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.cmd_consolidate(), Err("not in server mode".into()));
+    }
+
+    #[test]
+    fn test_cmd_consolidate_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.cmd_consolidate().is_ok());
+    }
+
+    #[test]
+    fn test_cmd_filterfocus_not_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(app.cmd_filterfocus(), Err("not in server mode".into()));
+    }
+
+    #[test]
+    fn test_cmd_filterfocus_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        app.focus = Focus::Tree;
+        assert!(app.cmd_filterfocus().is_ok());
+        assert_eq!(app.focus, Focus::FilterPane);
+        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
+    }
+
+    #[test]
+    fn test_cmd_sort_quick_delta() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.sort_mode = SortMode::Name;
+        let result = app.cmd_sort_quick(SortMode::Delta, "Delta");
+        assert!(result.is_ok());
+        assert_eq!(app.sort_mode, SortMode::Delta);
+    }
+
+    #[test]
+    fn test_cmd_sort_quick_size() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.sort_mode = SortMode::Name;
+        let result = app.cmd_sort_quick(SortMode::Size, "Size");
+        assert!(result.is_ok());
+        assert_eq!(app.sort_mode, SortMode::Size);
+    }
+
+    // ── default_log_path tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_log_path_returns_non_empty() {
+        let path = default_log_path();
+        assert!(path.ends_with("argus.log"));
+    }
+
+    // ── time methods tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_time_preset_0() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.set_time_preset(0);
+        assert!(!app.time_custom);
+        assert!(app.time_from < app.time_to);
+        // 1h = 3_600_000 ms
+        assert!(app.time_to - app.time_from <= 3_600_000);
+    }
+
+    #[test]
+    fn test_set_time_preset_7d() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.set_time_preset(5);
+        assert_eq!(app.time_preset, 5);
+        // 7d = 604_800_000 ms
+        let diff = app.time_to - app.time_from;
+        assert!(diff >= 604_800_000 - 1000); // account for small time drift
+        assert!(diff <= 604_800_000 + 1000);
+    }
+
+    #[test]
+    fn test_time_preset_label_all() {
+        assert_eq!(App::time_preset_label(0), "1h");
+        assert_eq!(App::time_preset_label(1), "6h");
+        assert_eq!(App::time_preset_label(2), "12h");
+        assert_eq!(App::time_preset_label(3), "1d");
+        assert_eq!(App::time_preset_label(4), "3d");
+        assert_eq!(App::time_preset_label(5), "7d");
+        assert_eq!(App::time_preset_label(99), "1h");
+    }
+
+    #[test]
+    fn test_default_time_range() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.default_time_range();
+        assert_eq!(app.time_preset, 0);
+        assert!(!app.time_custom);
+    }
+
+    // ── execute_command additional tests ──────────────────────────────────────
+
+    #[test]
+    fn test_execute_delta_no_unit_uses_mb() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("delta 200").is_ok());
+        assert_eq!(app.delta_filter_value, 200);
+        assert_eq!(app.delta_filter_unit, 1);
+    }
+
+    #[test]
+    fn test_execute_delta_m_unit() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("delta 50m").is_ok());
+        assert_eq!(app.delta_filter_value, 50);
+        assert_eq!(app.delta_filter_unit, 1);
+    }
+
+    #[test]
+    fn test_execute_delta_g_unit() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("delta 2g").is_ok());
+        assert_eq!(app.delta_filter_value, 2);
+        assert_eq!(app.delta_filter_unit, 2);
+    }
+
+    #[test]
+    fn test_execute_delta_invalid_number() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        let result = app.execute_command("delta abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_sort_shortcuts() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.execute_command("sd").is_ok());
+        assert_eq!(app.sort_mode, SortMode::Delta);
+        assert!(app.execute_command("ss").is_ok());
+        assert_eq!(app.sort_mode, SortMode::Size);
+        assert!(app.execute_command("sn").is_ok());
+        assert_eq!(app.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn test_execute_scan() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.execute_command("scan").is_ok());
+    }
+
+    #[test]
+    fn test_execute_consolidate_not_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(
+            app.execute_command("consolidate"),
+            Err("not in server mode".into())
+        );
+    }
+
+    #[test]
+    fn test_execute_consolidate_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("consolidate").is_ok());
+    }
+
+    #[test]
+    fn test_execute_filterfocus_not_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert_eq!(
+            app.execute_command("filterfocus"),
+            Err("not in server mode".into())
+        );
+    }
+
+    #[test]
+    fn test_execute_filterfocus_server_mode() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.server_mode = true;
+        assert!(app.execute_command("filterfocus").is_ok());
+        assert_eq!(app.focus, Focus::FilterPane);
+    }
+
+    // ── SortMode tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sort_mode_toggle() {
+        assert_eq!(SortMode::Name.toggle(), SortMode::Size);
+        assert_eq!(SortMode::Size.toggle(), SortMode::Delta);
+        assert_eq!(SortMode::Delta.toggle(), SortMode::Name);
+    }
+
+    #[test]
+    fn test_sort_mode_label() {
+        assert_eq!(SortMode::Name.label(), "Name");
+        assert_eq!(SortMode::Size.label(), "Size");
+        assert_eq!(SortMode::Delta.label(), "Delta");
+    }
+
+    // ── TreeNode tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tree_node_snapshot_basics() {
+        let arena = vec![
+            FileNode {
+                name: "root".into(),
+                parent: None,
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                children: vec![("file.txt".into(), 1)],
+            },
+            FileNode {
+                name: "file.txt".into(),
+                parent: None,
+                is_dir: false,
+                file_type: FileType::File,
+                size: 1024,
+                children: Vec::new(),
+            },
+        ];
+        let snap = Arc::new(Snapshot::new(PathBuf::from("/tmp"), arena, 0));
+        let root = TreeNode::Snapshot(snap.clone(), ROOT_NODE);
+        assert!(root.is_dir());
+        assert_eq!(root.name(), "root");
+        assert_eq!(root.file_type(), FileType::Directory);
+        assert_eq!(root.current_size(), 0);
+
+        let file = TreeNode::Snapshot(snap.clone(), 1);
+        assert!(!file.is_dir());
+        assert_eq!(file.name(), "file.txt");
+        assert_eq!(file.file_type(), FileType::File);
+        assert_eq!(file.current_size(), 1024);
+    }
+
+    // ── selected_node_full_path tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_selected_node_full_path_skips_root() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.view_root_path = PathBuf::from("/home/user");
+        app.tree_lines = vec![TreeLine {
+            depth: 0,
+            node: TreeNode::Snapshot(
+                Arc::new(Snapshot::new(PathBuf::from("/home/user"), vec![], 0)),
+                ROOT_NODE,
+            ),
+            expanded: false,
+            has_scan_data: false,
+            path: vec!["user".into(), "docs".into(), "file.txt".into()],
+        }];
+        app.filtered_tree_lines = vec![0];
+        app.cursor = 0;
+        let path = app.selected_node_full_path();
+        assert_eq!(path, Some(PathBuf::from("/home/user/docs/file.txt")));
+    }
+
+    #[test]
+    fn test_selected_node_full_path_empty_tree() {
+        let (tx, _) = mpsc::channel(1);
+        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.selected_node_full_path().is_none());
+    }
+
+    // ── set_error tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_error_sets_last_error() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.set_error("test error".into(), 5);
+        assert_eq!(app.last_error.as_deref(), Some("test error"));
+        assert!(app.error_clear_at.is_some());
+    }
+
+    // ── selected_line tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_selected_line_returns_none_when_empty() {
+        let (tx, _) = mpsc::channel(1);
+        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.selected_line().is_none());
+    }
+
+    #[test]
+    fn test_selected_line_maps_through_filtered() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        let line = TreeLine {
+            depth: 0,
+            node: TreeNode::Snapshot(
+                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                ROOT_NODE,
+            ),
+            expanded: false,
+            has_scan_data: false,
+            path: vec!["root".into()],
+        };
+        app.tree_lines = vec![line.clone()];
+        app.filtered_tree_lines = vec![0];
+        app.cursor = 0;
+        assert_eq!(app.selected_line().unwrap().depth, 0);
+    }
+
+    // ── tree_line_relative_path tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_tree_line_relative_path_returns_path() {
+        let (tx, _) = mpsc::channel(1);
+        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        app.tree_lines = vec![TreeLine {
+            depth: 0,
+            node: TreeNode::Snapshot(
+                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
+                ROOT_NODE,
+            ),
+            expanded: false,
+            has_scan_data: false,
+            path: vec!["root".into(), "dir".into()],
+        }];
+        app.filtered_tree_lines = vec![0];
+        let path = app.tree_line_relative_path(0);
+        assert_eq!(path, Some(vec!["root".into(), "dir".into()]));
+    }
+
+    #[test]
+    fn test_tree_line_relative_path_out_of_bounds() {
+        let (tx, _) = mpsc::channel(1);
+        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+        assert!(app.tree_line_relative_path(0).is_none());
     }
 }

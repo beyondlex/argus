@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::app::{log_msg, App, AppMessage};
+use crate::app::{App, AppMessage};
 use crate::ipc_client::IpcClient;
+use crate::util::log_msg;
 
 impl App {
     /// Request delta data from daemon — single query to root path, build full map locally

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod command;
 pub mod components;
 pub mod config;
 pub mod delta;
@@ -8,4 +9,5 @@ pub mod ipc_client;
 pub mod search;
 pub mod time_utils;
 pub mod tree_ops;
+pub mod types;
 pub mod util;

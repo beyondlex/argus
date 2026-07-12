@@ -531,7 +531,7 @@ fn adjust_filter_focus(app: &mut App, forward: bool) {
                 (app.time_preset + count - 1) % count
             };
             let label = App::time_preset_label(next);
-            crate::app::log_msg(
+            crate::util::log_msg(
                 &app.log_path,
                 &format!(
                     "filter: {} key, preset={next} ({label})",
