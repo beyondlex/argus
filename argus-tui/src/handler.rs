@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
-use crate::app::{App, AppMessage, AppMode, FilterFocus, SearchMode, Focus, TreeNode};
+use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode, TreeNode};
 use crate::event::SHOULD_QUIT;
 use crate::ipc_client::IpcClient;
 

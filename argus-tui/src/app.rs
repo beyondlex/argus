@@ -996,8 +996,12 @@ impl App {
                     // Parse left side
                     let (from_ms, left_label, left_date) = if is_time_only(left) {
                         let time_parts: Vec<&str> = left.split(':').collect();
-                        let h: u32 = time_parts[0].parse().map_err(|_| format!("invalid hour: {left}"))?;
-                        let min: u32 = time_parts[1].parse().map_err(|_| format!("invalid minute: {left}"))?;
+                        let h: u32 = time_parts[0]
+                            .parse()
+                            .map_err(|_| format!("invalid hour: {left}"))?;
+                        let min: u32 = time_parts[1]
+                            .parse()
+                            .map_err(|_| format!("invalid minute: {left}"))?;
                         let (m, d) = today_md();
                         let label = format!("{:02}:{:02}", h, min);
                         (datetime_to_millis(m, d, h, min), label, Some((m, d)))
@@ -1019,7 +1023,8 @@ impl App {
 
                     // Parse right side
                     let (to_ms, right_label) = if is_time_only(right) {
-                        let date = left_date.ok_or("cannot inherit date for time-only right side")?;
+                        let date =
+                            left_date.ok_or("cannot inherit date for time-only right side")?;
                         let time_parts: Vec<&str> = right.split(':').collect();
                         let h: u32 = time_parts[0].parse().unwrap_or(0);
                         let min: u32 = time_parts[1].parse().unwrap_or(0);
@@ -1052,8 +1057,12 @@ impl App {
                     let now = now_in_millis();
                     if is_time_only(arg) {
                         let time_parts: Vec<&str> = arg.split(':').collect();
-                        let h: u32 = time_parts[0].parse().map_err(|_| format!("invalid hour: {arg}"))?;
-                        let min: u32 = time_parts[1].parse().map_err(|_| format!("invalid minute: {arg}"))?;
+                        let h: u32 = time_parts[0]
+                            .parse()
+                            .map_err(|_| format!("invalid hour: {arg}"))?;
+                        let min: u32 = time_parts[1]
+                            .parse()
+                            .map_err(|_| format!("invalid minute: {arg}"))?;
                         let (m, d) = today_md();
                         let from_ms = datetime_to_millis(m, d, h, min);
                         self.time_from = from_ms;
@@ -1067,11 +1076,13 @@ impl App {
                         self.time_from = from_ms;
                         self.time_to = now;
                         self.time_custom = true;
-                        self.time_custom_label = format!("{} ~ now", format_absolute_label(m, d, h, min));
+                        self.time_custom_label =
+                            format!("{} ~ now", format_absolute_label(m, d, h, min));
                         self.request_delta_refresh();
                         Ok(format!("time range: {}", self.time_custom_label))
                     } else {
-                        let ms = parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
+                        let ms =
+                            parse_duration(arg).map_err(|e| format!("invalid duration: {e}"))?;
                         self.time_from = now.saturating_sub(ms);
                         self.time_to = now;
                         self.time_custom = true;

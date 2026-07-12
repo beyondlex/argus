@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, FilterFocus, SearchMode, Focus, DELTA_UNIT_LABELS};
+use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, DELTA_UNIT_LABELS};
 use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
 use crate::handler;
 use crate::util::key_hints;

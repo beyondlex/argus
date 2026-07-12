@@ -52,6 +52,28 @@ pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metada
     let path_str = path.to_string_lossy();
     let size_str = util::format_size(metadata.len());
 
+    let (num_span, unit_span) = {
+        let leading = size_str.len() - size_str.trim_start().len();
+        let parts: Vec<&str> = size_str.trim().split_whitespace().collect();
+        if parts.len() >= 2 {
+            (
+                Span::styled(
+                    format!("{}{}", &size_str[..leading], parts[0]),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    parts[1],
+                    Style::default().fg(util::filesize_unit_color(parts[1])),
+                ),
+            )
+        } else {
+            (
+                Span::styled(size_str.clone(), Style::default().fg(Color::Gray)),
+                Span::raw(""),
+            )
+        }
+    };
+
     let lines = vec![
         Line::from(vec![
             Span::styled("Path:    ", Style::default().fg(Color::Gray).bold()),
@@ -59,7 +81,9 @@ pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metada
         ]),
         Line::from(vec![
             Span::styled("Size:    ", Style::default().fg(Color::Gray).bold()),
-            Span::styled(size_str, Style::default().fg(Color::Yellow)),
+            num_span,
+            Span::styled(" ", Style::default()),
+            unit_span,
         ]),
         Line::from(vec![
             Span::styled("Type:    ", Style::default().fg(Color::Gray).bold()),

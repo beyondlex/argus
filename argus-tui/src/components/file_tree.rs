@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{fuzzy_match_indices, SearchMode, SearchMatch, SortMode, TreeLine};
+use crate::app::{fuzzy_match_indices, SearchMatch, SearchMode, SortMode, TreeLine};
 use crate::util;
 use crate::util::key_hints;
 
@@ -113,12 +113,10 @@ pub fn render(
 
     let status_right_width: u16 = status_right.iter().map(|s| s.content.len() as u16).sum();
     if status_right_width > 0 {
-        let [left_area, right_area] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(status_right_width),
-        ])
-        .flex(Flex::SpaceBetween)
-        .areas(status_area);
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(status_right_width)])
+                .flex(Flex::SpaceBetween)
+                .areas(status_area);
 
         f.render_widget(Paragraph::new(Line::from(status_left)), left_area);
         f.render_widget(Paragraph::new(Line::from(status_right)), right_area);
@@ -156,12 +154,10 @@ pub fn render(
         };
 
         let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
-        let [name_area, info_area] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(right_width),
-        ])
-        .flex(Flex::SpaceBetween)
-        .areas(row_area);
+        let [name_area, info_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_width)])
+                .flex(Flex::SpaceBetween)
+                .areas(row_area);
 
         f.render_widget(Paragraph::new(Line::from(left_spans)), name_area);
         f.render_widget(Paragraph::new(Line::from(right_spans)), info_area);
@@ -285,12 +281,6 @@ fn render_tree_line<'a>(
         },
     );
 
-    let size_style = if line.node.is_dir() && !line.has_scan_data {
-        base.fg(Color::DarkGray).bg(Color::Reset)
-    } else {
-        base.fg(Color::Yellow).bg(Color::Reset)
-    };
-
     let mut right = Vec::new();
 
     if has_delta {
@@ -301,7 +291,10 @@ fn render_tree_line<'a>(
             None => "-".to_string(),
         };
         let delta_style = match delta {
-            Some(d) if d > 0 => base.fg(Color::Red).bg(Color::Reset),
+            Some(d) if d > 0 => {
+                let unit = util::extract_unit(&delta_str);
+                base.fg(util::delta_unit_color(unit)).bg(Color::Reset)
+            }
             Some(d) if d < 0 => base.fg(Color::Green).bg(Color::Reset),
             Some(_) => base.fg(Color::DarkGray).bg(Color::Reset),
             None => base.fg(Color::DarkGray).bg(Color::Reset),
@@ -310,7 +303,25 @@ fn render_tree_line<'a>(
         right.push(Span::raw(" "));
     }
 
-    right.push(Span::styled(size_str, size_style));
+    if line.node.is_dir() && !line.has_scan_data {
+        right.push(Span::styled(
+            size_str.clone(),
+            base.fg(Color::DarkGray).bg(Color::Reset),
+        ));
+    } else {
+        let trimmed = size_str.trim().to_string();
+        if let Some(space_idx) = trimmed.rfind(' ') {
+            let leading = size_str.len() - size_str.trim_start().len();
+            let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
+            right.push(Span::styled(num, base.fg(Color::Gray)));
+            right.push(Span::styled(
+                trimmed[space_idx + 1..].to_string(),
+                base.fg(util::filesize_unit_color(&trimmed[space_idx + 1..])),
+            ));
+        } else {
+            right.push(Span::styled(size_str.clone(), base.fg(Color::Gray)));
+        }
+    }
 
     (left, right)
 }

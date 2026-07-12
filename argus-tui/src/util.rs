@@ -163,6 +163,35 @@ pub fn is_protected_path(path: &Path) -> bool {
         .any(|p| canonical_str == *p || canonical_str.starts_with(&format!("{}/", p)))
 }
 
+/// Extract unit suffix from a formatted size string (e.g., "1.23 MB" -> "MB")
+pub fn extract_unit(s: &str) -> &str {
+    s.trim().split_whitespace().last().unwrap_or("B")
+}
+
+/// Map unit to color for positive delta display (entire string colored).
+/// B→Gray, KB→Yellow, MB→Orange, GB→Red
+pub fn delta_unit_color(unit: &str) -> Color {
+    match unit {
+        "B" => Color::Gray,
+        "KB" => Color::Yellow,
+        "MB" => Color::Rgb(255, 165, 0),
+        "GB" => Color::Red,
+        _ => Color::Gray,
+    }
+}
+
+/// Map unit to color for filesize display (unit part only).
+/// B→Green, KB→Yellow, MB→Orange, GB→Red
+pub fn filesize_unit_color(unit: &str) -> Color {
+    match unit {
+        "B" => Color::Green,
+        "KB" => Color::Yellow,
+        "MB" => Color::Rgb(255, 165, 0),
+        "GB" => Color::Red,
+        _ => Color::Green,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
