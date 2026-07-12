@@ -1,14 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Instant;
 
-use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
-
-use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode, TreeNode};
-use crate::event::SHOULD_QUIT;
+use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
 use crate::ipc_client::IpcClient;
 
 /// Handle keyboard events
@@ -57,10 +52,10 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
             app.pending_gg = false;
         }
-        KeyCode::Char('l') | KeyCode::Right => expand_node(app),
-        KeyCode::Char('h') | KeyCode::Left => collapse_or_navigate_up(app),
-        KeyCode::Char('H') => collapse_all_children(app),
-        KeyCode::Char('u') => navigate_up_root(app),
+        KeyCode::Char('l') | KeyCode::Right => crate::tree_ops::expand_node(app),
+        KeyCode::Char('h') | KeyCode::Left => crate::tree_ops::collapse_or_navigate_up(app),
+        KeyCode::Char('H') => crate::tree_ops::collapse_all_children(app),
+        KeyCode::Char('u') => crate::tree_ops::navigate_up_root(app),
         KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
         KeyCode::Char('s') => start_scan(app),
         KeyCode::Char('.') => set_root_to_selected(app),
@@ -73,8 +68,7 @@ fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('?') => app.mode = AppMode::Help,
         KeyCode::Char(':') => {
             app.mode = AppMode::Command;
-            app.command_input.clear();
-            app.command_selected = 0;
+            app.clear_command_state();
             app.command_history_idx = None;
             app.update_command_matches();
         }
@@ -129,8 +123,8 @@ fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
         }
         SearchMode::Active => {
             match key.code {
-                KeyCode::Char('n') => jump_to_next_match(app, 1),
-                KeyCode::Char('N') => jump_to_next_match(app, -1),
+                KeyCode::Char('n') => crate::search::jump_to_next_match(app, 1),
+                KeyCode::Char('N') => crate::search::jump_to_next_match(app, -1),
                 KeyCode::Char('/') => {
                     app.search_word.clear();
                     app.recompute_matches();
@@ -273,7 +267,7 @@ where
                 match delete_fn(&path) {
                     Ok(msg) => {
                         app.set_error(msg, 3);
-                        apply_deletion_to_state(app, &path);
+                        crate::tree_ops::apply_deletion_to_state(app, &path);
                         app.update_tree_lines();
                     }
                     Err(e) => {
@@ -374,9 +368,7 @@ fn handle_command_key(key: KeyEvent, app: &mut App) {
             execute_command(app, &cmd);
         }
         KeyCode::Esc => {
-            app.command_input.clear();
-            app.command_matches.clear();
-            app.command_selected = 0;
+            app.clear_command_state();
             app.mode = AppMode::Browsing;
         }
         _ => {}
@@ -387,26 +379,20 @@ fn execute_command(app: &mut App, cmd: &str) {
     let cmd = cmd.trim();
 
     if cmd.is_empty() {
-        app.command_input.clear();
-        app.command_matches.clear();
-        app.command_selected = 0;
+        app.clear_command_state();
         return;
     }
 
     app.push_command_history(cmd);
 
     if cmd.eq_ignore_ascii_case("Scan") {
-        app.command_input.clear();
-        app.command_matches.clear();
-        app.command_selected = 0;
+        app.clear_command_state();
         start_scan(app);
         return;
     }
 
     if cmd.eq_ignore_ascii_case("Consolidate") {
-        app.command_input.clear();
-        app.command_matches.clear();
-        app.command_selected = 0;
+        app.clear_command_state();
         if app.server_mode {
             let uds_path = app
                 .daemon_client
@@ -449,9 +435,7 @@ fn execute_command(app: &mut App, cmd: &str) {
             app.set_error(e, 4);
         }
     }
-    app.command_input.clear();
-    app.command_matches.clear();
-    app.command_selected = 0;
+    app.clear_command_state();
 }
 
 // ── Filter pane key handling ─────────────────────────────────────────────────
@@ -506,8 +490,7 @@ fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char(':') => {
             app.mode = AppMode::Command;
-            app.command_input.clear();
-            app.command_selected = 0;
+            app.clear_command_state();
             app.command_history_idx = None;
             app.update_command_matches();
         }
@@ -596,378 +579,6 @@ fn move_cursor(app: &mut App, delta: isize) {
     }
 }
 
-fn expand_node(app: &mut App) {
-    let Some(line) = app.selected_line().cloned() else {
-        return;
-    };
-    if !line.node.is_dir() {
-        return;
-    }
-
-    let path_key = match app.tree_line_relative_path(app.cursor) {
-        Some(path) => path,
-        None => return,
-    };
-
-    if line.expanded {
-        // Already expanded, move to first child
-        if app.cursor + 1 < app.tree_lines.len() {
-            app.cursor += 1;
-        }
-        return;
-    }
-
-    // Lazy-load children from disk when the tree node has no children.
-    let needs_listing = match &app.tree_root {
-        Some(TreeNode::Snapshot(snap_arc, root_idx)) => snap_arc
-            .find_node(*root_idx, &path_key)
-            .map(|found_idx| {
-                let node = snap_arc.node(found_idx);
-                node.children.is_empty()
-            })
-            .unwrap_or(false),
-        _ => false,
-    };
-
-    if needs_listing {
-        if let Some(dir_path) = app.selected_node_full_path() {
-            match argus_core::list_dir(&dir_path) {
-                Ok(listed) => {
-                    // Pre-compute scanned sizes before mutating the tree
-                    let mut enrich: HashMap<String, u64> = HashMap::new();
-                    if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &app.tree_root {
-                        let root_scan_tree =
-                            crate::app::resolve_scan_tree(&app.scan_cache, &app.view_root_path);
-                        for (name, child_idx) in &listed.node(ROOT_NODE).children {
-                            if listed.node(*child_idx).is_dir {
-                                let mut child_path = path_key.clone();
-                                child_path.push(name.clone());
-                                let scan_full_path = dir_path.join(name);
-                                let from_cache = app
-                                    .scan_cache
-                                    .get(&scan_full_path)
-                                    .map(|s| s.node(ROOT_NODE).size);
-                                if let Some(val) = from_cache {
-                                    enrich.insert(name.clone(), val);
-                                } else if let Some(scanned_idx) = root_scan_tree
-                                    .and_then(|(tree, idx)| tree.find_node(idx, &child_path))
-                                {
-                                    let (tree, _) = root_scan_tree.unwrap();
-                                    enrich.insert(name.clone(), tree.node(scanned_idx).size);
-                                } else if let Some(found_idx) =
-                                    snap_arc.find_node(*root_idx, &child_path)
-                                {
-                                    enrich.insert(name.clone(), snap_arc.node(found_idx).size);
-                                }
-                            }
-                        }
-                    }
-
-                    // Merge listed children into the tree root's arena
-                    if let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &mut app.tree_root {
-                        let snap = Arc::make_mut(snap_arc);
-                        if let Some(target_idx) = snap.find_node(*root_idx, &path_key) {
-                            let child_nodes: Vec<(String, FileNode)> = listed
-                                .node(ROOT_NODE)
-                                .children
-                                .iter()
-                                .map(|(name, idx)| (name.clone(), listed.node(*idx).clone()))
-                                .collect();
-
-                            for (name, node) in child_nodes {
-                                let new_idx = snap.arena.len() as NodeIndex;
-                                snap.arena.push(node);
-                                snap.node_mut(target_idx)
-                                    .children
-                                    .push((name.clone(), new_idx));
-                                if let Some(&size) = enrich.get(&name) {
-                                    snap.node_mut(new_idx).size = size;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    app.set_error(format!("cannot list directory: {}", e), 3);
-                }
-            }
-        }
-    }
-
-    app.expanded.insert(path_key);
-    app.update_tree_lines();
-}
-
-fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
-    let mut keys_to_remove = Vec::new();
-
-    for key in app.scan_cache.keys() {
-        if deleted_path.starts_with(key) || key.starts_with(deleted_path) {
-            keys_to_remove.push(key.clone());
-        }
-    }
-
-    for key in keys_to_remove {
-        if key == app.view_root_path {
-            if let Some(snapshot) = app.scan_cache.get_mut(&key) {
-                remove_path_from_snapshot(snapshot, deleted_path);
-            }
-        } else {
-            app.scan_cache.remove(&key);
-        }
-    }
-
-    if let Some(crate::app::TreeNode::Snapshot(snap_arc, _)) = &mut app.tree_root {
-        let snap = Arc::make_mut(snap_arc);
-        let _ = remove_path_from_tree(snap, &app.view_root_path, deleted_path);
-    }
-}
-
-fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bool {
-    let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
-        return false;
-    };
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(String::from))
-        .collect();
-    if components.is_empty() {
-        return false;
-    }
-    let removed = prune_file_node(snapshot, ROOT_NODE, &components, 0);
-    if removed {
-        snapshot.total_size = snapshot.node(ROOT_NODE).size;
-    }
-    removed
-}
-
-fn remove_path_from_tree(snap: &mut Snapshot, root_path: &Path, deleted_path: &Path) -> bool {
-    let Ok(relative) = deleted_path.strip_prefix(root_path) else {
-        return false;
-    };
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(String::from))
-        .collect();
-    if components.is_empty() {
-        return false;
-    }
-    prune_file_node(snap, ROOT_NODE, &components, 0)
-}
-
-fn prune_file_node(
-    snap: &mut Snapshot,
-    current_idx: NodeIndex,
-    components: &[String],
-    index: usize,
-) -> bool {
-    if index >= components.len() {
-        return false;
-    }
-
-    let removed = if index + 1 == components.len() {
-        let node = snap.node_mut(current_idx);
-        let pos = node
-            .children
-            .iter()
-            .position(|(n, _)| n == &components[index]);
-        pos.map(|p| node.children.swap_remove(p)).is_some()
-    } else if let Some(child_idx) = snap.node(current_idx).child_idx(&components[index]) {
-        let removed = prune_file_node(snap, child_idx, components, index + 1);
-        if removed {
-            recompute_file_node_size(snap, current_idx);
-        }
-        removed
-    } else {
-        false
-    };
-
-    if removed {
-        recompute_file_node_size(snap, current_idx);
-    }
-    removed
-}
-
-fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
-    if snap.node(idx).children.is_empty() {
-        return snap.node(idx).size;
-    }
-
-    let children: Vec<NodeIndex> = snap
-        .node(idx)
-        .children
-        .iter()
-        .map(|(_, idx)| *idx)
-        .collect();
-    let mut total = 0u64;
-    for child_idx in children {
-        total = total.saturating_add(recompute_file_node_size(snap, child_idx));
-    }
-    snap.node_mut(idx).size = total;
-    total
-}
-
-fn jump_to_next_match(app: &mut App, delta: isize) {
-    if SHOULD_QUIT.load(Ordering::Relaxed) {
-        app.should_quit = true;
-        return;
-    }
-    if app.match_indices.is_empty() {
-        return;
-    }
-    let Some(current_path) = app.tree_line_relative_path(app.cursor) else {
-        return;
-    };
-    let Some(anchor_walk_idx) = app.get_walk_idx(&current_path) else {
-        return;
-    };
-
-    let new_idx = if delta >= 0 {
-        next_match_index(&app.match_indices, anchor_walk_idx).unwrap_or(0)
-    } else {
-        prev_match_index(&app.match_indices, anchor_walk_idx).unwrap_or(app.match_indices.len() - 1)
-    };
-
-    app.current_match = new_idx;
-    let target_path = app.match_indices[new_idx].path.clone();
-
-    let newly_expanded = if target_path.len() > 1 {
-        expand_ancestor_prefixes(&mut app.expanded, &target_path[..target_path.len() - 1])
-    } else {
-        Vec::new()
-    };
-
-    if !newly_expanded.is_empty() {
-        // Incrementally expand each newly visible directory (shallowest first)
-        for path in &newly_expanded {
-            app.expand_path_in_tree(path);
-        }
-    }
-
-    // Find the exact match by relative path, not just name.
-    if let Some(pos) = app
-        .tree_lines
-        .iter()
-        .position(|line| line.path == target_path)
-    {
-        // Map tree_lines position to filtered view position.
-        // If this match was filtered out, skip to the next visible match.
-        if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
-            app.cursor = cursor_pos;
-            return;
-        }
-    }
-
-    // Current match is not in the filtered view — find the next visible match
-    let total = app.match_indices.len();
-    for offset in 1..total {
-        let try_idx = if delta >= 0 {
-            (new_idx + offset) % total
-        } else {
-            (new_idx + total - offset) % total
-        };
-        let try_path = &app.match_indices[try_idx].path;
-        if let Some(pos) = app
-            .tree_lines
-            .iter()
-            .position(|line| line.path == *try_path)
-        {
-            if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
-                app.current_match = try_idx;
-                app.cursor = cursor_pos;
-                return;
-            }
-        }
-    }
-}
-
-fn next_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
-    if matches.is_empty() {
-        return None;
-    }
-    let idx = matches.binary_search_by_key(&anchor_walk_idx, |m| m.walk_idx);
-    let start = match idx {
-        Ok(i) => i + 1,
-        Err(i) => i,
-    };
-    if start < matches.len() {
-        Some(start)
-    } else {
-        Some(0)
-    }
-}
-
-fn prev_match_index(matches: &[crate::app::SearchMatch], anchor_walk_idx: usize) -> Option<usize> {
-    if matches.is_empty() {
-        return None;
-    }
-    let idx = matches.binary_search_by_key(&anchor_walk_idx, |m| m.walk_idx);
-    let end = match idx {
-        Ok(i) => i,
-        Err(i) => i,
-    };
-    if end > 0 {
-        Some(end - 1)
-    } else {
-        Some(matches.len() - 1)
-    }
-}
-
-fn collapse_or_navigate_up(app: &mut App) {
-    let Some(line) = app.selected_line().cloned() else {
-        return;
-    };
-
-    // At root (depth 0): nothing to collapse, no parent within tree
-    if line.depth == 0 {
-        return;
-    }
-
-    let path_key = match app.tree_line_relative_path(app.cursor) {
-        Some(path) => path,
-        None => return,
-    };
-
-    if line.node.is_dir() && line.expanded {
-        // Collapse this node
-        app.expanded.remove(&path_key);
-        app.update_tree_lines();
-    } else {
-        // Go to parent: find first line with depth-1 before cursor
-        if app.cursor > 0 {
-            let target_depth = line.depth.saturating_sub(1);
-            for i in (0..app.cursor).rev() {
-                let actual_idx = app.filtered_tree_lines.get(i).copied().unwrap_or(0);
-                if app.tree_lines.get(actual_idx).map(|l| l.depth) == Some(target_depth) {
-                    app.cursor = i;
-                    return;
-                }
-            }
-        }
-    }
-}
-
-fn collapse_all_children(app: &mut App) {
-    // Remove all expanded paths deeper than root (length > 1).
-    // Root (depth 0) is always expanded by the flatten logic.
-    app.expanded.retain(|p| p.len() <= 1);
-    app.update_tree_lines();
-
-    // Snap cursor to root if it was on a now-hidden child
-    if app.cursor >= app.tree_lines.len() {
-        app.cursor = 0;
-    }
-}
-
-fn navigate_up_root(app: &mut App) {
-    if let Some(parent) = app.view_root_path.parent() {
-        if parent != app.view_root_path {
-            app.view_root_path = parent.to_path_buf();
-            app.rebuild_tree();
-        }
-    }
-}
-
 pub fn set_root_to_selected(app: &mut App) {
     let Some(line) = app.selected_line().cloned() else {
         return;
@@ -1022,31 +633,14 @@ pub fn start_scan(app: &mut App) {
     });
 }
 
-fn expand_ancestor_prefixes(
-    expanded: &mut std::collections::HashSet<Vec<String>>,
-    path: &[String],
-) -> Vec<Vec<String>> {
-    let mut expanded_paths = Vec::new();
-    if path.len() <= 1 {
-        return expanded_paths;
-    }
-
-    for len in 2..=path.len() {
-        let ancestor = path[..len].to_vec();
-        if expanded.insert(ancestor.clone()) {
-            expanded_paths.push(ancestor);
-        }
-    }
-    expanded_paths
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TreeNode;
+    use crate::app::{TreeLine, TreeNode};
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -1083,376 +677,6 @@ mod tests {
         app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
         app.update_tree_lines();
         app
-    }
-
-    #[test]
-    fn test_jump_to_next_match_uses_full_path() {
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1), ("b", 2)]),
-            dir_node("a", vec![("target", 3)]),
-            dir_node("b", vec![("target", 4)]),
-            file_node("target", 1),
-            file_node("target", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded
-            .insert(vec!["test".to_string(), "a".to_string()]);
-        app.expanded
-            .insert(vec!["test".to_string(), "b".to_string()]);
-        app.update_tree_lines();
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-
-        assert_eq!(app.match_indices.len(), 2);
-        app.cursor = 2;
-        app.current_match = 1;
-
-        jump_to_next_match(&mut app, 1);
-
-        let selected = app.selected_line().expect("cursor should point to a line");
-        assert_eq!(selected.node.name(), "target");
-        assert_eq!(app.cursor, 4);
-        assert_eq!(
-            app.match_indices[0].path,
-            vec!["test".to_string(), "a".to_string(), "target".to_string()]
-        );
-        assert_eq!(
-            app.match_indices[1].path,
-            vec!["test".to_string(), "b".to_string(), "target".to_string()]
-        );
-        assert_eq!(
-            app.selected_node_full_path().expect("selected path"),
-            std::path::PathBuf::from("/tmp/test/b/target")
-        );
-    }
-
-    #[test]
-    fn test_jump_auto_expands_collapsed_ancestors() {
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1), ("b", 2)]),
-            dir_node("a", vec![("target_file", 3)]),
-            dir_node("b", vec![("other", 4)]),
-            file_node("target_file", 1),
-            file_node("other", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        // Don't expand any subdirectories — only root is expanded
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-
-        assert_eq!(app.match_indices.len(), 1);
-        assert!(
-            app.match_indices[0].tree_idx.is_none(),
-            "match should be hidden (tree_idx=None) before expansion"
-        );
-
-        // Jump to the match — should auto-expand ancestors
-        app.cursor = 0;
-        jump_to_next_match(&mut app, 1);
-
-        let selected = app.selected_line().expect("cursor should point to a line");
-        assert_eq!(selected.node.name(), "target_file");
-        assert!(
-            app.expanded
-                .contains(&vec!["test".to_string(), "a".to_string()]),
-            "parent 'a' should be in expanded set"
-        );
-        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
-        assert!(
-            tree_paths.contains(&vec![
-                "test".to_string(),
-                "a".to_string(),
-                "target_file".to_string()
-            ]),
-            "target_file should be in tree_lines after expansion"
-        );
-    }
-
-    #[test]
-    fn test_jump_auto_expands_deeply_nested() {
-        // Setup: root/a/b/c/target (4 levels deep, all collapsed)
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1)]),
-            dir_node("a", vec![("b", 2)]),
-            dir_node("b", vec![("c", 3)]),
-            dir_node("c", vec![("target", 4)]),
-            file_node("target", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-
-        assert_eq!(app.match_indices.len(), 1);
-        assert!(app.match_indices[0].tree_idx.is_none());
-
-        app.cursor = 0;
-        jump_to_next_match(&mut app, 1);
-
-        let selected = app.selected_line().expect("cursor should point to a line");
-        assert_eq!(selected.node.name(), "target");
-        assert!(app
-            .expanded
-            .contains(&vec!["test".to_string(), "a".to_string()]));
-        assert!(app
-            .expanded
-            .contains(&vec!["test".to_string(), "a".to_string(), "b".to_string()]));
-        assert!(app.expanded.contains(&vec![
-            "test".to_string(),
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string()
-        ]));
-        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
-        assert!(
-            tree_paths.contains(&vec![
-                "test".to_string(),
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string(),
-                "target".to_string()
-            ]),
-            "deeply nested target should be in tree_lines"
-        );
-    }
-
-    #[test]
-    fn test_jump_auto_expands_partially_expanded() {
-        // Setup: root/a/b/target where "a" is already expanded but "b" is not
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1), ("x", 2)]),
-            dir_node("a", vec![("b", 3)]),
-            dir_node("x", vec![]),
-            dir_node("b", vec![("target", 4)]),
-            file_node("target", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        // Expand "a" but NOT "a/b"
-        app.expanded
-            .insert(vec!["test".to_string(), "a".to_string()]);
-        app.update_tree_lines();
-
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-
-        assert_eq!(app.match_indices.len(), 1);
-        assert!(
-            app.match_indices[0].tree_idx.is_none(),
-            "match should be hidden because 'a/b' is collapsed"
-        );
-
-        app.cursor = 0;
-        jump_to_next_match(&mut app, 1);
-
-        let selected = app.selected_line().expect("cursor should point to a line");
-        assert_eq!(selected.node.name(), "target");
-        let tree_paths: Vec<Vec<String>> = app.tree_lines.iter().map(|l| l.path.clone()).collect();
-        assert!(
-            tree_paths.contains(&vec![
-                "test".to_string(),
-                "a".to_string(),
-                "b".to_string(),
-                "target".to_string()
-            ]),
-            "target should be in tree_lines after partial expansion"
-        );
-    }
-
-    #[test]
-    fn test_refresh_filtered_lines_keeps_hidden_matches() {
-        // Regression: refresh_filtered_lines must NOT prune matches with tree_idx=None.
-        // These are matches in collapsed subtrees. Previously the retain condition
-        // `.is_some_and(...)` removed them, making n/N unable to find them.
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1)]),
-            dir_node("a", vec![("target", 2)]),
-            file_node("target", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-
-        assert_eq!(app.match_indices.len(), 1);
-        assert!(
-            app.match_indices[0].tree_idx.is_none(),
-            "match in collapsed subtree should have tree_idx=None"
-        );
-
-        // Simulate what happens when a background message (e.g. DeltaData) arrives:
-        // refresh_filtered_lines is called, which should NOT drop hidden matches.
-        app.refresh_filtered_lines();
-
-        assert!(
-            !app.match_indices.is_empty(),
-            "hidden matches must survive refresh_filtered_lines"
-        );
-        assert_eq!(
-            app.match_indices[0].tree_idx, None,
-            "hidden match should still have tree_idx=None after refresh"
-        );
-
-        // n/N should still work
-        app.cursor = 0;
-        jump_to_next_match(&mut app, 1);
-        let selected = app.selected_line().expect("cursor should point to a line");
-        assert_eq!(selected.node.name(), "target");
-    }
-
-    #[test]
-    fn test_expanded_is_path_scoped() {
-        let root_arena = vec![
-            dir_node("root", vec![("left", 1), ("right", 2)]),
-            dir_node("left", vec![("common", 3)]),
-            dir_node("right", vec![("common", 4)]),
-            dir_node("common", vec![("l.txt", 5)]),
-            dir_node("common", vec![("r.txt", 6)]),
-            file_node("l.txt", 1),
-            file_node("r.txt", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/root"), root_arena, 2);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/root"), vec![file_node("root", 0)], 0);
-
-        let mut app = make_app(snap, scan_snap);
-        app.view_root_path = PathBuf::from("/tmp/root");
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded
-            .insert(vec!["root".to_string(), "left".to_string()]);
-        app.expanded.insert(vec![
-            "root".to_string(),
-            "left".to_string(),
-            "common".to_string(),
-        ]);
-        app.update_tree_lines();
-
-        let visible_paths: Vec<Vec<String>> = app
-            .tree_lines
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, _)| app.tree_line_relative_path(idx))
-            .collect();
-
-        assert!(visible_paths.contains(&vec![
-            "root".to_string(),
-            "left".to_string(),
-            "common".to_string()
-        ]));
-        assert!(!visible_paths.contains(&vec![
-            "root".to_string(),
-            "right".to_string(),
-            "common".to_string()
-        ]));
-    }
-
-    #[test]
-    fn test_expand_node_keeps_regular_dirs_marked_with_metadata() {
-        let temp = TempDir::new().unwrap();
-        let root_path = temp.path().join("root");
-        fs::create_dir_all(root_path.join("sub")).unwrap();
-        fs::write(root_path.join("sub").join("file.txt"), "data").unwrap();
-
-        // Root node in arena with a metadata-less child
-        let root_arena = vec![
-            FileNode {
-                name: "root".to_string(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 0,
-                children: [("sub".to_string(), 1)].into_iter().collect(),
-            },
-            FileNode {
-                name: "sub".to_string(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 0,
-                children: Vec::new(),
-            },
-        ];
-        let snap = Snapshot::new(root_path.clone(), root_arena, 0);
-        let scan_snap = Snapshot::new(root_path.clone(), vec![dir_node("root", vec![])], 0);
-
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.view_root_path = root_path.clone();
-        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(root_path.clone(), scan_snap);
-        app.update_tree_lines();
-        app.cursor = 1;
-
-        expand_node(&mut app);
-
-        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
-        let sub = snap_arc.node(1);
-        assert!(sub.is_dir);
-    }
-
-    #[test]
-    fn test_delete_updates_parent_sizes_and_scan_cache() {
-        fn sized_file(name: &str, size: u64) -> FileNode {
-            FileNode {
-                name: name.to_string(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size,
-                children: Vec::new(),
-            }
-        }
-
-        // Arena: test/ignore/{keep.bin, delete.bin}
-        let arena = vec![
-            dir_node("test", vec![("ignore", 1)]),
-            dir_node("ignore", vec![("keep.bin", 2), ("delete.bin", 3)]),
-            sized_file("keep.bin", 12),
-            sized_file("delete.bin", 10),
-        ];
-        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 22);
-
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 22);
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.view_root_path = PathBuf::from("/tmp/test");
-        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache
-            .insert(PathBuf::from("/tmp/test"), root_snapshot);
-        app.update_tree_lines();
-
-        apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
-        app.update_tree_lines();
-
-        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
-        let ignore = snap_arc.node(1);
-        assert_eq!(ignore.size, 12);
-        assert_eq!(snap_arc.node(ROOT_NODE).size, 12);
-
-        let cached = app.scan_cache.get(&PathBuf::from("/tmp/test")).unwrap();
-        assert_eq!(cached.node(ROOT_NODE).size, 12);
-        let cached_ignore = cached.node(1);
-        assert_eq!(cached_ignore.size, 12);
-        assert!(!cached_ignore
-            .children
-            .iter()
-            .any(|(n, _)| n == "delete.bin"));
     }
 
     // ── filter pane key handlers ─────────────────────────────────────────────
@@ -1686,6 +910,747 @@ mod tests {
         assert!(!file_path.exists());
         assert_eq!(app.mode, AppMode::Browsing);
         assert!(app.delete_target_path.is_none());
+    }
+
+    // ── move_cursor ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_move_cursor_basic_down() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.filtered_tree_lines = vec![0, 1, 2];
+        app.tree_lines = vec![
+            TreeLine {
+                depth: 0,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(
+                        PathBuf::from("/"),
+                        vec![file_node("root", 0)],
+                        0,
+                    )),
+                    ROOT_NODE,
+                ),
+                expanded: true,
+                has_scan_data: false,
+                path: vec!["root".to_string()],
+            },
+            TreeLine {
+                depth: 1,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(
+                        PathBuf::from("/"),
+                        vec![file_node("a", 0)],
+                        0,
+                    )),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["root".to_string(), "a".to_string()],
+            },
+            TreeLine {
+                depth: 1,
+                node: TreeNode::Snapshot(
+                    Arc::new(Snapshot::new(
+                        PathBuf::from("/"),
+                        vec![file_node("b", 0)],
+                        0,
+                    )),
+                    ROOT_NODE,
+                ),
+                expanded: false,
+                has_scan_data: false,
+                path: vec!["root".to_string(), "b".to_string()],
+            },
+        ];
+        app.cursor = 0;
+
+        move_cursor(&mut app, 1);
+        assert_eq!(app.cursor, 1);
+
+        move_cursor(&mut app, 1);
+        assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn test_move_cursor_basic_up() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.filtered_tree_lines = vec![0, 1, 2];
+        app.cursor = 2;
+
+        move_cursor(&mut app, -1);
+        assert_eq!(app.cursor, 1);
+
+        move_cursor(&mut app, -1);
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_bounds_top() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.filtered_tree_lines = vec![0, 1, 2];
+        app.cursor = 0;
+
+        move_cursor(&mut app, -1);
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_bounds_bottom() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.filtered_tree_lines = vec![0, 1, 2];
+        app.cursor = 2;
+
+        move_cursor(&mut app, 1);
+        assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn test_move_cursor_empty() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.filtered_tree_lines = vec![];
+        app.cursor = 0;
+
+        move_cursor(&mut app, 1);
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn test_set_root_to_selected_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("file.txt"), "data").unwrap();
+        // Put a snapshot for the new root in the cache
+        let sub_snap = Snapshot::new(sub.clone(), vec![file_node("sub", 0)], 0);
+        let arena = vec![
+            dir_node(
+                tmp.path().file_name().unwrap().to_str().unwrap(),
+                vec![("sub", 1)],
+            ),
+            dir_node("sub", vec![("file.txt", 2)]),
+            file_node("file.txt", 100),
+        ];
+        let snap = Snapshot::new(tmp.path().to_path_buf(), arena, 100);
+        let scan_snap = Snapshot::new(tmp.path().to_path_buf(), vec![file_node("tmp", 0)], 0);
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = tmp.path().to_path_buf();
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+        app.scan_cache.insert(tmp.path().to_path_buf(), scan_snap);
+        app.scan_cache.insert(sub, sub_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.update_tree_lines();
+        app.cursor = 1; // on "sub"
+
+        set_root_to_selected(&mut app);
+
+        assert_eq!(app.view_root_path, tmp.path().join("sub"));
+    }
+
+    #[test]
+    fn test_set_root_to_selected_non_dir() {
+        let arena = vec![
+            dir_node("test", vec![("file.txt", 1)]),
+            file_node("file.txt", 100),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 100);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded.insert(vec!["test".to_string()]);
+        app.update_tree_lines();
+        app.cursor = 1; // on "file.txt"
+
+        let prev_root = app.view_root_path.clone();
+        set_root_to_selected(&mut app);
+
+        // Should not change root since file.txt is not a dir
+        assert_eq!(app.view_root_path, prev_root);
+    }
+
+    #[test]
+    fn test_set_root_to_selected_already_at_root() {
+        let arena = vec![dir_node("test", vec![])];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.update_tree_lines();
+        app.cursor = 0; // on root
+
+        let prev_root = app.view_root_path.clone();
+        set_root_to_selected(&mut app);
+
+        // Should not change root since already at root
+        assert_eq!(app.view_root_path, prev_root);
+    }
+
+    // ── handle_gg_double_tap ─────────────────────────────────────────────
+
+    #[test]
+    fn test_gg_double_tap_first_sets_pending() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.pending_gg = false;
+        app.cursor = 5;
+
+        handle_gg_double_tap(&mut app);
+
+        assert!(app.pending_gg);
+        assert_eq!(app.cursor, 5);
+    }
+
+    #[test]
+    fn test_gg_double_tap_second_jumps_to_top() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.pending_gg = true;
+        app.cursor = 5;
+
+        handle_gg_double_tap(&mut app);
+
+        assert!(!app.pending_gg);
+        assert_eq!(app.cursor, 0);
+    }
+
+    // ── handle_help_key ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_help_key_esc_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Help;
+
+        handle_help_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.mode, AppMode::Browsing);
+
+        app.mode = AppMode::Help;
+        handle_help_key(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    #[test]
+    fn test_help_key_other_keys_ignored() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Help;
+
+        handle_help_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    // ── handle_time_help_key ─────────────────────────────────────────────
+
+    #[test]
+    fn test_time_help_key_esc_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::TimeHelp;
+        app.time_help_scroll = 5;
+
+        handle_time_help_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert_eq!(app.time_help_scroll, 0);
+    }
+
+    #[test]
+    fn test_time_help_key_scroll_down() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::TimeHelp;
+        app.time_help_scroll = 0;
+
+        handle_time_help_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.time_help_scroll, 1);
+    }
+
+    #[test]
+    fn test_time_help_key_scroll_up() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::TimeHelp;
+        app.time_help_scroll = 5;
+
+        handle_time_help_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.time_help_scroll, 4);
+    }
+
+    #[test]
+    fn test_time_help_key_scroll_up_stays_non_negative() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::TimeHelp;
+        app.time_help_scroll = 0;
+
+        handle_time_help_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+            &mut app,
+        );
+        // saturating_sub, so stays at 0
+        assert_eq!(app.time_help_scroll, 0);
+    }
+
+    // ── handle_search_keys ───────────────────────────────────────────────
+
+    #[test]
+    fn test_search_keys_input_char() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Input;
+        // Set up tree_root so recompute_matches doesn't panic
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(app.search_word, "f");
+    }
+
+    #[test]
+    fn test_search_keys_input_backspace() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Input;
+        app.search_word = "fo".to_string();
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(app.search_word, "f");
+    }
+
+    #[test]
+    fn test_search_keys_input_enter_empty_goes_inactive() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Input;
+        app.search_word.clear();
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(app.search_mode, SearchMode::Inactive);
+    }
+
+    #[test]
+    fn test_search_keys_input_enter_with_word_goes_active() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Input;
+        app.search_word = "foo".to_string();
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(app.search_mode, SearchMode::Active);
+    }
+
+    #[test]
+    fn test_search_keys_input_esc_clears_and_goes_inactive() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Input;
+        app.search_word = "foo".to_string();
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        let consumed =
+            handle_search_keys(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert!(consumed);
+        assert!(app.search_word.is_empty());
+        assert_eq!(app.search_mode, SearchMode::Inactive);
+    }
+
+    #[test]
+    fn test_search_keys_active_n_jumps_next() {
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1), ("b", 2)]),
+            dir_node("a", vec![("target", 3)]),
+            dir_node("b", vec![("target", 4)]),
+            file_node("target", 1),
+            file_node("target", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded
+            .insert(vec!["test".to_string(), "a".to_string()]);
+        app.expanded
+            .insert(vec!["test".to_string(), "b".to_string()]);
+        app.update_tree_lines();
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+        app.search_mode = SearchMode::Active;
+        app.cursor = 0;
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!consumed);
+        let selected = app.selected_line().unwrap();
+        assert_eq!(selected.node.name(), "target");
+    }
+
+    #[test]
+    fn test_search_keys_active_esc_returns_inactive() {
+        let root_arena = vec![dir_node("test", vec![])];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 0);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+        app.search_mode = SearchMode::Active;
+
+        let consumed =
+            handle_search_keys(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert!(consumed);
+        assert!(app.search_word.is_empty());
+        assert_eq!(app.search_mode, SearchMode::Inactive);
+    }
+
+    #[test]
+    fn test_search_keys_inactive_returns_false() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Inactive;
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert!(!consumed);
+    }
+
+    // ── handle_delete_action ─────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_action_root_dir_guard() {
+        let arena = vec![dir_node("test", vec![])];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.update_tree_lines();
+        app.cursor = 0; // on root "test"
+
+        handle_delete_action(&mut app, false);
+
+        // Should not enter delete prompt — root dir guard
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.delete_target_path.is_none());
+    }
+
+    #[test]
+    fn test_delete_action_non_root_dir() {
+        let arena = vec![dir_node("test", vec![("sub", 1)]), dir_node("sub", vec![])];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded
+            .insert(vec!["test".to_string(), "sub".to_string()]);
+        app.update_tree_lines();
+        app.cursor = 1; // on "sub" (depth 1, not root)
+
+        handle_delete_action(&mut app, false);
+
+        // Should enter delete prompt (non-root dir)
+        assert_eq!(app.mode, AppMode::DeletePrompt);
+        assert!(app.delete_target_path.is_some());
+    }
+
+    #[test]
+    fn test_delete_action_permanent_flag() {
+        let arena = vec![dir_node("test", vec![("sub", 1)]), dir_node("sub", vec![])];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.expanded
+            .insert(vec!["test".to_string(), "sub".to_string()]);
+        app.update_tree_lines();
+        app.cursor = 1;
+
+        handle_delete_action(&mut app, true);
+
+        assert_eq!(app.mode, AppMode::DeletePermanentPrompt);
+    }
+
+    // ── adjust_filter_focus ──────────────────────────────────────────────
+
+    #[test]
+    fn test_adjust_filter_focus_time_preset_forward() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        // Use non-existent path so request_delta_refresh returns early
+        app.view_root_path = PathBuf::from("/nonexistent_path_xyz");
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::TimePreset;
+        app.time_preset = 0;
+
+        adjust_filter_focus(&mut app, true);
+
+        assert_eq!(app.time_preset, 1);
+    }
+
+    #[test]
+    fn test_adjust_filter_focus_time_preset_backward() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/nonexistent_path_xyz");
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::TimePreset;
+        app.time_preset = 1;
+
+        adjust_filter_focus(&mut app, false);
+
+        assert_eq!(app.time_preset, 0);
+    }
+
+    #[test]
+    fn test_adjust_filter_focus_delta_value_forward() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::DeltaValue;
+        app.delta_filter_active = false;
+        app.delta_filter_value = 0;
+
+        adjust_filter_focus(&mut app, true);
+
+        assert!(app.delta_filter_active);
+    }
+
+    #[test]
+    fn test_adjust_filter_focus_delta_unit_forward() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.focus = Focus::FilterPane;
+        app.filter_focus = FilterFocus::DeltaUnit;
+        app.delta_filter_active = false;
+        app.delta_filter_unit = 0;
+
+        adjust_filter_focus(&mut app, true);
+
+        assert!(app.delta_filter_active);
+    }
+
+    // ── prev_match_index ─────────────────────────────────────────────────
+
+    #[test]
+    // ── execute_command ──────────────────────────────────────────────────
+    #[test]
+    fn test_execute_command_empty() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.command_input = "  ".to_string();
+
+        execute_command(&mut app, "  ");
+
+        assert!(app.command_input.is_empty());
+    }
+
+    #[test]
+    fn test_execute_command_unknown_command() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        // Set up a tree_root so execute_command doesn't error on missing root
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+
+        execute_command(&mut app, "xyzzy");
+
+        // Unknown command should produce an error
+        assert!(app.last_error.is_some());
+    }
+
+    // ── handle_command_key ───────────────────────────────────────────────
+
+    #[test]
+    fn test_command_key_char_input() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.command_input, "s");
+    }
+
+    #[test]
+    fn test_command_key_backspace() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "sc".to_string();
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.command_input, "s");
+    }
+
+    #[test]
+    fn test_command_key_esc_clears_and_exits() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "scan".to_string();
+        app.command_matches = vec!["Scan"];
+        app.command_selected = 0;
+
+        handle_command_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert!(app.command_input.is_empty());
+        assert!(app.command_matches.is_empty());
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    #[test]
+    fn test_command_key_char_limited_to_200() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "x".repeat(200);
+
+        // Try to add another char — should be ignored
+        handle_command_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.command_input.len(), 200);
+    }
+
+    // ── handle_browsing_key dispatch ─────────────────────────────────────
+
+    #[test]
+    fn test_browsing_key_quit() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_browsing_key_ctrl_c() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut app,
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_browsing_key_enter_command_mode() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Command);
+    }
+
+    #[test]
+    fn test_browsing_key_help() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn test_browsing_key_cancel_scan() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+        app.scanning = true;
+
+        handle_browsing_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert!(app.cancel_scan.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_browsing_key_gg_double_tap_pending_cleared_on_other_key() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+        app.pending_gg = true;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!app.pending_gg);
     }
 
     #[test]

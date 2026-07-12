@@ -764,6 +764,12 @@ impl App {
         }
     }
 
+    pub fn clear_command_state(&mut self) {
+        self.command_input.clear();
+        self.command_matches.clear();
+        self.command_selected = 0;
+    }
+
     pub fn push_command_history(&mut self, cmd: &str) {
         let cmd = cmd.trim().to_string();
         if cmd.is_empty() {
