@@ -34,85 +34,26 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
             app.should_quit = true;
         }
 
-        // Compute how long to sleep — just long enough for next pending timer
-        let time_to_spinner = if app.scanning {
-            let elapsed = app.scan_spinner_tick.elapsed();
-            spinner_rate.saturating_sub(elapsed)
-        } else {
-            Duration::MAX
-        };
-
-        let time_to_cursor = if app.search_mode == SearchMode::Input || app.mode == AppMode::Command
-        {
-            let elapsed = last_cursor_tick.elapsed();
-            cursor_blink_rate.saturating_sub(elapsed)
-        } else {
-            Duration::MAX
-        };
-
-        let time_to_error = app
-            .error_clear_at
-            .map(|clear_at| clear_at.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::MAX);
-
-        let poll_timeout = time_to_spinner
-            .min(time_to_cursor)
-            .min(time_to_error)
-            .min(Duration::from_millis(100)); // cap idle wakeup
-
+        let poll_timeout =
+            next_poll_timeout(app, last_cursor_tick, spinner_rate, cursor_blink_rate);
         let got_event = event::poll(poll_timeout)?;
         let mut dirty = false;
 
         if got_event {
-            match event::read()? {
-                Event::Key(key) => {
-                    handler::handle_key(key, app);
-                    if SHOULD_QUIT.load(Ordering::Relaxed) {
-                        app.should_quit = true;
-                    }
-                    dirty = true;
-                }
-                Event::Resize(..) => dirty = true,
-                _ => {}
+            dirty |= handle_input_event(event::read()?, app);
+            if SHOULD_QUIT.load(Ordering::Relaxed) {
+                app.should_quit = true;
             }
         }
 
-        // Process background messages
-        while let Ok(msg) = app.rx.try_recv() {
-            app.handle_message(msg);
-            dirty = true;
-        }
-
-        // Advance scan spinner
-        if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
-            app.scan_spinner = (app.scan_spinner + 1) % 10;
-            app.scan_spinner_tick = Instant::now();
-            dirty = true;
-        }
-
-        // Clear transient errors
-        if let Some(clear_at) = app.error_clear_at {
-            if Instant::now() >= clear_at {
-                app.last_error = None;
-                app.error_clear_at = None;
-                dirty = true;
-            }
-        }
-
-        // Cursor blink for filter input
-        if app.search_mode == SearchMode::Input && last_cursor_tick.elapsed() >= cursor_blink_rate {
-            cursor_visible = !cursor_visible;
-            last_cursor_tick = Instant::now();
-            dirty = true;
-        }
-        if app.mode == AppMode::Command && last_cursor_tick.elapsed() >= cursor_blink_rate {
-            cursor_visible = !cursor_visible;
-            last_cursor_tick = Instant::now();
-            dirty = true;
-        }
-        if app.search_mode != SearchMode::Input && app.mode != AppMode::Command {
-            cursor_visible = true;
-        }
+        dirty |= drain_messages(app);
+        dirty |= advance_timers(
+            app,
+            &mut cursor_visible,
+            &mut last_cursor_tick,
+            spinner_rate,
+            cursor_blink_rate,
+        );
 
         if dirty {
             terminal.draw(|f| render(f, app, cursor_visible))?;
@@ -125,6 +66,90 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
 
     ratatui::restore();
     Ok(())
+}
+
+fn next_poll_timeout(
+    app: &App,
+    last_cursor_tick: Instant,
+    spinner_rate: Duration,
+    cursor_blink_rate: Duration,
+) -> Duration {
+    let time_to_spinner = if app.scanning {
+        spinner_rate.saturating_sub(app.scan_spinner_tick.elapsed())
+    } else {
+        Duration::MAX
+    };
+
+    let time_to_cursor = if app.search_mode == SearchMode::Input || app.mode == AppMode::Command {
+        cursor_blink_rate.saturating_sub(last_cursor_tick.elapsed())
+    } else {
+        Duration::MAX
+    };
+
+    let time_to_error = app
+        .error_clear_at
+        .map(|clear_at| clear_at.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::MAX);
+
+    time_to_spinner
+        .min(time_to_cursor)
+        .min(time_to_error)
+        .min(Duration::from_millis(100))
+}
+
+fn handle_input_event(event: Event, app: &mut App) -> bool {
+    match event {
+        Event::Key(key) => {
+            handler::handle_key(key, app);
+            true
+        }
+        Event::Resize(..) => true,
+        _ => false,
+    }
+}
+
+fn drain_messages(app: &mut App) -> bool {
+    let mut dirty = false;
+    while let Ok(msg) = app.rx.try_recv() {
+        app.handle_message(msg);
+        dirty = true;
+    }
+    dirty
+}
+
+fn advance_timers(
+    app: &mut App,
+    cursor_visible: &mut bool,
+    last_cursor_tick: &mut Instant,
+    spinner_rate: Duration,
+    cursor_blink_rate: Duration,
+) -> bool {
+    let mut dirty = false;
+
+    if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
+        app.scan_spinner = (app.scan_spinner + 1) % 10;
+        app.scan_spinner_tick = Instant::now();
+        dirty = true;
+    }
+
+    if let Some(clear_at) = app.error_clear_at {
+        if Instant::now() >= clear_at {
+            app.last_error = None;
+            app.error_clear_at = None;
+            dirty = true;
+        }
+    }
+
+    let should_blink = app.search_mode == SearchMode::Input || app.mode == AppMode::Command;
+    if should_blink && last_cursor_tick.elapsed() >= cursor_blink_rate {
+        *cursor_visible = !*cursor_visible;
+        *last_cursor_tick = Instant::now();
+        dirty = true;
+    } else if !should_blink {
+        *cursor_visible = true;
+    }
+
+    dirty
 }
 
 /// Render the entire TUI
@@ -141,19 +166,33 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         ])
         .split(area);
 
-    // Header
+    render_chrome(f, app, &chunks, cursor_visible);
+    render_overlays(f, app, area);
+}
+
+fn render_chrome(
+    f: &mut Frame,
+    app: &App,
+    chunks: &[ratatui::layout::Rect],
+    cursor_visible: bool,
+) {
     render_header(f, chunks[0]);
-
-    // Filter pane (always shown)
     render_filter_pane(f, chunks[1], app);
+    render_main_content(f, app, chunks[2], cursor_visible);
+    render_status_bar(f, app, chunks[3]);
+}
 
-    // Main content: tree takes full width
+fn render_main_content(
+    f: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    cursor_visible: bool,
+) {
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(100)])
-        .split(chunks[2]);
+        .split(area);
 
-    // File tree
     let file_tree_focused = app.focus == Focus::Tree && app.mode == AppMode::Browsing;
     let delta_cache = if app.server_connected {
         Some(&app.delta_cache)
@@ -178,13 +217,14 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
             delta_cache,
         },
     );
+}
 
-    // Status bar
+fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let error_str = app.last_error.as_deref();
     let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
-        chunks[3],
+        area,
         app.mode,
         &app.view_root_path,
         app.scanning,
@@ -196,26 +236,24 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         app.server_connected,
         app.sort_mode,
     );
+}
 
-    // Overlays
+fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     match app.mode {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Help => help_popup::render(f, area),
         AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll),
-        AppMode::Command => {
-            command_bar::render(
-                f,
-                area,
-                &app.command_input,
-                &app.command_matches,
-                app.command_selected,
-            );
-        }
+        AppMode::Command => command_bar::render(
+            f,
+            area,
+            &app.command_input,
+            &app.command_matches,
+            app.command_selected,
+        ),
         AppMode::Browsing => {}
     }
 
-    // Info popup (on top of everything, including overlays)
     if let Some((path, meta)) = &app.info_data {
         metadata::render(f, area, path, meta);
     }

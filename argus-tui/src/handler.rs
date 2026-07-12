@@ -1,645 +1,47 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::Path;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
+mod browsing;
+mod command;
+mod filter;
+mod prompt;
+mod search;
 
-use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
-use crate::ipc_client::IpcClient;
+use crate::app::{App, AppMode};
+use crossterm::event::KeyEvent;
+
+pub use browsing::start_scan;
 
 /// Handle keyboard events
 pub fn handle_key(key: KeyEvent, app: &mut App) {
     match app.mode {
-        AppMode::Browsing => handle_browsing_key(key, app),
-        AppMode::DeletePrompt => handle_delete_prompt_key(key, app),
-        AppMode::DeletePermanentPrompt => handle_delete_permanent_prompt_key(key, app),
-        AppMode::Help => handle_help_key(key, app),
-        AppMode::TimeHelp => handle_time_help_key(key, app),
-        AppMode::Command => handle_command_key(key, app),
+        AppMode::Browsing => browsing::handle_browsing_key(key, app),
+        AppMode::DeletePrompt => prompt::handle_delete_prompt_key(key, app),
+        AppMode::DeletePermanentPrompt => prompt::handle_delete_permanent_prompt_key(key, app),
+        AppMode::Help => prompt::handle_help_key(key, app),
+        AppMode::TimeHelp => prompt::handle_time_help_key(key, app),
+        AppMode::Command => command::handle_command_key(key, app),
     }
-}
-
-fn handle_browsing_key(key: KeyEvent, app: &mut App) {
-    if app.scanning {
-        if key.code == KeyCode::Esc {
-            app.cancel_scan.store(true, Ordering::Relaxed);
-        }
-        return;
-    }
-
-    if app.focus == Focus::FilterPane {
-        handle_filter_pane_key(key, app);
-        return;
-    }
-
-    if handle_search_keys(key, app) {
-        return;
-    }
-
-    if app.search_mode == SearchMode::Inactive {
-        if let KeyCode::Char('/') = key.code {
-            app.search_mode = SearchMode::Input;
-            return;
-        }
-    }
-
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => move_cursor(app, 1),
-        KeyCode::Char('k') | KeyCode::Up => move_cursor(app, -1),
-        KeyCode::Char('g') => handle_gg_double_tap(app),
-        KeyCode::Char('G') => {
-            if !app.filtered_tree_lines.is_empty() {
-                app.cursor = app.filtered_tree_lines.len() - 1;
-            }
-            app.pending_gg = false;
-        }
-        KeyCode::Char('l') | KeyCode::Right => crate::tree_ops::expand_node(app),
-        KeyCode::Char('h') | KeyCode::Left => crate::tree_ops::collapse_or_navigate_up(app),
-        KeyCode::Char('H') => crate::tree_ops::collapse_all_children(app),
-        KeyCode::Char('u') => crate::tree_ops::navigate_up_root(app),
-        KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
-        KeyCode::Char('s') => start_scan(app),
-        KeyCode::Char('.') => set_root_to_selected(app),
-        KeyCode::Char('o') => {
-            app.sort_mode = app.sort_mode.toggle();
-            app.update_tree_lines();
-        }
-        KeyCode::Char('d') => handle_delete_action(app, false),
-        KeyCode::Char('D') => handle_delete_action(app, true),
-        KeyCode::Char('?') => app.mode = AppMode::Help,
-        KeyCode::Char(':') => {
-            app.mode = AppMode::Command;
-            app.clear_command_state();
-            app.command_history_idx = None;
-            app.update_command_matches();
-        }
-        KeyCode::Char('t') if app.server_mode => handle_time_toggle(app),
-        KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
-        KeyCode::Char('i') => handle_info_popup(app),
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('y') => handle_copy_path(app),
-        KeyCode::Char('f') if app.server_mode => {
-            app.focus = Focus::FilterPane;
-            app.filter_focus = FilterFocus::TimePreset;
-        }
-        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
-        KeyCode::Char('c') => app.clear_filter_pane(),
-        KeyCode::Esc => app.info_data = None,
-        _ => {}
-    }
-    if key.code != KeyCode::Char('g') {
-        app.pending_gg = false;
-    }
-}
-
-/// Handle search-mode input keys. Returns true if the key was consumed.
-fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
-    match app.search_mode {
-        SearchMode::Input => {
-            match key.code {
-                KeyCode::Char(c) => {
-                    app.search_word.push(c);
-                    app.recompute_matches();
-                }
-                KeyCode::Backspace => {
-                    app.search_word.pop();
-                    app.recompute_matches();
-                }
-                KeyCode::Enter => {
-                    if app.search_word.is_empty() {
-                        app.recompute_matches();
-                        app.search_mode = SearchMode::Inactive;
-                    } else {
-                        app.search_mode = SearchMode::Active;
-                    }
-                }
-                KeyCode::Esc => {
-                    app.search_word.clear();
-                    app.recompute_matches();
-                    app.search_mode = SearchMode::Inactive;
-                }
-                _ => {}
-            }
-            true
-        }
-        SearchMode::Active => {
-            match key.code {
-                KeyCode::Char('n') => crate::search::jump_to_next_match(app, 1),
-                KeyCode::Char('N') => crate::search::jump_to_next_match(app, -1),
-                KeyCode::Char('/') => {
-                    app.search_word.clear();
-                    app.recompute_matches();
-                    app.search_mode = SearchMode::Input;
-                }
-                KeyCode::Esc => {
-                    app.search_word.clear();
-                    app.recompute_matches();
-                    app.search_mode = SearchMode::Inactive;
-                    return true;
-                }
-                _ => {}
-            }
-            false // let other keys pass through
-        }
-        SearchMode::Inactive => false,
-    }
-}
-
-fn handle_delete_action(app: &mut App, permanent: bool) {
-    let Some(line) = app.selected_line() else {
-        return;
-    };
-    let root_name = app
-        .view_root_path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    if line.node.is_dir() && line.node.name() == root_name {
-        app.set_error("cannot delete root directory".into(), 3);
-        return;
-    }
-    let Some(full_path) = app.selected_node_full_path() else {
-        return;
-    };
-    if crate::util::is_protected_path(&full_path) {
-        app.set_error("protected path, cannot delete".into(), 3);
-        return;
-    }
-    app.delete_target_path = Some(full_path);
-    app.mode = if permanent {
-        AppMode::DeletePermanentPrompt
-    } else {
-        AppMode::DeletePrompt
-    };
-}
-
-fn handle_gg_double_tap(app: &mut App) {
-    if app.pending_gg {
-        app.cursor = 0;
-        app.pending_gg = false;
-    } else {
-        app.pending_gg = true;
-    }
-}
-
-fn handle_time_toggle(app: &mut App) {
-    if app.time_custom {
-        app.set_time_preset(0);
-        app.set_error(format!("time range: {}", App::time_preset_label(0)), 2);
-    } else {
-        let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
-        app.set_time_preset(next);
-        app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
-    }
-    app.request_delta_refresh();
-}
-
-fn handle_daemon_reconnect(app: &mut App) {
-    let path = crate::config::TuiConfig::default().daemon.uds_path.clone();
-    let path_clone = path.clone();
-    let tx = app.tx.clone();
-    tokio::spawn(async move {
-        if let Ok(mut client) = IpcClient::connect(&path_clone).await {
-            if client.ping().await.is_ok() {
-                let _ = tx.send(AppMessage::DaemonConnected(client)).await;
-                return;
-            }
-        }
-        let _ = tx
-            .send(AppMessage::Error("daemon reconnect failed".into()))
-            .await;
-    });
-}
-
-fn handle_info_popup(app: &mut App) {
-    let Some(path) = app.selected_node_full_path() else {
-        return;
-    };
-    match std::fs::metadata(&path) {
-        Ok(meta) => app.info_data = Some((path, meta)),
-        Err(e) => app.set_error(format!("stat failed: {}", e), 3),
-    }
-}
-
-fn handle_copy_path(app: &mut App) {
-    let Some(path) = app.selected_node_full_path() else {
-        return;
-    };
-    match arboard::Clipboard::new() {
-        Ok(mut cb) => {
-            let path_str = path.display().to_string();
-            if cb.set_text(path_str.clone()).is_ok() {
-                app.set_error(format!("copied: {}", path_str), 2);
-            } else {
-                app.set_error("clipboard write failed".into(), 3);
-            }
-        }
-        Err(_) => {
-            app.set_error("clipboard unavailable".into(), 3);
-        }
-    }
-}
-
-fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
-    handle_delete_common(key, app, |path| {
-        trash::delete(path).map_err(|e| e.to_string())?;
-        Ok(format!("deleted: {}", path.display()))
-    });
-}
-
-fn handle_delete_permanent_prompt_key(key: KeyEvent, app: &mut App) {
-    handle_delete_common(key, app, |path| {
-        if path.is_dir() {
-            std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
-        } else {
-            std::fs::remove_file(path).map_err(|e| e.to_string())?;
-        }
-        Ok(format!("permanently deleted: {}", path.display()))
-    });
-}
-
-fn handle_delete_common<F>(key: KeyEvent, app: &mut App, delete_fn: F)
-where
-    F: Fn(&Path) -> Result<String, String>,
-{
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some(path) = app.delete_target_path.clone() {
-                match delete_fn(&path) {
-                    Ok(msg) => {
-                        app.set_error(msg, 3);
-                        crate::tree_ops::apply_deletion_to_state(app, &path);
-                        app.update_tree_lines();
-                    }
-                    Err(e) => {
-                        app.set_error(format!("delete failed: {}", e), 5);
-                    }
-                }
-            }
-            app.delete_target_path = None;
-            app.mode = AppMode::Browsing;
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.delete_target_path = None;
-            app.mode = AppMode::Browsing;
-        }
-        _ => {}
-    }
-}
-
-fn handle_help_key(key: KeyEvent, app: &mut App) {
-    match key.code {
-        KeyCode::Char('?') | KeyCode::Esc => {
-            app.mode = AppMode::Browsing;
-        }
-        _ => {}
-    }
-}
-
-fn handle_time_help_key(key: KeyEvent, app: &mut App) {
-    match key.code {
-        KeyCode::Esc => {
-            app.mode = AppMode::Browsing;
-            app.time_help_scroll = 0;
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.time_help_scroll = app.time_help_scroll.saturating_add(1);
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.time_help_scroll = app.time_help_scroll.saturating_sub(1);
-        }
-        _ => {}
-    }
-}
-
-fn handle_command_key(key: KeyEvent, app: &mut App) {
-    match key.code {
-        KeyCode::Char(c) if app.command_input.len() < 200 => {
-            app.command_input.push(c);
-            app.update_command_matches();
-            app.command_history_idx = None;
-        }
-        KeyCode::Backspace => {
-            app.command_input.pop();
-            app.update_command_matches();
-            app.command_history_idx = None;
-        }
-        KeyCode::Tab if !app.command_matches.is_empty() => {
-            app.command_selected = (app.command_selected + 1) % app.command_matches.len();
-            app.command_input = app.command_matches[app.command_selected].to_string();
-            app.command_history_idx = None;
-        }
-        KeyCode::BackTab if !app.command_matches.is_empty() => {
-            app.command_selected = if app.command_selected == 0 {
-                app.command_matches.len() - 1
-            } else {
-                app.command_selected - 1
-            };
-            app.command_input = app.command_matches[app.command_selected].to_string();
-            app.command_history_idx = None;
-        }
-        KeyCode::Up | KeyCode::Char('k') if !app.command_history.is_empty() => {
-            let idx = match app.command_history_idx {
-                Some(i) if i > 0 => i - 1,
-                None => app.command_history.len() - 1,
-                _ => return,
-            };
-            app.command_history_idx = Some(idx);
-            app.command_input = app.command_history[idx].clone();
-            app.update_command_matches();
-        }
-        KeyCode::Down | KeyCode::Char('j') if app.command_history_idx.is_some() => {
-            let idx = app.command_history_idx.unwrap();
-            if idx + 1 < app.command_history.len() {
-                app.command_history_idx = Some(idx + 1);
-                app.command_input = app.command_history[idx + 1].clone();
-            } else {
-                app.command_history_idx = None;
-                app.command_input.clear();
-            }
-            app.update_command_matches();
-        }
-        KeyCode::Enter => {
-            let cmd = if !app.command_matches.is_empty() {
-                app.command_matches[app.command_selected].to_string()
-            } else {
-                app.command_input.clone()
-            };
-            app.mode = AppMode::Browsing;
-            execute_command(app, &cmd);
-        }
-        KeyCode::Esc => {
-            app.clear_command_state();
-            app.mode = AppMode::Browsing;
-        }
-        _ => {}
-    }
-}
-
-fn execute_command(app: &mut App, cmd: &str) {
-    let cmd = cmd.trim();
-
-    if cmd.is_empty() {
-        app.clear_command_state();
-        return;
-    }
-
-    app.push_command_history(cmd);
-
-    if cmd.eq_ignore_ascii_case("Scan") {
-        app.clear_command_state();
-        start_scan(app);
-        return;
-    }
-
-    if cmd.eq_ignore_ascii_case("Consolidate") {
-        app.clear_command_state();
-        if app.server_mode {
-            let uds_path = app
-                .daemon_client
-                .as_ref()
-                .map(|_| crate::config::TuiConfig::default().daemon.uds_path.clone())
-                .unwrap_or_default();
-            let tx = app.tx.clone();
-            tokio::spawn(async move {
-                match IpcClient::connect(&uds_path).await {
-                    Ok(mut client) => match client.request_consolidation().await {
-                        Ok(count) => {
-                            let _ = tx
-                                .send(AppMessage::Info(format!("consolidated {count} events")))
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = tx
-                                .send(AppMessage::Info(format!("consolidation failed: {e}")))
-                                .await;
-                        }
-                    },
-                    Err(e) => {
-                        let _ = tx
-                            .send(AppMessage::Info(format!("daemon connect failed: {e}")))
-                            .await;
-                    }
-                }
-            });
-        } else {
-            app.set_error("not in server mode".into(), 3);
-        }
-        return;
-    }
-
-    match app.execute_command(cmd) {
-        Ok(msg) => {
-            app.set_error(msg, 3);
-        }
-        Err(e) => {
-            app.set_error(e, 4);
-        }
-    }
-    app.clear_command_state();
-}
-
-// ── Filter pane key handling ─────────────────────────────────────────────────
-
-fn handle_filter_pane_key(key: KeyEvent, app: &mut App) {
-    let skip_time = app.time_custom;
-    match key.code {
-        KeyCode::Tab | KeyCode::Char('\t') => {
-            app.filter_focus = cycle_filter_focus(app.filter_focus, skip_time, true);
-        }
-        KeyCode::BackTab => {
-            app.filter_focus = cycle_filter_focus(app.filter_focus, skip_time, false);
-        }
-        KeyCode::Char(ch) if ch.is_ascii_digit() && app.filter_focus == FilterFocus::DeltaValue => {
-            let digit = (ch as u8 - b'0') as u64;
-            if app.delta_filter_active {
-                app.delta_filter_value = app
-                    .delta_filter_value
-                    .saturating_mul(10)
-                    .saturating_add(digit);
-            } else {
-                app.delta_filter_active = true;
-                app.delta_filter_value = digit;
-            }
-            app.refresh_filtered_lines();
-        }
-        KeyCode::Backspace
-            if app.filter_focus == FilterFocus::DeltaValue && app.delta_filter_active =>
-        {
-            app.delta_filter_value /= 10;
-            if app.delta_filter_value == 0 {
-                app.delta_filter_active = false;
-            }
-            app.refresh_filtered_lines();
-        }
-        KeyCode::Char('j') | KeyCode::Down => adjust_filter_focus(app, true),
-        KeyCode::Char('k') | KeyCode::Up => adjust_filter_focus(app, false),
-        KeyCode::Char('c') => {
-            app.clear_filter_pane();
-        }
-        KeyCode::Enter => {
-            if app.filter_focus == FilterFocus::DeltaValue && app.delta_filter_active {
-                app.refresh_filtered_lines();
-            }
-            app.focus = Focus::Tree;
-        }
-        KeyCode::Esc => {
-            app.focus = Focus::Tree;
-        }
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-        }
-        KeyCode::Char(':') => {
-            app.mode = AppMode::Command;
-            app.clear_command_state();
-            app.command_history_idx = None;
-            app.update_command_matches();
-        }
-        _ => {}
-    }
-}
-
-fn cycle_filter_focus(current: FilterFocus, skip_time: bool, forward: bool) -> FilterFocus {
-    if skip_time {
-        match current {
-            FilterFocus::DeltaValue => FilterFocus::DeltaUnit,
-            _ => FilterFocus::DeltaValue,
-        }
-    } else {
-        let order = [
-            FilterFocus::TimePreset,
-            FilterFocus::DeltaValue,
-            FilterFocus::DeltaUnit,
-        ];
-        let pos = order.iter().position(|f| *f == current).unwrap_or(0);
-        let next = if forward {
-            (pos + 1) % 3
-        } else {
-            (pos + 2) % 3
-        };
-        order[next]
-    }
-}
-
-fn adjust_filter_focus(app: &mut App, forward: bool) {
-    let skip_time = app.time_custom;
-    match app.filter_focus {
-        FilterFocus::TimePreset if !skip_time => {
-            let count = crate::app::TIME_PRESET_COUNT;
-            let next = if forward {
-                (app.time_preset + 1) % count
-            } else {
-                (app.time_preset + count - 1) % count
-            };
-            let label = App::time_preset_label(next);
-            crate::util::log_msg(
-                &app.log_path,
-                &format!(
-                    "filter: {} key, preset={next} ({label})",
-                    if forward { "j" } else { "k" }
-                ),
-            );
-            app.set_time_preset(next);
-            app.request_delta_refresh();
-        }
-        FilterFocus::TimePreset => {}
-        FilterFocus::DeltaValue => {
-            app.delta_filter_active = true;
-            if forward {
-                app.delta_filter_inc();
-            } else {
-                app.delta_filter_dec();
-            }
-            app.refresh_filtered_lines();
-        }
-        FilterFocus::DeltaUnit => {
-            app.delta_filter_active = true;
-            if forward {
-                app.delta_filter_cycle_unit();
-            } else {
-                app.delta_filter_unit = (app.delta_filter_unit + 2) % 3;
-            }
-            app.refresh_filtered_lines();
-        }
-    }
-}
-
-// ── Helper functions ────────────────────────────────────────────────────────
-
-fn move_cursor(app: &mut App, delta: isize) {
-    if app.filtered_tree_lines.is_empty() {
-        return;
-    }
-    let new_cursor = app.cursor as isize + delta;
-    if new_cursor < 0 {
-        app.cursor = 0;
-    } else if new_cursor >= app.filtered_tree_lines.len() as isize {
-        app.cursor = app.filtered_tree_lines.len() - 1;
-    } else {
-        app.cursor = new_cursor as usize;
-    }
-}
-
-pub fn set_root_to_selected(app: &mut App) {
-    let Some(line) = app.selected_line().cloned() else {
-        return;
-    };
-    if !line.node.is_dir() {
-        return;
-    }
-    if let Some(full_path) = app.selected_node_full_path() {
-        if full_path == app.view_root_path {
-            return;
-        }
-        app.view_root_path = full_path;
-        app.rebuild_tree();
-    }
-}
-
-pub fn start_scan(app: &mut App) {
-    app.scanning = true;
-    app.scan_progress = None;
-    app.scan_spinner = 0;
-    app.scan_spinner_tick = Instant::now();
-    app.scan_started_at = Some(Instant::now());
-    app.cancel_scan = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let cancel = app.cancel_scan.clone();
-    let tx = app.tx.clone();
-    let path = app.view_root_path.clone();
-    let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let (progress_tx, progress_rx) =
-            std::sync::mpsc::channel::<argus_core::scanner::ProgressUpdate>();
-
-        // Forward progress updates from blocking scan to UI via dedicated thread
-        let tx_clone = tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(update) = progress_rx.recv() {
-                let _ = tx_clone.blocking_send(AppMessage::ScanProgress {
-                    file_count: update.file_count,
-                    total_bytes: update.total_bytes,
-                });
-            }
-        });
-
-        match argus_core::scan_path(&path, &cancel, Some(progress_tx), &scan_skip_dirs) {
-            Ok(snapshot) => {
-                let _ = tx.blocking_send(AppMessage::ScanComplete(snapshot));
-            }
-            Err(e) => {
-                let _ = tx.blocking_send(AppMessage::Error(format!("scan failed: {}", e)));
-            }
-        }
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::{TreeLine, TreeNode};
+    use crate::handler::browsing::{
+        handle_browsing_key, handle_delete_action, handle_gg_double_tap, move_cursor,
+        set_root_to_selected,
+    };
+    use crate::handler::command::{execute_command, handle_command_key};
+    use crate::handler::filter::{adjust_filter_focus, handle_filter_pane_key};
+    use crate::handler::prompt::{
+        handle_delete_common, handle_delete_permanent_prompt_key, handle_delete_prompt_key,
+        handle_help_key, handle_time_help_key,
+    };
+    use crate::handler::search::handle_search_keys;
+    use crate::types::{FilterFocus, Focus, SearchMode};
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -1478,7 +880,6 @@ mod tests {
 
     // ── prev_match_index ─────────────────────────────────────────────────
 
-    #[test]
     // ── execute_command ──────────────────────────────────────────────────
     #[test]
     fn test_execute_command_empty() {
@@ -1654,9 +1055,9 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_prompt_yes_with_trash() {
+    fn test_delete_common_yes_runs_success_flow() {
         let tmp = TempDir::new().unwrap();
-        let file_path = tmp.path().join("trash_test.txt");
+        let file_path = tmp.path().join("delete_test.txt");
         fs::write(&file_path, "content").unwrap();
         assert!(file_path.exists());
 
@@ -1668,9 +1069,13 @@ mod tests {
         app.mode = AppMode::DeletePrompt;
         app.delete_target_path = Some(file_path.clone());
 
-        handle_delete_prompt_key(
+        handle_delete_common(
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
             &mut app,
+            |path| {
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+                Ok(format!("deleted: {}", path.display()))
+            },
         );
 
         assert!(!file_path.exists());

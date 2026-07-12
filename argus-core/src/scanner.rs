@@ -22,7 +22,7 @@ struct ProgressTracker {
 }
 
 const PROGRESS_FILE_BATCH: u64 = 32;
-const PROGRESS_BYTES_BATCH: u64 = 1 * 1024 * 1024;
+const PROGRESS_BYTES_BATCH: u64 = 1024 * 1024;
 
 impl ProgressTracker {
     fn new(progress_tx: Option<mpsc::Sender<ProgressUpdate>>) -> Self {
