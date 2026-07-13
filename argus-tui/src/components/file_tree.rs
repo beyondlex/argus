@@ -15,6 +15,7 @@ use crate::util;
 use crate::util::key_hints;
 
 const SCROLL_MARGIN: usize = 3;
+const NAME_FIXED_WIDTH: u16 = 30;
 
 pub struct TreeRenderCtx<'a> {
     pub tree_lines: &'a [TreeLine],
@@ -147,7 +148,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
 
         let delta = ctx.delta_cache.and_then(|c| c.get(&line.path).copied());
 
-        let (left_spans, right_spans) = render_tree_line(
+        let (mut left_spans, right_spans) = render_tree_line(
             line,
             is_selected,
             is_current_match,
@@ -178,9 +179,9 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         }
 
         let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
+        truncate_name_spans(&mut left_spans, NAME_FIXED_WIDTH as usize);
         let [name_area, info_area] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_width)])
-                .flex(Flex::SpaceBetween)
+            Layout::horizontal([Constraint::Length(NAME_FIXED_WIDTH), Constraint::Length(right_width)])
                 .areas(row_area);
 
         f.render_widget(Paragraph::new(Line::from(left_spans)), name_area);
@@ -413,6 +414,39 @@ fn render_tree_line<'a>(
     }
 
     (left, right)
+}
+
+/// Truncate name spans so they fit within `max_width` characters.
+/// The first span is the indentation prefix; remaining spans are the name.
+/// If the total width exceeds `max_width`, the name is truncated and "..." appended.
+fn truncate_name_spans<'a>(spans: &mut Vec<Span<'a>>, max_width: usize) {
+    let total: usize = spans.iter().map(|s| s.content.len()).sum();
+    if total <= max_width {
+        return;
+    }
+
+    let prefix_len = spans.first().map(|s| s.content.len()).unwrap_or(0);
+    let avail = max_width.saturating_sub(prefix_len).saturating_sub(3);
+
+    if avail < 1 {
+        // Show prefix + "..." (or just "..." if prefix is too long)
+        let prefix = spans.first().map(|s| s.content.to_string()).unwrap_or_default();
+        let style = spans.first().map(|s| s.style).unwrap_or_default();
+        let truncated: String = prefix.chars().take(max_width.saturating_sub(3)).collect();
+        *spans = vec![Span::styled(format!("{}...", truncated), style)];
+        return;
+    }
+
+    let prefix = spans.first().map(|s| s.content.to_string()).unwrap_or_default();
+    let prefix_style = spans.first().map(|s| s.style).unwrap_or_default();
+    let name_style = spans.last().map(|s| s.style).unwrap_or_default();
+    let name_text: String = spans[1..].iter().map(|s| s.content.to_string()).collect();
+    let truncated_name: String = name_text.chars().take(avail).collect();
+
+    *spans = vec![
+        Span::styled(prefix, prefix_style),
+        Span::styled(format!("{}...", truncated_name), name_style),
+    ];
 }
 
 fn name_spans<'a>(
