@@ -1,3 +1,5 @@
+use chrono::{Datelike, Local, TimeZone};
+
 pub fn now_in_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -74,50 +76,20 @@ pub(crate) fn is_time_only(s: &str) -> bool {
 }
 
 pub(crate) fn datetime_to_millis(month: u32, day: u32, hour: u32, minute: u32) -> u64 {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    for year_offset in [0i64, -1] {
-        let year = 1970 + (now as f64 / 31557600.0) as i64 + year_offset;
-        if let Some(ms) = date_to_millis(year as i32, month, day, hour, minute) {
-            if ms <= now as u64 * 1000 || year_offset < 0 {
+    let now = Local::now();
+    let year = now.year();
+    for y in [year, year - 1] {
+        if let Some(dt) = Local
+            .with_ymd_and_hms(y, month, day, hour, minute, 0)
+            .single()
+        {
+            let ms = dt.timestamp_millis() as u64;
+            if ms <= now.timestamp_millis() as u64 || y < year {
                 return ms;
             }
         }
     }
     0
-}
-
-fn date_to_millis(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<u64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-
-    let days = days_since_epoch(year, month, day)?;
-    Some((days as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60) * 1000)
-}
-
-fn days_since_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) {
-        return None;
-    }
-    let y = if month <= 2 {
-        year as i64 - 1
-    } else {
-        year as i64
-    };
-    let m = if month <= 2 {
-        month as i64 + 12
-    } else {
-        month as i64
-    };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (m - 3) + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days)
 }
 
 pub(crate) fn format_time_label(left: &str, right: &str) -> String {
@@ -181,17 +153,6 @@ pub fn parse_single_time_arg(arg: &str) -> Result<ParsedTimeArg, String> {
 }
 
 pub(crate) fn today_md() -> (u32, u32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = now / 86400 + 719468;
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    (month, day)
+    let now = Local::now();
+    (now.month(), now.day())
 }
