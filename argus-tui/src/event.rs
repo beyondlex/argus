@@ -252,6 +252,10 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if let Some((path, meta)) = &app.info_data {
         metadata::render(f, area, path, meta);
     }
+
+    if let Some(ref state) = app.delta_detail {
+        crate::components::delta_detail::render(f, area, state);
+    }
 }
 
 /// Render header bar

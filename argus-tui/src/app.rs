@@ -90,6 +90,9 @@ pub struct App {
     // Info popup
     pub info_data: Option<(std::path::PathBuf, std::fs::Metadata)>,
 
+    // Delta detail popup
+    pub delta_detail: Option<DeltaDetailState>,
+
     // Command bar
     pub command_input: String,
     pub command_matches: Vec<&'static str>,
@@ -156,6 +159,7 @@ impl App {
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             info_data: None,
+            delta_detail: None,
             command_input: String::new(),
             command_matches: Vec::new(),
             command_selected: 0,
@@ -325,6 +329,9 @@ impl App {
                     &self.log_path,
                     &format!("DeltaData applied in {:?}", t0.elapsed()),
                 );
+            }
+            AppMessage::DeltaDetailLoaded(state) => {
+                self.delta_detail = Some(state);
             }
             AppMessage::Info(msg) => {
                 self.set_error(msg, 4);

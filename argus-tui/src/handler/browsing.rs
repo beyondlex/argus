@@ -7,6 +7,29 @@ use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
 use crate::ipc_client::IpcClient;
 
 pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
+    // If delta detail popup is open, intercept j/k for scroll and Esc to dismiss
+    if app.delta_detail.is_some() {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ref mut state) = app.delta_detail {
+                    if state.scroll + 1 < state.entries.len() {
+                        state.scroll += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ref mut state) = app.delta_detail {
+                    state.scroll = state.scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Esc => {
+                app.delta_detail = None;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.scanning {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
@@ -61,6 +84,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('t') if app.server_mode => handle_time_toggle(app),
         KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
         KeyCode::Char('i') => handle_info_popup(app),
+        KeyCode::Char('K') => handle_delta_detail_popup(app),
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('y') => handle_copy_path(app),
         KeyCode::Char('f') if app.server_mode => {
@@ -69,7 +93,10 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
         KeyCode::Char('c') => app.clear_filter_pane(),
-        KeyCode::Esc => app.info_data = None,
+        KeyCode::Esc => {
+            app.info_data = None;
+            app.delta_detail = None;
+        }
         _ => {}
     }
     if key.code != KeyCode::Char('g') {
@@ -123,6 +150,13 @@ pub(crate) fn handle_info_popup(app: &mut App) {
         Ok(meta) => app.info_data = Some((path, meta)),
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }
+}
+
+pub(crate) fn handle_delta_detail_popup(app: &mut App) {
+    let Some(path) = app.selected_node_full_path() else {
+        return;
+    };
+    crate::components::delta_detail::load_delta_detail(app, &path);
 }
 
 pub(crate) fn handle_copy_path(app: &mut App) {

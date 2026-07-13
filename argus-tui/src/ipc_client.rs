@@ -52,6 +52,26 @@ impl IpcClient {
         }
     }
 
+    pub async fn get_delta_detail(
+        &mut self,
+        path: &Path,
+        from_ms: u64,
+        to_ms: u64,
+    ) -> Result<Vec<DeltaEntry>, String> {
+        let resp = self
+            .send_request(&DaemonRequest::GetDeltaDetail {
+                path: path.to_path_buf(),
+                from_ms,
+                to_ms,
+            })
+            .await?;
+        match resp {
+            DaemonResponse::DeltaDetail { entries } => Ok(entries),
+            DaemonResponse::Error { message } => Err(message),
+            _ => Err("unexpected response".into()),
+        }
+    }
+
     pub async fn request_consolidation(&mut self) -> Result<u64, String> {
         let resp = self
             .send_request(&DaemonRequest::RequestConsolidation)

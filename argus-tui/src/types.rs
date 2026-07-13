@@ -15,6 +15,7 @@ pub enum AppMessage {
     DaemonConnected(IpcClient),
     DaemonDisconnected,
     DeltaData(HashMap<Vec<String>, i64>),
+    DeltaDetailLoaded(DeltaDetailState),
     Error(String),
     Info(String),
 }
@@ -140,6 +141,26 @@ pub struct ScanSummary {
     pub total_size: u64,
     pub total_files: u64,
     pub duration: Duration,
+}
+
+// ── Delta Detail Popup ───────────────────────────────────────────────────────
+
+/// State for the delta event detail popup (opened with `K`)
+#[derive(Debug, Clone)]
+pub struct DeltaDetailState {
+    pub path: PathBuf,
+    pub entries: Vec<DeltaDetailRow>,
+    pub scroll: usize,
+}
+
+/// A single row in the delta detail popup
+#[derive(Debug, Clone)]
+pub struct DeltaDetailRow {
+    pub timestamp: String,      // formatted as "2026-07-13 HH:MM:SS"
+    pub child_name: String,     // direct child name (e.g. "argus", "README.md")
+    pub delta_size: i64,
+    pub delta_display: String,  // "+ 100 MB", "-  10 KB"
+    pub is_aggregated: bool,    // false=raw event, true=synthetic sum of descendants
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
