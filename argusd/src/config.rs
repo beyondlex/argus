@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DaemonConfig {
+    #[serde(default)]
     pub watch_dirs: Vec<PathBuf>,
     #[serde(default = "default_debounce_seconds")]
     pub debounce_seconds: u64,
@@ -15,6 +16,10 @@ pub struct DaemonConfig {
     pub delta_retention_days: u64,
     #[serde(default)]
     pub consolidation: ConsolidationConfig,
+    #[serde(default)]
+    pub log_level: Option<String>,
+    #[serde(default)]
+    pub log_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +68,8 @@ impl Default for DaemonConfig {
             snapshot_retention: SnapshotRetention::default(),
             delta_retention_days: default_delta_retention_days(),
             consolidation: ConsolidationConfig::default(),
+            log_level: None,
+            log_enabled: false,
         }
     }
 }
@@ -145,5 +152,32 @@ mod tests {
         assert_eq!(config.delta_retention_days, 30);
         assert_eq!(config.consolidation.sibling_threshold, 500);
         assert_eq!(config.consolidation.interval_minutes, 60);
+        assert!(config.log_level.is_none());
+        assert!(!config.log_enabled);
+    }
+
+    #[test]
+    fn test_config_log_level() {
+        let toml_str = r#"
+[daemon]
+log_level = "debug"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let config = raw.daemon.unwrap();
+        assert_eq!(config.log_level, Some("debug".to_string()));
+        assert!(!config.log_enabled);
+    }
+
+    #[test]
+    fn test_config_log_enabled() {
+        let toml_str = r#"
+[daemon]
+log_enabled = true
+log_level = "warn"
+"#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let config = raw.daemon.unwrap();
+        assert!(config.log_enabled);
+        assert_eq!(config.log_level, Some("warn".to_string()));
     }
 }

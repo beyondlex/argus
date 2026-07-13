@@ -9,17 +9,16 @@ pub(crate) fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
             match key.code {
                 KeyCode::Char(c) => {
                     app.search_word.push(c);
-                    app.recompute_matches();
                 }
                 KeyCode::Backspace => {
                     app.search_word.pop();
-                    app.recompute_matches();
                 }
                 KeyCode::Enter => {
                     if app.search_word.is_empty() {
                         app.recompute_matches();
                         app.search_mode = SearchMode::Inactive;
                     } else {
+                        app.recompute_matches();
                         app.search_mode = SearchMode::Active;
                     }
                 }

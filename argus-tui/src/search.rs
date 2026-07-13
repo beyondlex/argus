@@ -42,17 +42,15 @@ pub fn jump_to_next_match(app: &mut App, delta: isize) {
         }
     }
 
-    if let Some(pos) = app
-        .tree_lines
-        .iter()
-        .position(|line| line.path == target_path)
-    {
+    // Fast path: target match visible in filtered view
+    if let Some(&pos) = app.path_to_tree_idx.get(&target_path) {
         if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
             app.cursor = cursor_pos;
             return;
         }
     }
 
+    // Fallback: find next visible match using HashMap O(1) per lookup
     let total = app.match_indices.len();
     for offset in 1..total {
         let try_idx = if delta >= 0 {
@@ -61,11 +59,7 @@ pub fn jump_to_next_match(app: &mut App, delta: isize) {
             (new_idx + total - offset) % total
         };
         let try_path = &app.match_indices[try_idx].path;
-        if let Some(pos) = app
-            .tree_lines
-            .iter()
-            .position(|line| line.path == *try_path)
-        {
+        if let Some(&pos) = app.path_to_tree_idx.get(try_path) {
             if let Some(cursor_pos) = app.filtered_tree_lines.iter().position(|&i| i == pos) {
                 app.current_match = try_idx;
                 app.cursor = cursor_pos;

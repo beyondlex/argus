@@ -59,6 +59,7 @@ pub struct App {
     pub match_indices: Vec<SearchMatch>,
     pub current_match: usize,
     pub path_to_walk_idx: HashMap<Vec<String>, usize>,
+    pub path_to_tree_idx: HashMap<Vec<String>, usize>,
 
     // gg double-tap tracking
     pub pending_gg: bool,
@@ -144,6 +145,7 @@ impl App {
             match_indices: Vec::new(),
             current_match: 0,
             path_to_walk_idx: HashMap::new(),
+            path_to_tree_idx: HashMap::new(),
             pending_gg: false,
             scanning: false,
             scan_progress: None,
@@ -240,6 +242,12 @@ impl App {
         };
 
         self.tree_lines = lines;
+        self.path_to_tree_idx = self
+            .tree_lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.path.clone(), i))
+            .collect();
         if self.cursor >= self.tree_lines.len() && !self.tree_lines.is_empty() {
             self.cursor = self.tree_lines.len() - 1;
         }
@@ -308,7 +316,11 @@ impl App {
                 let t0 = Instant::now();
                 self.delta_pending = false;
                 self.delta_cache = deltas;
-                self.refresh_filtered_lines();
+                if self.sort_mode == SortMode::Delta {
+                    self.update_tree_lines();
+                } else {
+                    self.refresh_filtered_lines();
+                }
                 log_msg(
                     &self.log_path,
                     &format!("DeltaData applied in {:?}", t0.elapsed()),
@@ -448,6 +460,12 @@ impl App {
         }
 
         self.tree_lines.splice(pos + 1..pos + 1, new_lines);
+        self.path_to_tree_idx = self
+            .tree_lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.path.clone(), i))
+            .collect();
         self.refresh_filtered_lines();
         self.recompute_matches();
         true
@@ -540,15 +558,6 @@ impl App {
         if self.cursor >= self.filtered_tree_lines.len() && !self.filtered_tree_lines.is_empty() {
             self.cursor = self.filtered_tree_lines.len() - 1;
         }
-        // Keep search matches in sync: only show matches that are in the filtered view
-        if !self.match_indices.is_empty() {
-            let visible: HashSet<usize> = self.filtered_tree_lines.iter().copied().collect();
-            self.match_indices
-                .retain(|m| m.tree_idx.map_or(true, |idx| visible.contains(&idx)));
-            self.current_match = self
-                .current_match
-                .min(self.match_indices.len().saturating_sub(1));
-        }
     }
     /// Get the current delta filter threshold in bytes, or 0 if inactive
     pub fn delta_filter_threshold(&self) -> u64 {
@@ -597,6 +606,9 @@ impl App {
         self.focus = Focus::Tree;
         self.refresh_filtered_lines();
         self.recompute_matches();
+        if self.server_mode {
+            self.request_delta_refresh();
+        }
     }
 
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {

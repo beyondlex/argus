@@ -78,11 +78,24 @@ fn main() {
 }
 
 async fn run(args: Args) {
-    let log_filter = args
-        .log_level
-        .map(|l| EnvFilter::new(l))
-        .or_else(|| std::env::var("RUST_LOG").ok().map(EnvFilter::new))
-        .unwrap_or_else(|| EnvFilter::new("info"));
+    let mut config = if let Some(ref path) = args.config {
+        config::load_config_from(path)
+    } else {
+        config::load_config()
+    };
+
+    let log_filter = if let Some(level) = args.log_level.clone() {
+        EnvFilter::new(level)
+    } else if config.log_enabled {
+        config
+            .log_level
+            .clone()
+            .or_else(|| std::env::var("RUST_LOG").ok())
+            .map(EnvFilter::new)
+            .unwrap_or_else(|| EnvFilter::new("info"))
+    } else {
+        EnvFilter::new("off")
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(log_filter)
@@ -93,12 +106,6 @@ async fn run(args: Args) {
         SHOULD_QUIT.store(true, Ordering::Relaxed);
     })
     .expect("failed to set ctrl-c handler");
-
-    let mut config = if let Some(ref path) = args.config {
-        config::load_config_from(path)
-    } else {
-        config::load_config()
-    };
 
     if let Some(ref uds_path) = args.uds_path {
         config.uds_path = uds_path.clone();

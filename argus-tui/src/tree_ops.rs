@@ -8,7 +8,7 @@ use crate::app::{App, SortMode, TreeLine, TreeNode};
 
 /// Directories with more children than this won't have their subtree matched or expanded
 /// during search navigation. Prevents n/N from hanging when jumping into massive directories.
-pub(crate) const MAX_DIR_CHILDREN: usize = 2000;
+pub(crate) const MAX_DIR_CHILDREN: usize = 500;
 
 pub fn expand_node(app: &mut App) {
     let Some(line) = app.selected_line().cloned() else {
