@@ -21,7 +21,7 @@ fn all_lines() -> Vec<Line<'static>> {
     vec![
         Line::from(vec![section("Usage:")]),
         Line::from(vec![Span::raw(
-            "  :Time <N>[h|d|w]          N hours/days/weeks ago until now",
+            "  :Time <N>[m|h|d|w]          N minutes/hours/days/weeks ago until now",
         )]),
         Line::from(vec![Span::raw(
             "  :Time HH:MM               from HH:MM today until now",

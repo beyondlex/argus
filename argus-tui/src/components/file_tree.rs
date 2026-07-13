@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 use std::path::Path;
 
 use ratatui::{
@@ -139,7 +139,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         let row_bg = if is_current_match {
             Color::Blue
         } else if is_selected {
-            Color::LightGreen
+            Color::from_str("#2c284b").unwrap_or_else(|_|Color::Green)
         } else {
             Color::Reset
         };
@@ -308,16 +308,16 @@ fn render_tree_line<'a>(
             Some(d) if d > 0 => {
                 let s = format!("+{}", util::format_size(d as u64));
                 let color = util::delta_unit_color(util::extract_unit(&s));
-                (s, base.fg(if row_hl { Color::Black } else { color }))
+                (s, base.fg(if row_hl { Color::White } else { color }))
             }
             Some(d) if d < 0 => (
                 format!("-{}", util::format_size(d.unsigned_abs())),
-                base.fg(if row_hl { Color::Black } else { Color::Green }),
+                base.fg(if row_hl { Color::White } else { Color::Green }),
             ),
             Some(_) | None => (
                 "-".to_string(),
                 base.fg(if row_hl {
-                    Color::Black
+                    Color::White
                 } else {
                     Color::DarkGray
                 }),
@@ -331,7 +331,7 @@ fn render_tree_line<'a>(
         right.push(Span::styled(
             size_str.clone(),
             base.fg(if row_hl {
-                Color::Black
+                Color::White
             } else {
                 Color::DarkGray
             }),
@@ -343,12 +343,12 @@ fn render_tree_line<'a>(
             let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
             right.push(Span::styled(
                 num,
-                base.fg(if row_hl { Color::Black } else { Color::Gray }),
+                base.fg(if row_hl { Color::White } else { Color::Gray }),
             ));
             right.push(Span::styled(
                 trimmed[space_idx + 1..].to_string(),
                 base.fg(if row_hl {
-                    Color::Black
+                    Color::White
                 } else {
                     util::filesize_unit_color(&trimmed[space_idx + 1..])
                 }),
@@ -356,7 +356,7 @@ fn render_tree_line<'a>(
         } else {
             right.push(Span::styled(
                 size_str.clone(),
-                base.fg(if row_hl { Color::Black } else { Color::Gray }),
+                base.fg(if row_hl { Color::White } else { Color::Gray }),
             ));
         }
     }
@@ -420,8 +420,8 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
             Style::default().bg(ctx.bg).add_modifier(Modifier::BOLD)
         } else if ctx.is_selected {
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightGreen)
+                .fg(Color::White)
+                .bg(ctx.bg)
                 .add_modifier(Modifier::BOLD)
         } else if line.node.is_dir() {
             Style::default()
@@ -652,7 +652,7 @@ mod tests {
             "",
             false,
             None,
-            Color::LightGreen,
+            Color::Green,
         );
         assert!(!left.is_empty());
     }

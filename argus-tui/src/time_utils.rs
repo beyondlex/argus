@@ -15,6 +15,8 @@ pub(crate) fn parse_duration(s: &str) -> Result<u64, String> {
         (&s[..s.len() - 1], 86_400_000u64)
     } else if s.ends_with('h') || s.ends_with('H') {
         (&s[..s.len() - 1], 3_600_000u64)
+    } else if s.ends_with('m') || s.ends_with('M') {
+        (&s[..s.len() - 1], 60_000u64)
     } else {
         (s, 3_600_000u64)
     };
@@ -101,8 +103,10 @@ pub(crate) fn format_duration_label(ms: u64) -> String {
         format!("{}w", ms / 604_800_000)
     } else if ms % 86_400_000 == 0 {
         format!("{}d", ms / 86_400_000)
-    } else {
+    } else if ms % 3_600_000 == 0 {
         format!("{}h", ms / 3_600_000)
+    } else {
+        format!("{}m", ms / 60_000)
     }
 }
 

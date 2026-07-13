@@ -66,7 +66,7 @@ pub fn render(f: &mut Frame, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw(
-            "  :Time <N>[h|d|w] | <from> to <to>  Set time range",
+            "  :Time <N>[m|h|d|w] | <from> to <to>  Set time range",
         )]),
         Line::from(vec![Span::raw("  :Delta <N>[k|m|g]  Set delta threshold")]),
         Line::from(vec![Span::raw("  Press 'Clear' to reset filters")]),
