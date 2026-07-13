@@ -408,10 +408,10 @@ fn render_tree_line<'a>(
                 unit.to_string(),
                 row.filesize(util::filesize_unit_color(unit)),
             ));
-            // Pad to fixed width when unit is short (e.g. "B" vs "KB")
-            let cur = 11 + unit.len();
-            if cur < SIZE_WIDTH {
-                right.push(Span::raw(" ".repeat(SIZE_WIDTH - cur)));
+            // Pad to fixed width (size_str is always 11 from display_size_label)
+            let size_total = size_str.len();
+            if size_total < SIZE_WIDTH {
+                right.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
             }
         } else {
             let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
