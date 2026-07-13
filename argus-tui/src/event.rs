@@ -8,7 +8,7 @@ use crate::util::{format_size, key_hints};
 use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -396,14 +396,28 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     );
     f.render_widget(block, area);
 }
-fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, permanent: bool) {
-    let popup = crate::components::help_popup::centered_rect(50, 40, area);
-    f.render_widget(Clear, popup);
+fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
+    // Fixed-height popup centered in the available area
+    let width_pct = 50;
+    let height_fixed: u16 = 11;
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Delete Confirmation ")
-        .style(Style::default().fg(Color::Red).bg(Color::Black));
+    let horiz = Layout::horizontal([
+        Constraint::Percentage((100 - width_pct) / 2),
+        Constraint::Percentage(width_pct),
+        Constraint::Percentage((100 - width_pct) / 2),
+    ])
+    .split(area);
+
+    let height = height_fixed.min(area.height);
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect {
+        x: horiz[1].x,
+        y,
+        width: horiz[1].width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
 
     let path_display = app
         .delete_target_path
@@ -423,6 +437,12 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
         "Confirm delete"
     };
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete Confirmation ")
+        .title_bottom(Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])).centered())
+        .style(Style::default().fg(Color::Red).bg(Color::Black));
+
     let text = Paragraph::new(vec![
         Line::from(vec![Span::styled(
             "WARNING:",
@@ -438,8 +458,6 @@ fn render_delete_prompt(f: &mut Frame, area: ratatui::layout::Rect, app: &App, p
             action_text,
             Style::default().fg(Color::White),
         )]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])),
     ])
     .block(block)
     .alignment(Alignment::Center);
