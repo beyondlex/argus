@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, DELTA_UNIT_LABELS};
+use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, TreeNode, DELTA_UNIT_LABELS};
 use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
 use crate::handler;
 use crate::util::key_hints;
@@ -194,6 +194,9 @@ fn render_main_content(
     } else {
         None
     };
+    let root_total_size = app.tree_root.as_ref().map_or(0, |tr| match tr {
+        TreeNode::Snapshot(snap, _) => snap.total_size,
+    });
     file_tree::render(
         f,
         main_chunks[0],
@@ -210,6 +213,7 @@ fn render_main_content(
             cursor_visible,
             focus: file_tree_focused,
             delta_cache,
+            root_total_size,
         },
     );
 }

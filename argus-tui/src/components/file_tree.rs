@@ -1,5 +1,5 @@
-use std::{collections::HashMap, str::FromStr};
 use std::path::Path;
+use std::{collections::HashMap, str::FromStr};
 
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
@@ -29,6 +29,7 @@ pub struct TreeRenderCtx<'a> {
     pub cursor_visible: bool,
     pub focus: bool,
     pub delta_cache: Option<&'a HashMap<Vec<String>, i64>>,
+    pub root_total_size: u64,
 }
 
 pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
@@ -139,7 +140,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         let row_bg = if is_current_match {
             Color::Blue
         } else if is_selected {
-            Color::from_str("#2c284b").unwrap_or_else(|_|Color::Green)
+            Color::from_str("#2c284b").unwrap_or_else(|_| Color::Green)
         } else {
             Color::Reset
         };
@@ -155,6 +156,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
             has_delta,
             delta,
             row_bg,
+            ctx.root_total_size,
         );
 
         let row_y = inner.y + 1 + display_offset as u16;
@@ -271,6 +273,7 @@ fn render_tree_line<'a>(
     has_delta: bool,
     delta: Option<i64>,
     row_bg: Color,
+    root_total_size: u64,
 ) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
     let fg = if is_selected {
         Color::Black
@@ -359,6 +362,18 @@ fn render_tree_line<'a>(
                 base.fg(if row_hl { Color::White } else { Color::Gray }),
             ));
         }
+    }
+
+    if root_total_size > 0 && line.has_scan_data {
+        let pct = (line.node.current_size() as f64 / root_total_size as f64) * 100.0;
+        right.push(Span::styled(
+            format!("{:>6.1}%", pct),
+            base.fg(if row_hl {
+                Color::White
+            } else {
+                Color::DarkGray
+            }),
+        ));
     }
 
     (left, right)
@@ -636,7 +651,7 @@ mod tests {
     fn test_render_tree_line_normal() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
         let (left, right) =
-            render_tree_line(&line, false, false, false, "", false, None, Color::Reset);
+            render_tree_line(&line, false, false, false, "", false, None, Color::Reset, 0);
         assert!(!left.is_empty());
         assert!(!right.is_empty());
     }
@@ -644,16 +659,8 @@ mod tests {
     #[test]
     fn test_render_tree_line_selected() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
-        let (left, _) = render_tree_line(
-            &line,
-            true,
-            false,
-            false,
-            "",
-            false,
-            None,
-            Color::Green,
-        );
+        let (left, _) =
+            render_tree_line(&line, true, false, false, "", false, None, Color::Green, 0);
         assert!(!left.is_empty());
     }
 
@@ -669,6 +676,7 @@ mod tests {
             true,
             Some(2048),
             Color::Reset,
+            0,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('+'));
@@ -686,6 +694,7 @@ mod tests {
             true,
             Some(-512),
             Color::Reset,
+            0,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('-'));
@@ -703,8 +712,64 @@ mod tests {
             false,
             None,
             Color::Reset,
+            0,
         );
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
         assert!(left_text.contains("hello"));
+    }
+
+    #[test]
+    fn test_render_tree_line_percentage_shown() {
+        let line = make_treeline("f", 0, false, FileType::File, false, true);
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::Reset,
+            2048, // root_total_size = 2048, file size = 1024 (from make_file_node)
+        );
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        assert!(right_text.contains("50.0%"));
+    }
+
+    #[test]
+    fn test_render_tree_line_percentage_hidden_when_no_scan() {
+        // unscanned dir: has_scan_data=false
+        let line = make_treeline("d", 0, true, FileType::Directory, false, false);
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::Reset,
+            2048,
+        );
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!right_text.contains('%'));
+    }
+
+    #[test]
+    fn test_render_tree_line_percentage_hidden_when_root_zero() {
+        let line = make_treeline("f", 0, false, FileType::File, false, true);
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::Reset,
+            0, // root_total_size = 0
+        );
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!right_text.contains('%'));
     }
 }
