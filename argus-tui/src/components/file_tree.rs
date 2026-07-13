@@ -376,27 +376,18 @@ fn render_tree_line<'a>(
 
     let mut right = Vec::new();
 
-    if has_delta {
-        let (delta_str, delta_fg) = match delta {
-            Some(d) if d > 0 => {
-                let s = format!("+{}", util::format_size(d as u64));
-                let color = util::delta_unit_color(util::extract_unit(&s));
-                (s, color)
-            }
-            Some(d) if d < 0 => (
-                format!("-{}", util::format_size(d.unsigned_abs())),
-                Color::Green,
-            ),
-            Some(_) | None => ("-".to_string(), Color::DarkGray),
-        };
-        let padded = format!("{:>width$}", delta_str, width = DELTA_WIDTH);
-        right.push(Span::styled(padded, row.delta(delta_fg)));
+    // Percent column
+    if root_total_size > 0 && line.has_scan_data {
+        let pct = (line.node.current_size() as f64 / root_total_size as f64) * 100.0;
+        right.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
         right.push(Span::raw(" "));
     }
 
+    // Size column
     if line.node.is_dir() && !line.has_scan_data {
         let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
         right.push(Span::styled(padded, row.filesize(Color::DarkGray)));
+        right.push(Span::raw(" "));
     } else {
         let trimmed = size_str.trim().to_string();
         if let Some(space_idx) = trimmed.rfind(' ') {
@@ -413,15 +404,30 @@ fn render_tree_line<'a>(
             if size_total < SIZE_WIDTH {
                 right.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
             }
+            right.push(Span::raw(" "));
         } else {
             let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
             right.push(Span::styled(padded, row.filesize(Color::Gray)));
+            right.push(Span::raw(" "));
         }
     }
 
-    if root_total_size > 0 && line.has_scan_data {
-        let pct = (line.node.current_size() as f64 / root_total_size as f64) * 100.0;
-        right.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
+    // Delta column
+    if has_delta {
+        let (delta_str, delta_fg) = match delta {
+            Some(d) if d > 0 => {
+                let s = format!("+{}", util::format_size(d as u64));
+                let color = util::delta_unit_color(util::extract_unit(&s));
+                (s, color)
+            }
+            Some(d) if d < 0 => (
+                format!("-{}", util::format_size(d.unsigned_abs())),
+                Color::Green,
+            ),
+            Some(_) | None => ("-".to_string(), Color::DarkGray),
+        };
+        let padded = format!("{:>width$}", delta_str, width = DELTA_WIDTH);
+        right.push(Span::styled(padded, row.delta(delta_fg)));
     }
 
     (left, right)
