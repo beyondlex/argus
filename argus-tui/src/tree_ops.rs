@@ -169,11 +169,15 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
     }
 
     for key in keys_to_remove {
-        if key == app.view_root_path {
+        if key == app.view_root_path || deleted_path.starts_with(&key) {
+            // Prune in-place: remove the deleted path from this snapshot.
+            // This preserves parent/ancestor scans needed by resolve_scan_tree
+            // when the view root is a subdirectory (not the scanned root).
             if let Some(snapshot) = app.scan_cache.get_mut(&key) {
                 remove_path_from_snapshot(snapshot, deleted_path);
             }
         } else {
+            // key.starts_with(deleted_path) — descendant cache entry is being deleted
             app.scan_cache.remove(&key);
         }
     }
@@ -791,6 +795,101 @@ mod tests {
             deleted.is_none(),
             "delete.txt should be removed from tree_lines"
         );
+    }
+
+    #[test]
+    fn test_delete_in_subdirectory_preserves_parent_scan_cache() {
+        // Simulate: user scanned ~/code/github, navigated into argus/, then deleted a file.
+        // The parent scan cache entry (~/code/github) must be PRUNED, not removed,
+        // so resolve_scan_tree can still find sizes for remaining entries.
+        fn sized_file(name: &str, size: u64) -> FileNode {
+            FileNode {
+                name: name.to_string(),
+                parent: None,
+                is_dir: false,
+                file_type: FileType::File,
+                size,
+                children: Vec::new(),
+            }
+        }
+
+        // Parent scan: ~/code/github with argus/ and other files
+        let parent_arena = vec![
+            dir_node("github", vec![("argus", 1), ("readme.md", 2)]),
+            dir_node("argus", vec![("keep.txt", 3), ("delete.txt", 4)]),
+            sized_file("readme.md", 10),
+            sized_file("keep.txt", 80),
+            sized_file("delete.txt", 20),
+        ];
+        let mut parent_scan = Snapshot::new(PathBuf::from("/tmp/github"), parent_arena.clone(), 0);
+        parent_scan.node_mut(ROOT_NODE).size = 110; // scanner compute_size
+        parent_scan.node_mut(1).size = 100; // argus total
+
+        // Subdirectory view: argus/ (shallow, like list_dir result)
+        let sub_arena = vec![
+            dir_node("argus", vec![("keep.txt", 1), ("delete.txt", 2)]),
+            sized_file("keep.txt", 80),
+            sized_file("delete.txt", 20),
+        ];
+        let mut sub_snap = Snapshot::new(PathBuf::from("/tmp/github/argus"), sub_arena, 0);
+
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/tmp/github/argus");
+        // Store parent scan in cache (subdirectory is NOT in cache)
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/github"), parent_scan);
+        // Enrich subdirectory snapshot (simulating build_current_tree)
+        let root_scan_tree = resolve_scan_tree(&app.scan_cache, &app.view_root_path);
+        enrich_snapshot_sizes(
+            &mut sub_snap,
+            ROOT_NODE,
+            &app.scan_cache,
+            &app.view_root_path,
+            root_scan_tree,
+            &mut Vec::new(),
+        );
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(sub_snap), ROOT_NODE));
+        app.update_tree_lines();
+
+        // Verify initial state
+        let keep = app
+            .tree_lines
+            .iter()
+            .find(|l| l.node.name() == "keep.txt")
+            .unwrap();
+        assert!(keep.has_scan_data);
+        assert_eq!(keep.node.current_size(), 80);
+
+        // Delete a file inside the subdirectory
+        apply_deletion_to_state(&mut app, Path::new("/tmp/github/argus/delete.txt"));
+        app.update_tree_lines();
+
+        // Verify parent scan still exists in cache
+        assert!(
+            app.scan_cache.contains_key(&PathBuf::from("/tmp/github")),
+            "parent scan cache entry should be preserved (pruned, not removed)"
+        );
+
+        // Verify resolve_scan_tree still works
+        let rst = resolve_scan_tree(&app.scan_cache, &app.view_root_path);
+        assert!(
+            rst.is_some(),
+            "resolve_scan_tree should still find parent scan"
+        );
+
+        // Verify remaining entry has scan data
+        let keep = app.tree_lines.iter().find(|l| l.node.name() == "keep.txt");
+        assert!(keep.is_some(), "keep.txt should still be in tree_lines");
+        let keep = keep.unwrap();
+        assert!(
+            keep.has_scan_data,
+            "keep.txt should have has_scan_data=true after deletion in subdirectory view"
+        );
+
+        // Verify tree_root root node size is recomputed
+        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
+        assert_eq!(snap_arc.node(ROOT_NODE).size, 80);
     }
 
     #[test]
