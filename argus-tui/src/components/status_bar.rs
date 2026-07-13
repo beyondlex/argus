@@ -57,10 +57,6 @@ pub fn render(
 
     if scanning {
         left_spans.push(Span::styled(
-            format!("  {}", SPINNER_FRAMES[scan_spinner as usize]),
-            Style::default().fg(Color::Yellow),
-        ));
-        left_spans.push(Span::styled(
             util::display_path(view_root_path),
             Style::default().fg(Color::Gray),
         ));
@@ -87,6 +83,12 @@ pub fn render(
             ),
             Style::default().fg(Color::Yellow),
         ));
+
+        left_spans.push(Span::styled(
+            format!("  {} ", SPINNER_FRAMES[scan_spinner as usize]),
+            Style::default().fg(Color::Magenta),
+        ));
+
         left_spans.extend(key_hints(&[("Esc", "cancel")]));
     } else if let Some(summary) = scan_summary {
         left_spans.push(Span::raw("   "));

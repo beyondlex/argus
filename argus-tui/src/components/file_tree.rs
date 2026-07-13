@@ -263,6 +263,89 @@ fn is_symlink(line: &TreeLine) -> bool {
     line.node.file_type() == argus_core::FileType::Symlink
 }
 
+struct RowStyle {
+    row_bg: Color,
+    highlighted: bool,
+}
+
+impl RowStyle {
+    fn new(row_bg: Color, highlighted: bool) -> Self {
+        Self { row_bg, highlighted }
+    }
+
+    fn base(&self) -> Style {
+        Style::default().fg(Color::White)
+    }
+
+    fn sel(&self) -> Style {
+        if self.highlighted {
+            Style::default().bg(self.row_bg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        }
+    }
+
+    fn prefix(&self) -> Style {
+        self.base().patch(self.sel())
+    }
+
+    fn delta(&self, delta_fg: Color) -> Style {
+        self.base().patch(self.sel()).fg(if self.highlighted {
+            Color::White
+        } else {
+            delta_fg
+        })
+    }
+
+    fn filesize(&self, fg: Color) -> Style {
+        self.base().patch(self.sel()).fg(if self.highlighted {
+            Color::White
+        } else {
+            fg
+        })
+    }
+
+    fn percent(&self) -> Style {
+        self.base().patch(self.sel()).fg(if self.highlighted {
+            Color::White
+        } else {
+            Color::DarkGray
+        })
+    }
+
+    fn name(&self, entry_fg: Color) -> Style {
+        self.base().fg(entry_fg).patch(self.sel())
+    }
+
+    fn name_match(&self) -> Style {
+        self.base().fg(Color::Green).add_modifier(Modifier::BOLD)
+    }
+
+    fn name_match_selected_filename(&self) -> Style {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    fn name_match_selected_matchword(&self) -> Style {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+fn entry_fg(line: &TreeLine) -> Color {
+    if line.node.is_dir() {
+        Color::Cyan
+    } else if is_symlink(line) {
+        Color::Magenta
+    } else {
+        Color::White
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_tree_line<'a>(
     line: &'a TreeLine,
@@ -275,13 +358,8 @@ fn render_tree_line<'a>(
     row_bg: Color,
     root_total_size: u64,
 ) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
-    let fg = if is_selected {
-        Color::Black
-    } else {
-        Color::White
-    };
-    let base = Style::default().fg(fg).bg(row_bg);
-    let row_hl = row_bg != Color::Reset;
+    let highlighted = is_selected || is_current_match;
+    let row = RowStyle::new(row_bg, highlighted);
 
     let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
 
@@ -291,166 +369,78 @@ fn render_tree_line<'a>(
         line.node.current_size(),
     );
 
-    let left = name_spans(
-        line,
-        NameSpanContext {
-            name_prefix,
-            base,
-            bg: row_bg,
-            is_selected,
-            is_current_match,
-            has_search,
-            search_word,
-        },
-    );
+    let left = name_spans(line, name_prefix, has_search, search_word, &row);
 
     let mut right = Vec::new();
 
     if has_delta {
-        let (delta_str, delta_style) = match delta {
+        let (delta_str, delta_fg) = match delta {
             Some(d) if d > 0 => {
                 let s = format!("+{}", util::format_size(d as u64));
                 let color = util::delta_unit_color(util::extract_unit(&s));
-                (s, base.fg(if row_hl { Color::White } else { color }))
+                (s, color)
             }
             Some(d) if d < 0 => (
                 format!("-{}", util::format_size(d.unsigned_abs())),
-                base.fg(if row_hl { Color::White } else { Color::Green }),
+                Color::Green,
             ),
-            Some(_) | None => (
-                "-".to_string(),
-                base.fg(if row_hl {
-                    Color::White
-                } else {
-                    Color::DarkGray
-                }),
-            ),
+            Some(_) | None => ("-".to_string(), Color::DarkGray),
         };
-        right.push(Span::styled(delta_str, delta_style));
+        right.push(Span::styled(delta_str, row.delta(delta_fg)));
         right.push(Span::raw(" "));
     }
 
     if line.node.is_dir() && !line.has_scan_data {
-        right.push(Span::styled(
-            size_str.clone(),
-            base.fg(if row_hl {
-                Color::White
-            } else {
-                Color::DarkGray
-            }),
-        ));
+        right.push(Span::styled(size_str.clone(), row.filesize(Color::DarkGray)));
     } else {
         let trimmed = size_str.trim().to_string();
         if let Some(space_idx) = trimmed.rfind(' ') {
             let leading = size_str.len() - size_str.trim_start().len();
             let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
-            right.push(Span::styled(
-                num,
-                base.fg(if row_hl { Color::White } else { Color::Gray }),
-            ));
+            right.push(Span::styled(num, row.filesize(Color::Gray)));
             right.push(Span::styled(
                 trimmed[space_idx + 1..].to_string(),
-                base.fg(if row_hl {
-                    Color::White
-                } else {
-                    util::filesize_unit_color(&trimmed[space_idx + 1..])
-                }),
+                row.filesize(util::filesize_unit_color(&trimmed[space_idx + 1..])),
             ));
         } else {
-            right.push(Span::styled(
-                size_str.clone(),
-                base.fg(if row_hl { Color::White } else { Color::Gray }),
-            ));
+            right.push(Span::styled(size_str.clone(), row.filesize(Color::Gray)));
         }
     }
 
     if root_total_size > 0 && line.has_scan_data {
         let pct = (line.node.current_size() as f64 / root_total_size as f64) * 100.0;
-        right.push(Span::styled(
-            format!("{:>6.1}%", pct),
-            base.fg(if row_hl {
-                Color::White
-            } else {
-                Color::DarkGray
-            }),
-        ));
+        right.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
     }
 
     (left, right)
 }
 
-struct NameSpanContext<'a> {
+fn name_spans<'a>(
+    line: &'a TreeLine,
     name_prefix: String,
-    base: Style,
-    bg: Color,
-    is_selected: bool,
-    is_current_match: bool,
     has_search: bool,
     search_word: &'a str,
-}
-
-fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>> {
+    row: &RowStyle,
+) -> Vec<Span<'a>> {
     let name_text = line.node.name();
 
-    if ctx.has_search && !ctx.search_word.is_empty() {
-        let prefix_style = if ctx.is_current_match {
-            Style::default().bg(ctx.bg).add_modifier(Modifier::BOLD)
-        } else if ctx.is_selected {
-            Style::default()
-                .fg(Color::White)
-                .bg(ctx.bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let mut spans = vec![Span::styled(ctx.name_prefix, prefix_style)];
+    if has_search && !search_word.is_empty() {
+        let mut spans = vec![Span::styled(name_prefix, row.prefix())];
 
-        if let Some(indices) = fuzzy_match_indices(ctx.search_word, name_text) {
-            spans.extend(match_highlight_spans(
-                name_text,
-                &indices,
-                ctx.is_current_match,
-                ctx.is_selected,
-                line.node.is_dir(),
-                is_symlink(line),
-                ctx.bg,
-            ));
-        } else {
-            let (fg, actual_bg) = if ctx.is_current_match {
-                (Color::Green, ctx.bg)
-            } else if ctx.is_selected {
-                (Color::White, ctx.bg)
-            } else if line.node.is_dir() {
-                (Color::Cyan, ctx.bg)
-            } else if is_symlink(line) {
-                (Color::Magenta, ctx.bg)
+        if let Some(indices) = fuzzy_match_indices(search_word, name_text) {
+            if row.highlighted {
+                spans.extend(match_highlight_spans(name_text, &indices, row));
             } else {
-                (Color::White, ctx.bg)
-            };
-            spans.push(Span::styled(name_text, ctx.base.fg(fg).bg(actual_bg)));
+                spans.push(Span::styled(name_text, row.name_match()));
+            }
+        } else {
+            spans.push(Span::styled(name_text, row.name(entry_fg(line))));
         }
         spans
     } else {
-        let name_style = if ctx.is_current_match {
-            Style::default().bg(ctx.bg).add_modifier(Modifier::BOLD)
-        } else if ctx.is_selected {
-            Style::default()
-                .fg(Color::White)
-                .bg(ctx.bg)
-                .add_modifier(Modifier::BOLD)
-        } else if line.node.is_dir() {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else if is_symlink(line) {
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
+        let name_style = row.name(entry_fg(line));
         vec![
-            Span::styled(ctx.name_prefix, Style::default().bg(ctx.bg)),
+            Span::styled(name_prefix, row.prefix()),
             Span::styled(name_text.to_string(), name_style),
         ]
     }
@@ -459,55 +449,32 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
 fn match_highlight_spans<'a>(
     text: &'a str,
     match_indices: &[usize],
-    is_current_match: bool,
-    is_selected: bool,
-    is_dir: bool,
-    is_symlink: bool,
-    row_bg: Color,
+    row: &RowStyle,
 ) -> Vec<Span<'a>> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
     let mut prev_end = 0;
     let match_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
 
-    let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
-        (Color::Black, Color::Green, Color::White, row_bg)
-    } else {
-        let normal_fg = if is_dir {
-            Color::Cyan
-        } else if is_symlink {
-            Color::Magenta
-        } else {
-            Color::White
-        };
-        (Color::Green, Color::Black, normal_fg, Color::Black)
-    };
-
-    for (ci, ch) in chars.iter().enumerate() {
+    for (ci, _ch) in chars.iter().enumerate() {
         if match_set.contains(&ci) {
             if ci > prev_end {
                 let normal: String = chars[prev_end..ci].iter().collect();
                 spans.push(Span::styled(
                     normal,
-                    Style::default().fg(normal_fg).bg(normal_bg),
+                    row.name_match_selected_filename(),
                 ));
             }
             spans.push(Span::styled(
-                ch.to_string(),
-                Style::default()
-                    .fg(matched_fg)
-                    .bg(matched_bg)
-                    .add_modifier(Modifier::BOLD),
+                chars[ci].to_string(),
+                row.name_match_selected_matchword(),
             ));
             prev_end = ci + 1;
         }
     }
     if prev_end < chars.len() {
         let rest: String = chars[prev_end..].iter().collect();
-        spans.push(Span::styled(
-            rest,
-            Style::default().fg(normal_fg).bg(normal_bg),
-        ));
+        spans.push(Span::styled(rest, row.name_match_selected_filename()));
     }
 
     spans
@@ -632,15 +599,17 @@ mod tests {
 
     #[test]
     fn test_match_highlight_spans_no_matches() {
-        let spans = match_highlight_spans("hello", &[], false, false, false, false, Color::Reset);
+        let row = RowStyle::new(Color::Reset, false);
+        let spans = match_highlight_spans("hello", &[], &row);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content, "hello");
     }
 
     #[test]
     fn test_match_highlight_spans_some_matches() {
+        let row = RowStyle::new(Color::Reset, false);
         let spans =
-            match_highlight_spans("hello", &[0, 1], false, false, false, false, Color::Reset);
+            match_highlight_spans("hello", &[0, 1], &row);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "h");
         assert_eq!(spans[1].content, "e");
