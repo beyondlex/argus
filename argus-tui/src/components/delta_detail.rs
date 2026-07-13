@@ -155,15 +155,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
 
     let entry_count = state.entries.len();
     let total_title = format!(" Delta Events for: {} ", display_path(&state.path));
+    let visible_rows = (popup.height as usize).saturating_sub(4);
+    let needs_scroll = entry_count > visible_rows;
     let footer = if state.entries.is_empty() {
         " [Esc close] ".into()
-    } else if state.entries.len() > (popup.height as usize).saturating_sub(5) {
-        format!(
-            " {} entries ({pct}%) · [j/k scroll · Esc close] ",
-            entry_count,
-            pct = (state.scroll + (popup.height as usize).saturating_sub(5)).min(entry_count) * 100
-                / entry_count.max(1),
-        )
+    } else if needs_scroll {
+        let bottom = (state.scroll + visible_rows).min(entry_count);
+        let pct = bottom * 100 / entry_count.max(1);
+        format!(" {} entries ({pct}%) · [j/k scroll · Esc close] ", entry_count)
     } else {
         format!(" {} entries · [Esc close] ", entry_count)
     };

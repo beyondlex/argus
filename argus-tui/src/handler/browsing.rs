@@ -12,14 +12,18 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(ref mut state) = app.delta_detail {
-                    if state.scroll + 1 < state.entries.len() {
+                    if delta_detail_needs_scroll(state)
+                        && state.scroll + 1 < state.entries.len()
+                    {
                         state.scroll += 1;
                     }
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(ref mut state) = app.delta_detail {
-                    state.scroll = state.scroll.saturating_sub(1);
+                    if delta_detail_needs_scroll(state) {
+                        state.scroll = state.scroll.saturating_sub(1);
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -234,6 +238,15 @@ pub(crate) fn set_root_to_selected(app: &mut App) {
         app.view_root_path = full_path;
         app.rebuild_tree();
     }
+}
+
+/// Returns true if delta detail entries exceed the popup viewport (scroll needed).
+fn delta_detail_needs_scroll(state: &crate::types::DeltaDetailState) -> bool {
+    let visible_rows = crossterm::terminal::size()
+        .ok()
+        .map(|(_, h)| ((h as f64 * 0.65) as usize).saturating_sub(4))
+        .unwrap_or(10);
+    state.entries.len() > visible_rows
 }
 
 pub fn start_scan(app: &mut App) {
