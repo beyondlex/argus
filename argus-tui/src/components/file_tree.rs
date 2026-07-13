@@ -419,7 +419,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
             let (fg, actual_bg) = if ctx.is_current_match {
                 (Color::Green, ctx.bg)
             } else if ctx.is_selected {
-                (Color::Black, ctx.bg)
+                (Color::White, ctx.bg)
             } else if line.node.is_dir() {
                 (Color::Cyan, ctx.bg)
             } else if is_symlink(line) {
@@ -471,7 +471,7 @@ fn match_highlight_spans<'a>(
     let match_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
 
     let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
-        (Color::Black, Color::Green, Color::Black, row_bg)
+        (Color::Black, Color::Green, Color::White, row_bg)
     } else {
         let normal_fg = if is_dir {
             Color::Cyan
