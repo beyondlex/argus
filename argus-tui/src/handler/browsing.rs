@@ -12,9 +12,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(ref mut state) = app.delta_detail {
-                    if delta_detail_needs_scroll(state)
-                        && state.scroll + 1 < state.entries.len()
-                    {
+                    if delta_detail_needs_scroll(state) && state.scroll + 1 < state.entries.len() {
                         state.scroll += 1;
                     }
                 }
@@ -268,10 +266,15 @@ pub fn start_scan(app: &mut App) {
         let tx_clone = tx.clone();
         std::thread::spawn(move || {
             while let Ok(update) = progress_rx.recv() {
-                let _ = tx_clone.blocking_send(AppMessage::ScanProgress {
-                    file_count: update.file_count,
-                    total_bytes: update.total_bytes,
-                });
+                if tx_clone
+                    .try_send(AppMessage::ScanProgress {
+                        file_count: update.file_count,
+                        total_bytes: update.total_bytes,
+                    })
+                    .is_err()
+                {
+                    // Channel full — drop this update; next one will carry the latest state
+                }
             }
         });
 

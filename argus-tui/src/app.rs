@@ -270,7 +270,6 @@ impl App {
             }
             AppMessage::ScanComplete(snapshot) => {
                 self.scanning = false;
-                let items = self.scan_progress.map(|(count, _)| count).unwrap_or(0);
                 let duration = self
                     .scan_started_at
                     .take()
@@ -279,7 +278,7 @@ impl App {
                 self.last_scan_summary = Some(ScanSummary {
                     root_path: snapshot.root_path.clone(),
                     total_size: snapshot.total_size,
-                    total_files: items,
+                    total_files: snapshot.total_files,
                     duration,
                 });
                 self.scan_progress = None;

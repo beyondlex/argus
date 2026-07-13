@@ -58,18 +58,22 @@ pub struct Snapshot {
     pub root_path: PathBuf,
     pub root_path_hash: String,
     pub total_size: u64,
+    #[serde(default)]
+    pub total_files: u64,
     pub arena: Vec<FileNode>,
 }
 
 impl Snapshot {
     pub fn new(root_path: PathBuf, arena: Vec<FileNode>, total_size: u64) -> Self {
         let root_path_hash = hash_root_path(&root_path);
+        let total_files = arena.iter().filter(|n| !n.is_dir).count() as u64;
         Self {
             version: SNAPSHOT_VERSION,
             timestamp: Utc::now(),
             root_path,
             root_path_hash,
             total_size,
+            total_files,
             arena,
         }
     }
@@ -110,7 +114,11 @@ impl Snapshot {
         } else {
             String::from_utf8_lossy(data).to_string()
         };
-        Ok(serde_json::from_str(&json)?)
+        let mut snap: Self = serde_json::from_str(&json)?;
+        if snap.total_files == 0 {
+            snap.total_files = snap.arena.iter().filter(|n| !n.is_dir).count() as u64;
+        }
+        Ok(snap)
     }
 
     /// Walk the snapshot arena along a path of component names, starting from `idx`.

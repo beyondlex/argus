@@ -136,6 +136,14 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         let is_current_match =
             is_active_match && ctx.match_indices[ctx.current_match].tree_idx == Some(tree_idx);
 
+        let row_bg = if is_current_match {
+            Color::Blue
+        } else if is_selected {
+            Color::LightGreen
+        } else {
+            Color::Reset
+        };
+
         let delta = ctx.delta_cache.and_then(|c| c.get(&line.path).copied());
 
         let (left_spans, right_spans) = render_tree_line(
@@ -146,6 +154,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
             ctx.search_word,
             has_delta,
             delta,
+            row_bg,
         );
 
         let row_y = inner.y + 1 + display_offset as u16;
@@ -155,6 +164,16 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
             width: content_width,
             height: 1,
         };
+
+        if row_bg != Color::Reset {
+            f.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    " ".repeat(content_width as usize),
+                    Style::default().bg(row_bg),
+                )])),
+                row_area,
+            );
+        }
 
         let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
         let [name_area, info_area] =
@@ -242,6 +261,7 @@ fn is_symlink(line: &TreeLine) -> bool {
     line.node.file_type() == argus_core::FileType::Symlink
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_tree_line<'a>(
     line: &'a TreeLine,
     is_selected: bool,
@@ -250,18 +270,15 @@ fn render_tree_line<'a>(
     search_word: &'a str,
     has_delta: bool,
     delta: Option<i64>,
+    row_bg: Color,
 ) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
-    let bg = if is_current_match {
-        Color::Blue
-    } else {
-        Color::Reset
-    };
     let fg = if is_selected {
         Color::Black
     } else {
         Color::White
     };
-    let base = Style::default().fg(fg).bg(bg);
+    let base = Style::default().fg(fg).bg(row_bg);
+    let row_hl = row_bg != Color::Reset;
 
     let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
 
@@ -276,7 +293,7 @@ fn render_tree_line<'a>(
         NameSpanContext {
             name_prefix,
             base,
-            bg,
+            bg: row_bg,
             is_selected,
             is_current_match,
             has_search,
@@ -291,13 +308,20 @@ fn render_tree_line<'a>(
             Some(d) if d > 0 => {
                 let s = format!("+{}", util::format_size(d as u64));
                 let color = util::delta_unit_color(util::extract_unit(&s));
-                (s, base.fg(color).bg(Color::Reset))
+                (s, base.fg(if row_hl { Color::Black } else { color }))
             }
             Some(d) if d < 0 => (
                 format!("-{}", util::format_size(d.unsigned_abs())),
-                base.fg(Color::Green).bg(Color::Reset),
+                base.fg(if row_hl { Color::Black } else { Color::Green }),
             ),
-            Some(_) | None => ("-".to_string(), base.fg(Color::DarkGray).bg(Color::Reset)),
+            Some(_) | None => (
+                "-".to_string(),
+                base.fg(if row_hl {
+                    Color::Black
+                } else {
+                    Color::DarkGray
+                }),
+            ),
         };
         right.push(Span::styled(delta_str, delta_style));
         right.push(Span::raw(" "));
@@ -306,20 +330,34 @@ fn render_tree_line<'a>(
     if line.node.is_dir() && !line.has_scan_data {
         right.push(Span::styled(
             size_str.clone(),
-            base.fg(Color::DarkGray).bg(Color::Reset),
+            base.fg(if row_hl {
+                Color::Black
+            } else {
+                Color::DarkGray
+            }),
         ));
     } else {
         let trimmed = size_str.trim().to_string();
         if let Some(space_idx) = trimmed.rfind(' ') {
             let leading = size_str.len() - size_str.trim_start().len();
             let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
-            right.push(Span::styled(num, base.fg(Color::Gray)));
+            right.push(Span::styled(
+                num,
+                base.fg(if row_hl { Color::Black } else { Color::Gray }),
+            ));
             right.push(Span::styled(
                 trimmed[space_idx + 1..].to_string(),
-                base.fg(util::filesize_unit_color(&trimmed[space_idx + 1..])),
+                base.fg(if row_hl {
+                    Color::Black
+                } else {
+                    util::filesize_unit_color(&trimmed[space_idx + 1..])
+                }),
             ));
         } else {
-            right.push(Span::styled(size_str.clone(), base.fg(Color::Gray)));
+            right.push(Span::styled(
+                size_str.clone(),
+                base.fg(if row_hl { Color::Black } else { Color::Gray }),
+            ));
         }
     }
 
@@ -341,7 +379,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
 
     if ctx.has_search && !ctx.search_word.is_empty() {
         let prefix_style = if ctx.is_current_match {
-            Style::default().add_modifier(Modifier::BOLD)
+            Style::default().bg(ctx.bg).add_modifier(Modifier::BOLD)
         } else if ctx.is_selected {
             Style::default()
                 .fg(Color::White)
@@ -360,12 +398,13 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
                 ctx.is_selected,
                 line.node.is_dir(),
                 is_symlink(line),
+                ctx.bg,
             ));
         } else {
             let (fg, actual_bg) = if ctx.is_current_match {
                 (Color::Green, ctx.bg)
             } else if ctx.is_selected {
-                (Color::Black, Color::Blue)
+                (Color::Black, ctx.bg)
             } else if line.node.is_dir() {
                 (Color::Cyan, ctx.bg)
             } else if is_symlink(line) {
@@ -378,7 +417,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
         spans
     } else {
         let name_style = if ctx.is_current_match {
-            Style::default().add_modifier(Modifier::BOLD)
+            Style::default().bg(ctx.bg).add_modifier(Modifier::BOLD)
         } else if ctx.is_selected {
             Style::default()
                 .fg(Color::Black)
@@ -396,7 +435,7 @@ fn name_spans<'a>(line: &'a TreeLine, ctx: NameSpanContext<'a>) -> Vec<Span<'a>>
             Style::default().fg(Color::White)
         };
         vec![
-            Span::styled(ctx.name_prefix, Style::default()),
+            Span::styled(ctx.name_prefix, Style::default().bg(ctx.bg)),
             Span::styled(name_text.to_string(), name_style),
         ]
     }
@@ -409,6 +448,7 @@ fn match_highlight_spans<'a>(
     is_selected: bool,
     is_dir: bool,
     is_symlink: bool,
+    row_bg: Color,
 ) -> Vec<Span<'a>> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
@@ -416,7 +456,7 @@ fn match_highlight_spans<'a>(
     let match_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
 
     let (matched_fg, matched_bg, normal_fg, normal_bg) = if is_current_match || is_selected {
-        (Color::Black, Color::Green, Color::Black, Color::Blue)
+        (Color::Black, Color::Green, Color::Black, row_bg)
     } else {
         let normal_fg = if is_dir {
             Color::Cyan
@@ -577,14 +617,15 @@ mod tests {
 
     #[test]
     fn test_match_highlight_spans_no_matches() {
-        let spans = match_highlight_spans("hello", &[], false, false, false, false);
+        let spans = match_highlight_spans("hello", &[], false, false, false, false, Color::Reset);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content, "hello");
     }
 
     #[test]
     fn test_match_highlight_spans_some_matches() {
-        let spans = match_highlight_spans("hello", &[0, 1], false, false, false, false);
+        let spans =
+            match_highlight_spans("hello", &[0, 1], false, false, false, false, Color::Reset);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "h");
         assert_eq!(spans[1].content, "e");
@@ -594,7 +635,8 @@ mod tests {
     #[test]
     fn test_render_tree_line_normal() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
-        let (left, right) = render_tree_line(&line, false, false, false, "", false, None);
+        let (left, right) =
+            render_tree_line(&line, false, false, false, "", false, None, Color::Reset);
         assert!(!left.is_empty());
         assert!(!right.is_empty());
     }
@@ -602,14 +644,32 @@ mod tests {
     #[test]
     fn test_render_tree_line_selected() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
-        let (left, _) = render_tree_line(&line, true, false, false, "", false, None);
+        let (left, _) = render_tree_line(
+            &line,
+            true,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::LightGreen,
+        );
         assert!(!left.is_empty());
     }
 
     #[test]
     fn test_render_tree_line_with_delta_positive() {
         let line = make_treeline("f", 0, false, FileType::File, false, true);
-        let (_, right) = render_tree_line(&line, false, false, false, "", true, Some(2048));
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            true,
+            Some(2048),
+            Color::Reset,
+        );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('+'));
     }
@@ -617,7 +677,16 @@ mod tests {
     #[test]
     fn test_render_tree_line_with_delta_negative() {
         let line = make_treeline("f", 0, false, FileType::File, false, true);
-        let (_, right) = render_tree_line(&line, false, false, false, "", true, Some(-512));
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            true,
+            Some(-512),
+            Color::Reset,
+        );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('-'));
     }
@@ -625,7 +694,16 @@ mod tests {
     #[test]
     fn test_render_tree_line_with_search() {
         let line = make_treeline("hello.txt", 0, false, FileType::File, false, true);
-        let (left, _) = render_tree_line(&line, false, false, true, "hello", false, None);
+        let (left, _) = render_tree_line(
+            &line,
+            false,
+            false,
+            true,
+            "hello",
+            false,
+            None,
+            Color::Reset,
+        );
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
         assert!(left_text.contains("hello"));
     }

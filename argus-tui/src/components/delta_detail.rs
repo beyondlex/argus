@@ -162,7 +162,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
     } else if needs_scroll {
         let bottom = (state.scroll + visible_rows).min(entry_count);
         let pct = bottom * 100 / entry_count.max(1);
-        format!(" {} entries ({pct}%) · [j/k scroll · Esc close] ", entry_count)
+        format!(
+            " {} entries ({pct}%) · [j/k scroll · Esc close] ",
+            entry_count
+        )
     } else {
         format!(" {} entries · [Esc close] ", entry_count)
     };
