@@ -316,10 +316,13 @@ impl App {
                 self.refresh_filtered_lines();
                 self.set_error("daemon disconnected".into(), 4);
             }
-            AppMessage::DeltaData(deltas) => {
+            AppMessage::DeltaData(deltas, returned_client) => {
                 let t0 = Instant::now();
                 self.delta_pending = false;
                 self.delta_cache = deltas;
+                if let Some(client) = returned_client {
+                    self.daemon_client = Some(client);
+                }
                 if self.sort_mode == SortMode::Delta {
                     self.update_tree_lines();
                 } else {

@@ -59,6 +59,10 @@ impl App {
         let tx = self.tx.clone();
         let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
         let log_path = self.log_path.clone();
+
+        // Take existing daemon client to avoid a new UDS connection
+        let client = self.daemon_client.take();
+
         self.delta_pending = true;
         log_msg(
             &log_path,
@@ -69,8 +73,8 @@ impl App {
         );
         tokio::spawn(async move {
             let t0 = Instant::now();
-            match Self::fetch_deltas(&uds_path, &view_root, from, to, &log_path).await {
-                Some(deltas) => {
+            match Self::fetch_deltas(&uds_path, client, &view_root, from, to, &log_path).await {
+                Some((deltas, returned_client)) => {
                     log_msg(
                         &log_path,
                         &format!(
@@ -79,7 +83,9 @@ impl App {
                             t0.elapsed()
                         ),
                     );
-                    let _ = tx.send(AppMessage::DeltaData(deltas)).await;
+                    let _ = tx
+                        .send(AppMessage::DeltaData(deltas, Some(returned_client)))
+                        .await;
                 }
                 None => {
                     let _ = tx.send(AppMessage::DaemonDisconnected).await;
@@ -90,17 +96,27 @@ impl App {
 
     async fn fetch_deltas(
         uds: &str,
+        client: Option<IpcClient>,
         view_root: &Path,
         from: u64,
         to: u64,
         log_path: &Path,
-    ) -> Option<HashMap<Vec<String>, i64>> {
+    ) -> Option<(HashMap<Vec<String>, i64>, IpcClient)> {
         let t0 = Instant::now();
-        let mut client = match IpcClient::connect(uds).await {
-            Ok(c) => c,
-            Err(e) => {
-                log_msg(log_path, &format!("fetch_deltas: connect failed: {e}"));
-                return None;
+        let mut client = match client {
+            Some(c) => {
+                log_msg(log_path, "fetch_deltas: reusing existing connection");
+                c
+            }
+            None => {
+                log_msg(log_path, "fetch_deltas: no existing client, connecting...");
+                match IpcClient::connect(uds).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log_msg(log_path, &format!("fetch_deltas: connect failed: {e}"));
+                        return None;
+                    }
+                }
             }
         };
         let t1 = Instant::now();
@@ -133,7 +149,7 @@ impl App {
                 t2.elapsed()
             ),
         );
-        Some(deltas)
+        Some((deltas, client))
     }
 }
 

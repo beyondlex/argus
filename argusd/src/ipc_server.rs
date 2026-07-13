@@ -175,7 +175,9 @@ async fn handle_connection(
             DaemonRequest::ClearDb => {
                 let conn = db.lock().await;
                 match clear_all_events(&conn) {
-                    Ok(deleted) => DaemonResponse::DbCleared { deleted_count: deleted },
+                    Ok(deleted) => DaemonResponse::DbCleared {
+                        deleted_count: deleted,
+                    },
                     Err(e) => DaemonResponse::Error {
                         message: e.to_string(),
                     },

@@ -51,6 +51,9 @@ pub fn init_db(conn: &Connection) -> Result<(), DbError> {
 
         CREATE INDEX IF NOT EXISTS idx_delta_timestamp
             ON delta_events(timestamp);
+
+        CREATE INDEX IF NOT EXISTS idx_delta_is_agg
+            ON delta_events(is_agg);
         ",
     )?;
     Ok(())
@@ -78,8 +81,7 @@ pub fn query_delta_total(
                WHERE agg.is_agg = 1
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
                  AND agg.path <> delta_events.path
-                 AND substr(delta_events.path, 1, length(agg.path)) = agg.path
-                 AND substr(delta_events.path, length(agg.path) + 1, 1) = '/'
+                 AND delta_events.path LIKE (agg.path || '/%')
            )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
         |row| row.get(0),
@@ -107,8 +109,7 @@ pub fn query_delta_detail(
                WHERE agg.is_agg = 1
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
                  AND agg.path <> delta_events.path
-                 AND substr(delta_events.path, 1, length(agg.path)) = agg.path
-                 AND substr(delta_events.path, length(agg.path) + 1, 1) = '/'
+                 AND delta_events.path LIKE (agg.path || '/%')
            )
          ORDER BY timestamp ASC",
     )?;
@@ -205,8 +206,7 @@ pub fn purge_events_before(conn: &Connection, before_ms: u64) -> Result<u64, DbE
 }
 
 pub fn query_event_count(conn: &Connection) -> Result<u64, DbError> {
-    let count: u64 =
-        conn.query_row("SELECT COUNT(*) FROM delta_events", [], |row| row.get(0))?;
+    let count: u64 = conn.query_row("SELECT COUNT(*) FROM delta_events", [], |row| row.get(0))?;
     Ok(count)
 }
 

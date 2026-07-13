@@ -208,7 +208,11 @@ fn cmd_status() -> Result<i32> {
                 println!("uptime: {}", format_duration(uptime_secs));
                 let start_secs = start_time_secs as i64;
                 let naive = chrono::DateTime::from_timestamp(start_secs, 0)
-                    .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+                    .map(|dt| {
+                        dt.with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string()
+                    })
                     .unwrap_or_else(|| "unknown".into());
                 println!("started: {naive}");
                 println!("log_level: {}", log_level.as_deref().unwrap_or("(none)"));
@@ -309,10 +313,18 @@ fn format_duration(secs: u64) -> String {
     let minutes = (secs % 3600) / 60;
     let secs = secs % 60;
     let mut parts = Vec::new();
-    if days > 0 { parts.push(format!("{days}d")); }
-    if hours > 0 { parts.push(format!("{hours}h")); }
-    if minutes > 0 { parts.push(format!("{minutes}m")); }
-    if secs > 0 || parts.is_empty() { parts.push(format!("{secs}s")); }
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if secs > 0 || parts.is_empty() {
+        parts.push(format!("{secs}s"));
+    }
     parts.join(" ")
 }
 

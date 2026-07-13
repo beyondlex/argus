@@ -14,7 +14,7 @@ pub enum AppMessage {
     ScanComplete(Snapshot),
     DaemonConnected(IpcClient),
     DaemonDisconnected,
-    DeltaData(HashMap<Vec<String>, i64>),
+    DeltaData(HashMap<Vec<String>, i64>, Option<IpcClient>),
     DeltaDetailLoaded(DeltaDetailState),
     Error(String),
     Info(String),
@@ -156,11 +156,11 @@ pub struct DeltaDetailState {
 /// A single row in the delta detail popup
 #[derive(Debug, Clone)]
 pub struct DeltaDetailRow {
-    pub timestamp: String,      // formatted as "2026-07-13 HH:MM:SS"
-    pub child_name: String,     // direct child name (e.g. "argus", "README.md")
+    pub timestamp: String,  // formatted as "2026-07-13 HH:MM:SS"
+    pub child_name: String, // direct child name (e.g. "argus", "README.md")
     pub delta_size: i64,
-    pub delta_display: String,  // "+ 100 MB", "-  10 KB"
-    pub is_aggregated: bool,    // false=raw event, true=synthetic sum of descendants
+    pub delta_display: String, // "+ 100 MB", "-  10 KB"
+    pub is_aggregated: bool,   // false=raw event, true=synthetic sum of descendants
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────

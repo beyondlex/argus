@@ -154,19 +154,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
     f.render_widget(Clear, popup);
 
     let entry_count = state.entries.len();
-    let total_title = format!(
-        " Delta Events for: {} ",
-        display_path(&state.path)
-    );
+    let total_title = format!(" Delta Events for: {} ", display_path(&state.path));
     let footer = if state.entries.is_empty() {
         " [Esc close] ".into()
     } else if state.entries.len() > (popup.height as usize).saturating_sub(5) {
         format!(
             " {} entries ({pct}%) · [j/k scroll · Esc close] ",
             entry_count,
-            pct = (state.scroll + (popup.height as usize).saturating_sub(5))
-                .min(entry_count)
-                * 100
+            pct = (state.scroll + (popup.height as usize).saturating_sub(5)).min(entry_count) * 100
                 / entry_count.max(1),
         )
     } else {
@@ -183,16 +178,31 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
 
     // Column constraints: time fixed, path expands, delta fixed right-aligned
     let widths = [
-        Constraint::Length(22),  // timestamp + prefix
-        Constraint::Fill(1),     // path fills remaining space
-        Constraint::Length(15),  // delta right-aligned
+        Constraint::Length(22), // timestamp + prefix
+        Constraint::Fill(1),    // path fills remaining space
+        Constraint::Length(15), // delta right-aligned
     ];
 
     // Header row
     let header = Row::new(vec![
-        Cell::from(Span::styled("Time", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))),
-        Cell::from(Span::styled("Path", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))),
-        Cell::from(Span::styled("      Delta", Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))),
+        Cell::from(Span::styled(
+            "Time",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "Path",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "      Delta",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )),
     ])
     .style(Style::default().bg(Color::Black))
     .height(1);
@@ -205,11 +215,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
         let visible_count = (inner.height as usize).saturating_sub(2);
         for i in scroll..(scroll + visible_count).min(state.entries.len()) {
             let row = &state.entries[i];
-            let prefix = if row.is_aggregated {
-                "▼ "
-            } else {
-                "  "
-            };
+            let prefix = if row.is_aggregated { "▼ " } else { "  " };
             let ts_style = Style::default().fg(Color::White);
             let path_style = Style::default().fg(Color::Yellow);
             let delta_style = if row.delta_size >= 0 {
@@ -236,8 +242,6 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
         }
     }
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block);
+    let table = Table::new(rows, widths).header(header).block(block);
     f.render_widget(table, popup);
 }
