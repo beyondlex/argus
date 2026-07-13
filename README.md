@@ -1,43 +1,247 @@
 # Argus
 
-Argus is a personal desktop disk intelligence tool.
+**Argus** — personal desktop disk intelligence tool. Scan, browse, and monitor disk usage via TUI or CLI, with an optional daemon for continuous change tracking.
 
-Scans run in memory only — no persistence. The database (`~/.config/argus/argus.db`)
-is reserved for future daemon delta data.
+## Features
 
-## CLI
+- **High-performance scanning** — recursive filesystem scan with hardlink dedup, skip-dir support, and progress reporting
+- **Vim-style TUI browser** — navigate, sort, search, filter, and delete files/directories
+- **Dual mode** — standalone (scan in-memory) or connect to `argusd` daemon for delta overlay
+- **Daemon delta monitoring** — `argusd` watches directories via `notify`, debounces events, stores in SQLite, serves delta queries over UDS
+- **Safety first** — trash-by-default, permanent delete requires explicit confirmation, protected system paths
+- **AI plugin architecture** (future) — gated behind feature flags, zero impact on core
+
+## Quick Start
 
 ```bash
-# Scan a path and print summary
-argus scan --path ~/Downloads
+# Build all crates
+cargo build --release
+
+# CLI: scan a directory
+cargo run --release --bin argus -- scan --path ~/Downloads
+
+# TUI: launch from current directory
+cargo run --release --bin argus-tui
+
+# Daemon: start background monitoring
+cargo run --release --bin argusd -- --daemon
 ```
 
-## TUI
+## Architecture
 
-- starts from the current working directory with a pure FS tree (dirs show `-`)
-- press `s` to scan the current root — sizes appear in-memory for the session
-- navigating away loses scan data for the old root; re-scan when needed
-- keeps the status bar compact with `[Tree]`, live scan progress, and scan summary
+```
+┌─────────────────────────────────────────────────────┐
+│                   Clients                            │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
+│  │ argus-cli │  │ argus-tui│  │ argus-gui│ (future) │
+│  └─────┬────┘  └────┬─────┘  └──────────┘          │
+│        │            │                                │
+│        └──────┬─────┘                                │
+│               │ depends on                           │
+│        ┌──────▼──────┐                               │
+│        │  argus-core  │  (pure logic library)        │
+│        └──────┬──────┘                               │
+│               │ UDS IPC                              │
+│        ┌──────▼──────┐                               │
+│        │   argusd     │  (daemon process)            │
+│        └─────────────┘                               │
+└─────────────────────────────────────────────────────┘
+```
 
-## Configuration (`~/.config/argus/config.toml`)
+- **argus-core**: pure logic library. No client/UI deps. Data structures, scanner, SQLite storage, IPC protocol.
+- **argus-cli**: CLI client for scripts and quick validation.
+- **argus-tui**: TUI client with ratatui + crossterm. Vim keybindings, file tree browsing, search, delta overlay.
+- **argusd**: Background daemon. Watches directories, debounces file events, stores in SQLite, serves clients via Unix domain socket.
+
+## CLI Usage
+
+### argus (CLI client)
+
+```bash
+# Scan a directory
+argus scan --path ~/Downloads
+
+# Query delta summary from daemon SQLite
+argus delta-summary --path ~/Downloads
+argus delta-summary --path ~/Downloads --from_ms 1700000000000 --to_ms 1700005000000
+
+# Request daemon event consolidation
+argus consolidate
+
+# Print help
+argus help
+```
+
+### argusd (Daemon)
+
+```bash
+# Start in foreground
+argusd
+
+# Daemonize (fork to background)
+argusd --daemon
+
+# With custom config
+argusd --config /path/to/config.toml
+
+# Set log level
+argusd --log-level debug
+
+# Stop running daemon
+argusd stop
+
+# Generate service template
+argusd --generate-service launchd  # macOS launchd plist
+argusd --generate-service systemd  # Linux systemd unit
+
+# Override UDS socket path
+argusd --uds-path /tmp/argus.sock
+```
+
+## TUI Usage
+
+Launch from any directory — the TUI starts with a pure filesystem tree view.
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move cursor up/down |
+| `l` / Right | Expand directory / enter child |
+| `h` / Left | Collapse / navigate to parent |
+| `H` | Collapse all children |
+| `u` | Go up one directory root |
+| `g` `g` | Jump to top |
+| `G` | Jump to bottom |
+| `.` | Set current directory as tree root |
+| `s` | Scan current root |
+| `o` | Toggle sort mode (Name / Size / Delta) |
+| `d` | Delete (move to trash) |
+| `D` | Permanently delete (requires confirmation) |
+| `i` | Show file info popup |
+| `y` | Copy file path to clipboard |
+| `?` | Toggle help overlay |
+| `/` | Enter search mode |
+| `n` / `N` | Next / previous search match |
+| `f` | Focus filter pane |
+| `c` | Clear delta filter |
+| `t` | Cycle time preset (daemon mode) |
+| `R` | Reconnect to daemon |
+| `Tab` | Cycle filter pane fields |
+| `:` | Enter command mode |
+| `q` / `Ctrl+C` | Quit |
+
+### Command Mode (`:` prefix)
+
+| Command | Description |
+|---------|-------------|
+| `:Scan` | Scan current directory |
+| `:Help` | Show help overlay |
+| `:Sort n` / `:Sort s` / `:Sort d` | Sort by Name / Size / Delta |
+| `:sd` / `:ss` / `:sn` | Quick sort: delta / size / name |
+| `:Delta <N>[k\|m\|g]` | Set delta filter threshold (e.g., `:Delta 10m`) |
+| `:Delta off` | Disable delta filter |
+| `:Time <N>[h\|d\|w]` | Set relative time range (e.g., `:Time 2h`) |
+| `:Time HH:MM` | Absolute time today |
+| `:Time MM-DD [HH:MM]` | Absolute date |
+| `:Time <from> to <to>` | Custom time range |
+| `:FilterClear` | Clear all filters |
+| `:FilterFocus` | Focus filter pane |
+| `:Consolidate` | Request daemon event consolidation |
+
+## Configuration
+
+Config file: `~/.config/argus/config.toml`
 
 ```toml
+[keybindings]
+move_up = "k"
+move_down = "j"
+enter_dir = "l"
+leave_dir = "h"
+sort_toggle = "o"
+delete_item = "d"
+focus_panel = "tab"
+quit = "q"
+
+[theme]
+color_scheme = "system"
+colors.growth_high = "#FF4444"
+colors.growth_medium = "#FF8800"
+colors.shrink_green = "#44FF44"
+colors.text_primary = "#FFFFFF"
+
+[browsing]
+auto_scan_on_start = false
+skip_dirs = ["node_modules", "target", ".git", "__pycache__",
+             ".venv", "vendor", "dist", "build", ".cache",
+             ".next", ".nuxt"]
+
 [daemon]
+uds_path = "/tmp/argusd.sock"
 watch_dirs = ["/Users/lex/Downloads", "/Users/lex/Desktop"]
 debounce_seconds = 10
-uds_path = "/tmp/argusd.sock"
-
-# delta 事件保留天数（超过自动清理）
 delta_retention_days = 30
 
-# 目录级事件合并（减少 DB 条目数）
 [daemon.consolidation]
-sibling_threshold = 500   # 子级变更数超过此值则合并
-interval_minutes = 60     # 后台合并间隔
+sibling_threshold = 500
+interval_minutes = 60
 ```
 
-## Docs
+## Data Model
 
-- `docs/requirements/index.md`
-- `docs/plans/sqlite-storage-backend.md`
-- `docs/notes/tui-current-behavior.md`
+- **Snapshots**: session-only, in-memory. Arena-based `FileNode` tree serialized as gzip JSON.
+- **Delta events**: daemon-persisted in SQLite (`~/.config/argus/argus.db`). Events have path, delta_size, event_type (create/modify/delete/agg), and timestamp.
+- **IPC**: UDS with bincode-serialized `DaemonRequest`/`DaemonResponse` enums. Length-prefixed frames.
+- **Double-count prevention**: `is_agg` rows consolidate child events; SQL queries use `NOT EXISTS` to exclude descendants covered by aggregate rows.
+
+## Project Structure
+
+```
+argus/
+├── argus-core/       Core library (model, scanner, db, ipc)
+├── argus-cli/        CLI client
+├── argus-tui/        TUI client (ratatui + crossterm)
+│   ├── src/
+│   │   ├── app.rs          Central state + message handling
+│   │   ├── types.rs        TreeNode, TreeLine, AppMode, Focus
+│   │   ├── handler/        Keyboard event dispatch modules
+│   │   ├── components/     UI widget rendering
+│   │   ├── tree_ops.rs     Tree expand/collapse/sort/delete
+│   │   ├── delta.rs        Delta cache construction
+│   │   ├── search.rs       Fuzzy match + jump-to-next
+│   │   └── ipc_client.rs   Daemon UDS communication
+│   └── tests/
+├── argusd/           Background daemon
+│   └── src/
+│       ├── watcher.rs      Filesystem event monitoring
+│       ├── debounce.rs     Event merge + delay flush
+│       ├── retention.rs    Periodic purge + consolidation
+│       ├── ipc_server.rs   UDS query handler
+│       └── daemonize.rs    Fork + PID file management
+└── docs/
+    └── requirements/  Full specifications (Chinese)
+```
+
+## Development
+
+```bash
+# Build all
+cargo build
+
+# Run all tests
+cargo test
+
+# Format & lint
+cargo fmt
+cargo clippy --all-targets -- -D warnings
+
+# Run integration tests
+cargo test --test integration
+```
+
+See [AGENTS.md](AGENTS.md) for development conventions and [docs/requirements/index.md](docs/requirements/index.md) for full specs.
+
+## License
+
+MIT
