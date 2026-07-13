@@ -16,6 +16,8 @@ use crate::util::key_hints;
 
 const SCROLL_MARGIN: usize = 3;
 const NAME_FIXED_WIDTH: u16 = 30;
+const DELTA_WIDTH: usize = 12;
+const SIZE_WIDTH: usize = 14;
 
 pub struct TreeRenderCtx<'a> {
     pub tree_lines: &'a [TreeLine],
@@ -387,24 +389,33 @@ fn render_tree_line<'a>(
             ),
             Some(_) | None => ("-".to_string(), Color::DarkGray),
         };
-        right.push(Span::styled(delta_str, row.delta(delta_fg)));
+        let padded = format!("{:>width$}", delta_str, width = DELTA_WIDTH);
+        right.push(Span::styled(padded, row.delta(delta_fg)));
         right.push(Span::raw(" "));
     }
 
     if line.node.is_dir() && !line.has_scan_data {
-        right.push(Span::styled(size_str.clone(), row.filesize(Color::DarkGray)));
+        let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
+        right.push(Span::styled(padded, row.filesize(Color::DarkGray)));
     } else {
         let trimmed = size_str.trim().to_string();
         if let Some(space_idx) = trimmed.rfind(' ') {
             let leading = size_str.len() - size_str.trim_start().len();
             let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
             right.push(Span::styled(num, row.filesize(Color::Gray)));
+            let unit = &trimmed[space_idx + 1..];
             right.push(Span::styled(
-                trimmed[space_idx + 1..].to_string(),
-                row.filesize(util::filesize_unit_color(&trimmed[space_idx + 1..])),
+                unit.to_string(),
+                row.filesize(util::filesize_unit_color(unit)),
             ));
+            // Pad to fixed width when unit is short (e.g. "B" vs "KB")
+            let cur = 11 + unit.len();
+            if cur < SIZE_WIDTH {
+                right.push(Span::raw(" ".repeat(SIZE_WIDTH - cur)));
+            }
         } else {
-            right.push(Span::styled(size_str.clone(), row.filesize(Color::Gray)));
+            let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
+            right.push(Span::styled(padded, row.filesize(Color::Gray)));
         }
     }
 
