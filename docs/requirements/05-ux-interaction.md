@@ -9,6 +9,9 @@
 ```bash
 # 扫描目录并打印摘要（内存操作，不持久化）
 argus scan --path ~/Downloads
+
+# 查询 daemon 状态（已运行、watch 目录、配置等）
+argus status
 ```
 
 ### 1.2 阈值参数

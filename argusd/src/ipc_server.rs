@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,15 +10,33 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use argus_core::{
-    consolidate_events, query_delta_detail, query_delta_total, DaemonRequest, DaemonResponse,
+    clear_all_events, consolidate_events, query_db_size, query_delta_detail, query_delta_total,
+    query_event_count, DaemonRequest, DaemonResponse,
 };
 
-pub fn start_ipc_server(uds_path: &str, db: Arc<Mutex<Connection>>) -> tokio::task::JoinHandle<()> {
+#[derive(Clone)]
+pub struct ServerConfig {
+    pub watch_dirs: Vec<PathBuf>,
+    pub log_level: Option<String>,
+    pub debounce_seconds: u64,
+    pub delta_retention_days: u64,
+    pub db_path: PathBuf,
+}
+
+pub fn start_ipc_server(
+    uds_path: &str,
+    db: Arc<Mutex<Connection>>,
+    cfg: ServerConfig,
+) -> tokio::task::JoinHandle<()> {
     let path = uds_path.to_string();
     let start_time = Instant::now();
+    let start_time_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     tokio::spawn(async move {
-        if let Err(e) = run_ipc_server(&path, db, start_time).await {
+        if let Err(e) = run_ipc_server(&path, db, start_time, start_time_secs, cfg).await {
             error!("IPC server error: {e}");
         }
     })
@@ -28,6 +46,8 @@ async fn run_ipc_server(
     uds_path: &str,
     db: Arc<Mutex<Connection>>,
     start_time: Instant,
+    start_time_secs: u64,
+    cfg: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = PathBuf::from(uds_path);
 
@@ -46,8 +66,9 @@ async fn run_ipc_server(
                             Ok((mut stream, _addr)) => {
                                 let db = db.clone();
                                 let start = start_time;
+                                let cfg = cfg.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_connection(&mut stream, db, start).await {
+                                    if let Err(e) = handle_connection(&mut stream, db, start, start_time_secs, cfg).await {
                                         warn!("connection error: {e}");
                                     }
                                 });
@@ -71,6 +92,8 @@ async fn handle_connection(
     stream: &mut tokio::net::UnixStream,
     db: Arc<Mutex<Connection>>,
     start_time: Instant,
+    start_time_secs: u64,
+    cfg: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let mut len_buf = [0u8; 4];
@@ -87,13 +110,21 @@ async fn handle_connection(
         let response = match request {
             DaemonRequest::Ping => DaemonResponse::Pong,
             DaemonRequest::GetStatus => {
-                let conn = db.lock().await;
                 let uptime = start_time.elapsed().as_secs();
+                let conn = db.lock().await;
+                let db_event_count = query_event_count(&conn).unwrap_or(0);
                 drop(conn);
+                let db_size_bytes = query_db_size(&cfg.db_path).unwrap_or(0);
                 DaemonResponse::Status {
                     version: env!("CARGO_PKG_VERSION").to_string(),
-                    watch_dirs: Vec::new(),
+                    watch_dirs: cfg.watch_dirs.clone(),
                     uptime_secs: uptime,
+                    start_time_secs,
+                    log_level: cfg.log_level.clone(),
+                    debounce_seconds: cfg.debounce_seconds,
+                    delta_retention_days: cfg.delta_retention_days,
+                    db_event_count,
+                    db_size_bytes,
                 }
             }
             DaemonRequest::GetDelta {
@@ -136,6 +167,15 @@ async fn handle_connection(
                     Ok(count) => DaemonResponse::ConsolidationDone {
                         consolidated_count: count,
                     },
+                    Err(e) => DaemonResponse::Error {
+                        message: e.to_string(),
+                    },
+                }
+            }
+            DaemonRequest::ClearDb => {
+                let conn = db.lock().await;
+                match clear_all_events(&conn) {
+                    Ok(deleted) => DaemonResponse::DbCleared { deleted_count: deleted },
                     Err(e) => DaemonResponse::Error {
                         message: e.to_string(),
                     },

@@ -19,6 +19,7 @@ pub enum DaemonRequest {
     Ping,
     GetStatus,
     RequestConsolidation,
+    ClearDb,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,9 +36,18 @@ pub enum DaemonResponse {
         version: String,
         watch_dirs: Vec<PathBuf>,
         uptime_secs: u64,
+        start_time_secs: u64,
+        log_level: Option<String>,
+        debounce_seconds: u64,
+        delta_retention_days: u64,
+        db_event_count: u64,
+        db_size_bytes: u64,
     },
     ConsolidationDone {
         consolidated_count: u64,
+    },
+    DbCleared {
+        deleted_count: u64,
     },
     Error {
         message: String,
@@ -95,6 +105,12 @@ mod tests {
             version: "0.1.0".into(),
             watch_dirs: vec![PathBuf::from("/tmp")],
             uptime_secs: 42,
+            start_time_secs: 1700000000,
+            log_level: Some("info".into()),
+            debounce_seconds: 10,
+            delta_retention_days: 30,
+            db_event_count: 1234,
+            db_size_bytes: 65536,
         };
         let encoded = bincode::serialize(&resp).unwrap();
         let decoded: DaemonResponse = bincode::deserialize(&encoded).unwrap();
@@ -103,10 +119,22 @@ mod tests {
                 version,
                 watch_dirs,
                 uptime_secs,
+                start_time_secs,
+                log_level,
+                debounce_seconds,
+                delta_retention_days,
+                db_event_count,
+                db_size_bytes,
             } => {
                 assert_eq!(version, "0.1.0");
                 assert_eq!(watch_dirs, vec![PathBuf::from("/tmp")]);
                 assert_eq!(uptime_secs, 42);
+                assert_eq!(start_time_secs, 1700000000);
+                assert_eq!(log_level, Some("info".into()));
+                assert_eq!(debounce_seconds, 10);
+                assert_eq!(delta_retention_days, 30);
+                assert_eq!(db_event_count, 1234);
+                assert_eq!(db_size_bytes, 65536);
             }
             _ => panic!("wrong variant"),
         }

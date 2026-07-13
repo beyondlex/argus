@@ -4,8 +4,9 @@ pub mod model;
 pub mod scanner;
 
 pub use db::{
-    consolidate_events, default_db_path, init_db, insert_events, open_db, purge_events_before,
-    query_delta_detail, query_delta_summary, query_delta_total, DbError,
+    clear_all_events, consolidate_events, default_db_path, init_db, insert_events, open_db,
+    purge_events_before, query_db_size, query_delta_detail, query_delta_summary,
+    query_delta_total, query_event_count, DbError,
 };
 pub use ipc::{DaemonRequest, DaemonResponse, DEFAULT_UDS_PATH};
 pub use model::{

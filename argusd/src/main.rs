@@ -133,7 +133,14 @@ async fn run(args: Args) {
     let retention_handle = retention::start_retention_worker(retention_db, config.clone());
 
     let ipc_db = db.clone();
-    let ipc_handle = ipc_server::start_ipc_server(&config.uds_path, ipc_db);
+    let ipc_cfg = ipc_server::ServerConfig {
+        watch_dirs: config.watch_dirs.clone(),
+        log_level: config.log_level.clone(),
+        debounce_seconds: config.debounce_seconds,
+        delta_retention_days: config.delta_retention_days,
+        db_path: db_path.clone(),
+    };
+    let ipc_handle = ipc_server::start_ipc_server(&config.uds_path, ipc_db, ipc_cfg);
 
     wait_for_shutdown().await;
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
@@ -200,6 +201,22 @@ pub fn purge_events_before(conn: &Connection, before_ms: u64) -> Result<u64, DbE
         "DELETE FROM delta_events WHERE timestamp < ?1",
         params![before_ms],
     )?;
+    Ok(deleted as u64)
+}
+
+pub fn query_event_count(conn: &Connection) -> Result<u64, DbError> {
+    let count: u64 =
+        conn.query_row("SELECT COUNT(*) FROM delta_events", [], |row| row.get(0))?;
+    Ok(count)
+}
+
+pub fn query_db_size(path: &Path) -> Result<u64, DbError> {
+    let meta = fs::metadata(path)?;
+    Ok(meta.len())
+}
+
+pub fn clear_all_events(conn: &Connection) -> Result<u64, DbError> {
+    let deleted = conn.execute("DELETE FROM delta_events", [])?;
     Ok(deleted as u64)
 }
 

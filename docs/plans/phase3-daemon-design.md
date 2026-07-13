@@ -233,6 +233,8 @@ pub enum DaemonRequest {
     Ping,
     /// 获取 daemon 状态
     GetStatus,
+    /// 请求事件合并
+    RequestConsolidation,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -240,7 +242,15 @@ pub enum DaemonResponse {
     Delta { total_delta: i64, entries: Vec<DeltaEntry> },
     DeltaDetail { entries: Vec<DeltaEntry> },
     Pong,
-    Status { version: String, watch_dirs: Vec<PathBuf>, uptime_secs: u64 },
+    Status {
+        version: String,
+        watch_dirs: Vec<PathBuf>,
+        uptime_secs: u64,
+        start_time_secs: u64,
+        log_level: Option<String>,
+        debounce_seconds: u64,
+        delta_retention_days: u64,
+    },
     Error { message: String },
 }
 ```

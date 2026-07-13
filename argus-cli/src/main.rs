@@ -24,6 +24,8 @@ fn main() {
         } => cmd_delta_summary(path, *from_ms, *to_ms),
         Commands::Help => cmd_help(),
         Commands::Consolidate => cmd_consolidate(),
+        Commands::Status => cmd_status(),
+        Commands::Clear => cmd_clear(),
     };
 
     match result {
@@ -63,6 +65,10 @@ enum Commands {
     Help,
     /// Request delta event consolidation on the daemon.
     Consolidate,
+    /// Query daemon status.
+    Status,
+    /// Clear all delta events in the daemon database.
+    Clear,
 }
 
 fn cmd_scan(path: &PathBuf) -> Result<i32> {
@@ -93,6 +99,8 @@ fn cmd_help() -> Result<i32> {
     println!("  delta-summary --path <PATH>  Print delta summary for a path");
     println!("  help                  Print this help text");
     println!("  consolidate           Request daemon to consolidate delta events");
+    println!("  status                Query daemon status");
+    println!("  clear                 Clear all delta events in daemon database");
     println!();
     println!("TUI commands (type : inside the TUI):");
     println!("  :Scan                 Scan current directory");
@@ -161,6 +169,111 @@ fn cmd_consolidate() -> Result<i32> {
     })
 }
 
+fn cmd_status() -> Result<i32> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let uds_path = argus_core::DEFAULT_UDS_PATH;
+        let mut stream = UnixStream::connect(uds_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
+
+        let req = DaemonRequest::GetStatus;
+        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
+        stream
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        stream.write_all(&payload).await?;
+
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let resp_len = u32::from_be_bytes(len_buf) as usize;
+        let mut resp_buf = vec![0u8; resp_len];
+        stream.read_exact(&mut resp_buf).await?;
+
+        let resp: DaemonResponse =
+            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        match resp {
+            DaemonResponse::Status {
+                version,
+                watch_dirs,
+                uptime_secs,
+                start_time_secs,
+                log_level,
+                debounce_seconds,
+                delta_retention_days,
+                db_event_count,
+                db_size_bytes,
+            } => {
+                println!("version: {version}");
+                println!("uptime: {}", format_duration(uptime_secs));
+                let start_secs = start_time_secs as i64;
+                let naive = chrono::DateTime::from_timestamp(start_secs, 0)
+                    .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                println!("started: {naive}");
+                println!("log_level: {}", log_level.as_deref().unwrap_or("(none)"));
+                println!("debounce_seconds: {debounce_seconds}");
+                println!("delta_retention_days: {delta_retention_days}");
+                println!("db_event_count: {db_event_count}");
+                println!("db_size: {}", format_size(db_size_bytes));
+                println!("watch_dirs:");
+                for dir in &watch_dirs {
+                    println!("  {}", dir.display());
+                }
+                Ok(0i32)
+            }
+            DaemonResponse::Error { message } => {
+                eprintln!("daemon error: {message}");
+                Ok(1)
+            }
+            _ => {
+                eprintln!("unexpected response");
+                Ok(1)
+            }
+        }
+    })
+}
+
+fn cmd_clear() -> Result<i32> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let uds_path = argus_core::DEFAULT_UDS_PATH;
+        let mut stream = UnixStream::connect(uds_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
+
+        let req = DaemonRequest::ClearDb;
+        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
+        stream
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        stream.write_all(&payload).await?;
+
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let resp_len = u32::from_be_bytes(len_buf) as usize;
+        let mut resp_buf = vec![0u8; resp_len];
+        stream.read_exact(&mut resp_buf).await?;
+
+        let resp: DaemonResponse =
+            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        match resp {
+            DaemonResponse::DbCleared { deleted_count } => {
+                println!("cleared {deleted_count} events");
+                Ok(0i32)
+            }
+            DaemonResponse::Error { message } => {
+                eprintln!("daemon error: {message}");
+                Ok(1)
+            }
+            _ => {
+                eprintln!("unexpected response");
+                Ok(1)
+            }
+        }
+    })
+}
+
 fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {
     let node = snap.node(idx);
     let mut count = 0u64;
@@ -188,6 +301,19 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.2} {}", size, UNITS[unit_idx])
     }
+}
+
+fn format_duration(secs: u64) -> String {
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    let secs = secs % 60;
+    let mut parts = Vec::new();
+    if days > 0 { parts.push(format!("{days}d")); }
+    if hours > 0 { parts.push(format!("{hours}h")); }
+    if minutes > 0 { parts.push(format!("{minutes}m")); }
+    if secs > 0 || parts.is_empty() { parts.push(format!("{secs}s")); }
+    parts.join(" ")
 }
 
 fn format_signed_size(bytes: i64) -> String {
