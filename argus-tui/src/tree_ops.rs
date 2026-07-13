@@ -702,6 +702,98 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_file_under_root_keeps_scan_data_and_percentage() {
+        fn sized_file(name: &str, size: u64) -> FileNode {
+            FileNode {
+                name: name.to_string(),
+                parent: None,
+                is_dir: false,
+                file_type: FileType::File,
+                size,
+                children: Vec::new(),
+            }
+        }
+
+        let arena = vec![
+            dir_node("test", vec![("keep.txt", 1), ("delete.txt", 2)]),
+            sized_file("keep.txt", 80),
+            sized_file("delete.txt", 20),
+        ];
+        // simulate scanner: compute_size sets root node's size
+        let mut root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 0);
+        let mut snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        // set root node size as scanner would (compute_size)
+        snap.node_mut(ROOT_NODE).size = 100;
+        root_snapshot.node_mut(ROOT_NODE).size = 100;
+
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), root_snapshot);
+        app.update_tree_lines();
+
+        // verify initial state
+        let keep_before = app
+            .tree_lines
+            .iter()
+            .find(|l| l.node.name() == "keep.txt")
+            .unwrap();
+        assert!(keep_before.has_scan_data);
+        assert_eq!(keep_before.node.current_size(), 80);
+        let root_total = match &app.tree_root {
+            Some(TreeNode::Snapshot(s, _)) => s.node(ROOT_NODE).size,
+            _ => 0,
+        };
+        assert_eq!(root_total, 100);
+
+        // delete a file directly under root
+        apply_deletion_to_state(&mut app, Path::new("/tmp/test/delete.txt"));
+        app.update_tree_lines();
+
+        // verify tree_root sizes
+        let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
+        assert_eq!(snap_arc.node(ROOT_NODE).size, 80);
+
+        // verify remaining tree line still has scan data and correct size
+        let keep = app.tree_lines.iter().find(|l| l.node.name() == "keep.txt");
+        assert!(keep.is_some(), "keep.txt should still be in tree_lines");
+        let keep = keep.unwrap();
+        assert!(
+            keep.has_scan_data,
+            "keep.txt should have has_scan_data=true after deletion"
+        );
+        assert_eq!(
+            keep.node.current_size(),
+            80,
+            "keep.txt size should be 80 after deletion"
+        );
+
+        // verify percentage would show correctly
+        let root_total = snap_arc.node(ROOT_NODE).size;
+        assert!(
+            root_total > 0,
+            "root_total_size should be > 0 after deletion"
+        );
+        let pct = (keep.node.current_size() as f64 / root_total as f64) * 100.0;
+        assert!(
+            (pct - 100.0).abs() < 0.1,
+            "keep.txt should be 100% of remaining root"
+        );
+
+        // deleted file should not be in tree_lines
+        let deleted = app
+            .tree_lines
+            .iter()
+            .find(|l| l.node.name() == "delete.txt");
+        assert!(
+            deleted.is_none(),
+            "delete.txt should be removed from tree_lines"
+        );
+    }
+
+    #[test]
     fn test_collapse_or_navigate_up_at_root() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
