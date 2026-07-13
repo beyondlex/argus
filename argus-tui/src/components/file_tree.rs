@@ -792,4 +792,33 @@ mod tests {
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(!right_text.contains('%'));
     }
+
+    #[test]
+    fn test_render_tree_line_column_order() {
+        // For a scanned item, order should be: percent, filesize, delta
+        let line = make_treeline("f", 0, false, FileType::File, false, true);
+        let (_, right) = render_tree_line(
+            &line,
+            false,
+            false,
+            false,
+            "",
+            true,
+            Some(2048),
+            Color::Reset,
+            2048, // root_total_size > 0
+        );
+        let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
+        let pct_pos = right_text.find('%').unwrap();
+        let size_pos = right_text.find("1.00").unwrap();
+        let delta_pos = right_text.find('+').unwrap();
+        assert!(
+            pct_pos < size_pos,
+            "percent should come before filesize, got: {right_text:?}"
+        );
+        assert!(
+            size_pos < delta_pos,
+            "filesize should come before delta, got: {right_text:?}"
+        );
+    }
 }
