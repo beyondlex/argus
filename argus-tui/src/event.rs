@@ -5,6 +5,7 @@ use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, TreeNode, DELTA_U
 use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
 use crate::handler;
 use crate::util::key_hints;
+use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
@@ -195,7 +196,7 @@ fn render_main_content(
         None
     };
     let root_total_size = app.tree_root.as_ref().map_or(0, |tr| match tr {
-        TreeNode::Snapshot(snap, _) => snap.total_size,
+        TreeNode::Snapshot(snap, _) => snap.node(ROOT_NODE).size,
     });
     file_tree::render(
         f,
