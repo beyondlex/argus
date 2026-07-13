@@ -32,7 +32,8 @@ where
                 match delete_fn(&path) {
                     Ok(msg) => {
                         app.set_error(msg, 3);
-                        crate::tree_ops::apply_deletion_to_state(app, &path);
+                        let freed = crate::tree_ops::apply_deletion_to_state(app, &path);
+                        app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
                         app.update_tree_lines();
                     }
                     Err(e) => {

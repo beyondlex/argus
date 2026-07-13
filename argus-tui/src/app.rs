@@ -100,6 +100,9 @@ pub struct App {
     pub command_history: Vec<String>,
     pub command_history_idx: Option<usize>,
 
+    // Delete tracking
+    pub deleted_bytes: u64,
+
     // Time help popup
     pub time_help_scroll: usize,
     pub should_quit: bool,
@@ -158,6 +161,7 @@ impl App {
             last_scan_summary: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
+            deleted_bytes: 0,
             info_data: None,
             delta_detail: None,
             command_input: String::new(),

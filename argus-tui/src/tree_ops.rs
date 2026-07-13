@@ -159,7 +159,39 @@ pub fn navigate_up_root(app: &mut App) {
     }
 }
 
-pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
+/// Get the size of a node at `deleted_path` within a snapshot, without modifying it.
+fn node_size_in_snapshot(snapshot: &Snapshot, deleted_path: &Path) -> u64 {
+    let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
+        return 0;
+    };
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(String::from))
+        .collect();
+    if components.is_empty() {
+        return 0;
+    }
+    let mut idx = ROOT_NODE;
+    for (step, comp) in components.iter().enumerate() {
+        let node = snapshot.node(idx);
+        if step + 1 == components.len() {
+            return node
+                .children
+                .iter()
+                .find(|(n, _)| n == comp)
+                .map(|(_, child_idx)| snapshot.node(*child_idx).size)
+                .unwrap_or(0);
+        }
+        match node.child_idx(comp) {
+            Some(child_idx) => idx = child_idx,
+            None => return 0,
+        }
+    }
+    0
+}
+
+pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
+    let mut total_freed = 0u64;
     let mut keys_to_remove = Vec::new();
 
     for key in app.scan_cache.keys() {
@@ -174,11 +206,15 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
             // This preserves parent/ancestor scans needed by resolve_scan_tree
             // when the view root is a subdirectory (not the scanned root).
             if let Some(snapshot) = app.scan_cache.get_mut(&key) {
+                let freed = node_size_in_snapshot(snapshot, deleted_path);
                 remove_path_from_snapshot(snapshot, deleted_path);
+                total_freed = total_freed.saturating_add(freed);
             }
         } else {
             // key.starts_with(deleted_path) — descendant cache entry is being deleted
-            app.scan_cache.remove(&key);
+            if let Some(snapshot) = app.scan_cache.remove(&key) {
+                total_freed = total_freed.saturating_add(snapshot.total_size);
+            }
         }
     }
 
@@ -186,6 +222,8 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) {
         let snap = Arc::make_mut(snap_arc);
         let _ = remove_path_from_tree(snap, &app.view_root_path, deleted_path);
     }
+
+    total_freed
 }
 
 fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bool {

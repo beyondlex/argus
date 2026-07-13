@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, TreeNode, DELTA_UNIT_LABELS};
 use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
 use crate::handler;
-use crate::util::key_hints;
+use crate::util::{format_size, key_hints};
 use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
@@ -350,7 +350,7 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(default_bg);
 
-    let left = vec![
+    let mut left: Vec<Span> = vec![
         Span::styled(time_label, time_style),
         Span::raw("  "),
         Span::styled("+Size: >=", delta_prefix_style),
@@ -376,6 +376,19 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             delta_unit_style,
         ),
     ];
+
+    // Right-aligned deleted-space counter (only if > 0)
+    if app.deleted_bytes > 0 {
+        let right_text = format!(" Deleted: {} ", format_size(app.deleted_bytes));
+        let left_width: usize = left.iter().map(|s| s.content.len()).sum();
+        let padding = inner
+            .width
+            .saturating_sub((left_width + right_text.len()) as u16);
+        if padding > 0 {
+            left.push(Span::raw(" ".repeat(padding as usize)));
+        }
+        left.push(Span::styled(right_text, Style::default().fg(Color::Green)));
+    }
 
     f.render_widget(
         Paragraph::new(Line::from(left)).style(Style::default().bg(default_bg)),
