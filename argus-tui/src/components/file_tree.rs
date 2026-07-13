@@ -395,6 +395,11 @@ fn render_tree_line<'a>(
     } else {
         let trimmed = size_str.trim().to_string();
         if let Some(space_idx) = trimmed.rfind(' ') {
+            // Pad to fixed width (size_str is always 11 from display_size_label)
+            let size_total = size_str.len();
+            if size_total < SIZE_WIDTH {
+                right.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
+            }
             let leading = size_str.len() - size_str.trim_start().len();
             let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
             right.push(Span::styled(num, row.filesize(Color::Gray)));
@@ -403,11 +408,6 @@ fn render_tree_line<'a>(
                 unit.to_string(),
                 row.filesize(util::filesize_unit_color(unit)),
             ));
-            // Pad to fixed width (size_str is always 11 from display_size_label)
-            let size_total = size_str.len();
-            if size_total < SIZE_WIDTH {
-                right.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
-            }
             right.push(Span::raw(" "));
         } else {
             let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);

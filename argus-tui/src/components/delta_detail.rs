@@ -171,8 +171,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Gray))
         .title(total_title.as_str())
-        .title_bottom(footer.as_str())
+        .title_bottom(Line::from(footer.as_str()).right_aligned())
+        .title_style(Style::default().fg(Color::Cyan))
         .style(Style::default().fg(Color::Cyan).bg(Color::Black));
 
     let inner = block.inner(popup);
@@ -217,13 +219,13 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
         let visible_count = (inner.height as usize).saturating_sub(2);
         for i in scroll..(scroll + visible_count).min(state.entries.len()) {
             let row = &state.entries[i];
-            let prefix = if row.is_aggregated { "▼ " } else { "  " };
-            let ts_style = Style::default().fg(Color::White);
+            let prefix = if row.is_aggregated { "- " } else { "  " };
+            let ts_style = Style::default().fg(Color::Gray);
             let path_style = Style::default().fg(Color::Yellow);
             let delta_style = if row.delta_size >= 0 {
-                Style::default().fg(Color::Green)
-            } else {
                 Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
             };
 
             rows.push(
@@ -234,7 +236,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
                     ])),
                     Cell::from(Span::styled(&row.child_name, path_style)),
                     Cell::from(Span::styled(
-                        format!("{:>15}", &row.delta_display),
+                        format!("{:>12  }", &row.delta_display),
                         delta_style,
                     )),
                 ])
