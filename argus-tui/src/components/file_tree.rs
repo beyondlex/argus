@@ -381,7 +381,7 @@ fn render_tree_line<'a>(
         let pct = (line.node.current_size() as f64 / root_total_size as f64) * 100.0;
         right.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
         right.push(Span::raw(" "));
-    } else if line.node.is_dir() && !line.has_scan_data {
+    } else {
         right.push(Span::styled(format!("{:>7}", "?"), row.percent()));
         right.push(Span::raw(" "));
     }
