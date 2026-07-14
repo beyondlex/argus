@@ -28,8 +28,19 @@ pub fn render(
     has_error: Option<&str>,
     server_connected: bool,
     sort_mode: SortMode,
+    multi_select: bool,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
+
+    // Multi-select indicator
+    if multi_select {
+        left_spans.push(Span::styled(
+            " ● MULTI ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
 
     // Daemon status indicator
     let (status_text, status_color) = if server_connected {

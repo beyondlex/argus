@@ -215,6 +215,8 @@ fn render_main_content(
             focus: file_tree_focused,
             delta_cache,
             root_total_size,
+            multi_select: app.multi_select,
+            selected_paths: &app.selected_paths,
         },
     );
 }
@@ -235,6 +237,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         error_str,
         app.server_connected,
         app.sort_mode,
+        app.multi_select,
     );
 }
 
@@ -419,27 +422,49 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
 
     f.render_widget(Clear, popup);
 
-    let path_display = app
-        .delete_target_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let is_batch = !app.delete_target_paths.is_empty();
 
-    let action_text = if permanent {
-        "This will permanently delete the item."
+    let (title, path_display, action_text, confirm_label) = if is_batch {
+        let count = app.delete_target_paths.len();
+        (
+            format!(" Delete {} items? ", count),
+            format!("{} items selected for deletion", count),
+            if permanent {
+                "This will permanently delete all selected items."
+            } else {
+                "This will move all selected items to trash."
+            },
+            if permanent {
+                "Permanently delete"
+            } else {
+                "Confirm delete"
+            },
+        )
     } else {
-        "This will move the item to trash."
-    };
-
-    let confirm_label = if permanent {
-        "Permanently delete"
-    } else {
-        "Confirm delete"
+        let path_str = app
+            .delete_target_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        (
+            " Delete Confirmation ".to_string(),
+            format!("Path: {}", path_str),
+            if permanent {
+                "This will permanently delete the item."
+            } else {
+                "This will move the item to trash."
+            },
+            if permanent {
+                "Permanently delete"
+            } else {
+                "Confirm delete"
+            },
+        )
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Delete Confirmation ")
+        .title(title)
         .title_bottom(Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])).centered())
         .style(Style::default().fg(Color::Red).bg(Color::Black));
 
@@ -450,7 +475,6 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
         )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![
-            Span::styled("Path: ", Style::default().fg(Color::Gray)),
             Span::styled(&path_display, Style::default().fg(Color::White)),
         ]),
         Line::from(vec![Span::raw("")]),

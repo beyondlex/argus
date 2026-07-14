@@ -75,6 +75,11 @@ pub struct App {
 
     // Delete state
     pub delete_target_path: Option<PathBuf>,
+    pub delete_target_paths: Vec<PathBuf>,
+
+    // Multi-select state
+    pub multi_select: bool,
+    pub selected_paths: HashSet<Vec<String>>,
 
     // Message channel
     pub tx: mpsc::Sender<AppMessage>,
@@ -161,6 +166,9 @@ impl App {
             last_scan_summary: None,
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
+            delete_target_paths: Vec::new(),
+            multi_select: false,
+            selected_paths: HashSet::new(),
             deleted_bytes: 0,
             info_data: None,
             delta_detail: None,
@@ -622,6 +630,41 @@ impl App {
         if self.server_mode {
             self.request_delta_refresh();
         }
+    }
+
+    /// Enter multi-select mode
+    pub fn enter_multi_select(&mut self) {
+        self.multi_select = true;
+    }
+
+    /// Exit multi-select mode and clear selections
+    pub fn exit_multi_select(&mut self) {
+        self.multi_select = false;
+        self.selected_paths.clear();
+    }
+
+    /// Toggle selection of the item at the current cursor position
+    pub fn toggle_selection(&mut self) {
+        if let Some(path) = self.tree_line_relative_path(self.cursor) {
+            if self.selected_paths.contains(&path) {
+                self.selected_paths.remove(&path);
+            } else {
+                self.selected_paths.insert(path);
+            }
+        }
+    }
+
+    /// Get the full path for a relative path key
+    pub fn selected_paths_full(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for path_key in &self.selected_paths {
+            let mut path = self.view_root_path.clone();
+            for part in path_key.iter().skip(1) {
+                path.push(part);
+            }
+            paths.push(path);
+        }
+        paths
     }
 
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {

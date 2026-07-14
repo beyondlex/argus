@@ -28,7 +28,35 @@ where
 {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some(path) = app.delete_target_path.clone() {
+            let is_batch = !app.delete_target_paths.is_empty();
+            if is_batch {
+                // Batch delete
+                let paths = std::mem::take(&mut app.delete_target_paths);
+                let mut total_freed = 0u64;
+                let mut errors: Vec<String> = Vec::new();
+                for path in &paths {
+                    match delete_fn(path) {
+                        Ok(_msg) => {
+                            total_freed = total_freed
+                                .saturating_add(crate::tree_ops::apply_deletion_to_state(app, path));
+                        }
+                        Err(e) => {
+                            errors.push(format!("{}: {}", path.display(), e));
+                        }
+                    }
+                }
+                if !errors.is_empty() {
+                    app.set_error(
+                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
+                        5,
+                    );
+                } else {
+                    app.set_error(format!("deleted {} item(s)", paths.len()), 3);
+                }
+                app.deleted_bytes = app.deleted_bytes.saturating_add(total_freed);
+                app.update_tree_lines();
+                app.exit_multi_select();
+            } else if let Some(path) = app.delete_target_path.clone() {
                 match delete_fn(&path) {
                     Ok(msg) => {
                         app.set_error(msg, 3);
@@ -42,10 +70,12 @@ where
                 }
             }
             app.delete_target_path = None;
+            app.delete_target_paths.clear();
             app.mode = AppMode::Browsing;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.delete_target_path = None;
+            app.delete_target_paths.clear();
             app.mode = AppMode::Browsing;
         }
         _ => {}

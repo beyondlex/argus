@@ -19,6 +19,8 @@ const NAME_FIXED_WIDTH: u16 = 30;
 const DELTA_WIDTH: usize = 12;
 const SIZE_WIDTH: usize = 14;
 
+use std::collections::HashSet;
+
 pub struct TreeRenderCtx<'a> {
     pub tree_lines: &'a [TreeLine],
     pub filtered_indices: &'a [usize],
@@ -33,6 +35,8 @@ pub struct TreeRenderCtx<'a> {
     pub focus: bool,
     pub delta_cache: Option<&'a HashMap<Vec<String>, i64>>,
     pub root_total_size: u64,
+    pub multi_select: bool,
+    pub selected_paths: &'a HashSet<Vec<String>>,
 }
 
 pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
@@ -150,6 +154,8 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
 
         let delta = ctx.delta_cache.and_then(|c| c.get(&line.path).copied());
 
+        let is_selected_item = ctx.multi_select && ctx.selected_paths.contains(&line.path);
+
         let (mut left_spans, right_spans) = render_tree_line(
             line,
             is_selected,
@@ -160,6 +166,8 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
             delta,
             row_bg,
             ctx.root_total_size,
+            ctx.multi_select,
+            is_selected_item,
         );
 
         let row_y = inner.y + 1 + display_offset as u16;
@@ -360,11 +368,31 @@ fn render_tree_line<'a>(
     delta: Option<i64>,
     row_bg: Color,
     root_total_size: u64,
+    multi_select: bool,
+    is_selected_item: bool,
 ) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
     let highlighted = is_selected || is_current_match;
     let row = RowStyle::new(row_bg, highlighted);
 
-    let name_prefix = format!("{}{}", line_indent(line.depth), branch_marker(line));
+    let multi_indicator = if multi_select {
+        if is_selected_item {
+            "●"
+        } else {
+            "○"
+        }
+    } else {
+        ""
+    };
+    let name_prefix = format!(
+        "{}{}{}",
+        line_indent(line.depth),
+        multi_indicator,
+        if multi_indicator.is_empty() {
+            branch_marker(line).to_string()
+        } else {
+            format!(" {}", branch_marker(line))
+        },
+    );
 
     let size_str = util::display_size_label(
         line.node.is_dir(),
@@ -671,11 +699,14 @@ mod tests {
         assert_eq!(spans[2].content, "llo");
     }
 
+    fn render_tree_line_defaults(line: &TreeLine, multi_select: bool, is_selected_item: bool) -> (Vec<Span>, Vec<Span>) {
+        render_tree_line(line, false, false, false, "", false, None, Color::Reset, 0, multi_select, is_selected_item)
+    }
+
     #[test]
     fn test_render_tree_line_normal() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
-        let (left, right) =
-            render_tree_line(&line, false, false, false, "", false, None, Color::Reset, 0);
+        let (left, right) = render_tree_line_defaults(&line, false, false);
         assert!(!left.is_empty());
         assert!(!right.is_empty());
     }
@@ -684,7 +715,7 @@ mod tests {
     fn test_render_tree_line_selected() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
         let (left, _) =
-            render_tree_line(&line, true, false, false, "", false, None, Color::Green, 0);
+            render_tree_line(&line, true, false, false, "", false, None, Color::Green, 0, false, false);
         assert!(!left.is_empty());
     }
 
@@ -701,6 +732,8 @@ mod tests {
             Some(2048),
             Color::Reset,
             0,
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('+'));
@@ -719,6 +752,8 @@ mod tests {
             Some(-512),
             Color::Reset,
             0,
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains('-'));
@@ -737,6 +772,8 @@ mod tests {
             None,
             Color::Reset,
             0,
+            false,
+            false,
         );
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
         assert!(left_text.contains("hello"));
@@ -755,6 +792,8 @@ mod tests {
             None,
             Color::Reset,
             2048, // root_total_size = 2048, file size = 1024 (from make_file_node)
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(right_text.contains("50.0%"));
@@ -774,6 +813,8 @@ mod tests {
             None,
             Color::Reset,
             2048,
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(!right_text.contains('%'));
@@ -792,6 +833,8 @@ mod tests {
             None,
             Color::Reset,
             0, // root_total_size = 0
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         assert!(!right_text.contains('%'));
@@ -811,6 +854,8 @@ mod tests {
             Some(2048),
             Color::Reset,
             2048, // root_total_size > 0
+            false,
+            false,
         );
         let right_text: String = right.iter().map(|s| s.content.as_ref()).collect();
         let pct_pos = right_text.find('%').unwrap();
@@ -824,5 +869,30 @@ mod tests {
             size_pos < delta_pos,
             "filesize should come before delta, got: {right_text:?}"
         );
+    }
+
+    #[test]
+    fn test_render_tree_line_multi_select_unselected() {
+        let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
+        let (left, _) = render_tree_line_defaults(&line, true, false);
+        let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
+        assert!(left_text.starts_with('○'), "unselected item should show ○, got: {left_text:?}");
+    }
+
+    #[test]
+    fn test_render_tree_line_multi_select_selected() {
+        let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
+        let (left, _) = render_tree_line_defaults(&line, true, true);
+        let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
+        assert!(left_text.starts_with('●'), "selected item should show ●, got: {left_text:?}");
+    }
+
+    #[test]
+    fn test_render_tree_line_multi_select_dir() {
+        let line = make_treeline("dir", 0, true, FileType::Directory, false, false);
+        let (left, _) = render_tree_line_defaults(&line, true, true);
+        let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
+        assert!(left_text.contains('●'), "selected dir should show ●, got: {left_text:?}");
+        assert!(left_text.contains('+'), "collapsed dir should show +, got: {left_text:?}");
     }
 }

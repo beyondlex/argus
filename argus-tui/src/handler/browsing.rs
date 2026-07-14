@@ -40,6 +40,10 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     }
 
     if app.focus == Focus::FilterPane {
+        // Exit multi-select when focusing filter pane
+        if app.multi_select {
+            app.exit_multi_select();
+        }
         crate::handler::filter::handle_filter_pane_key(key, app);
         return;
     }
@@ -51,6 +55,47 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     if app.search_mode == SearchMode::Inactive && matches!(key.code, KeyCode::Char('/')) {
         app.search_mode = SearchMode::Input;
         return;
+    }
+
+    // Handle multi-select mode Tab / Esc
+    if app.multi_select {
+        match key.code {
+            KeyCode::Tab => {
+                app.toggle_selection();
+                move_cursor(app, 1);
+                app.pending_gg = false;
+                return;
+            }
+            KeyCode::Esc => {
+                app.exit_multi_select();
+                app.pending_gg = false;
+                return;
+            }
+            KeyCode::Char('d') => {
+                handle_multi_delete_action(app, false);
+                app.pending_gg = false;
+                return;
+            }
+            KeyCode::Char('D') => {
+                handle_multi_delete_action(app, true);
+                app.pending_gg = false;
+                return;
+            }
+            _ => {}
+        }
+    } else {
+        // Enter multi-select mode on Tab
+        if key.code == KeyCode::Tab {
+            if app.filtered_tree_lines.is_empty() {
+                app.pending_gg = false;
+                return;
+            }
+            app.enter_multi_select();
+            app.toggle_selection();
+            move_cursor(app, 1);
+            app.pending_gg = false;
+            return;
+        }
     }
 
     match key.code {
@@ -68,9 +113,17 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('H') => crate::tree_ops::collapse_all_children(app),
         KeyCode::Char('u') => crate::tree_ops::navigate_up_root(app),
         KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
-        KeyCode::Char('s') => start_scan(app),
+        KeyCode::Char('s') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            start_scan(app);
+        }
         KeyCode::Char('.') => set_root_to_selected(app),
         KeyCode::Char('o') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
             app.sort_mode = app.sort_mode.toggle();
             app.update_tree_lines();
         }
@@ -83,18 +136,31 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.command_history_idx = None;
             app.update_command_matches();
         }
-        KeyCode::Char('t') if app.server_mode => handle_time_toggle(app),
+        KeyCode::Char('t') if app.server_mode => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            handle_time_toggle(app);
+        }
         KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
         KeyCode::Char('i') => handle_info_popup(app),
         KeyCode::Char('K') => handle_delta_detail_popup(app),
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('y') => handle_copy_path(app),
         KeyCode::Char('f') if app.server_mode => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
             app.focus = Focus::FilterPane;
             app.filter_focus = FilterFocus::TimePreset;
         }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
-        KeyCode::Char('c') => app.clear_filter_pane(),
+        KeyCode::Char('c') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            app.clear_filter_pane();
+        }
         KeyCode::Esc => {
             app.info_data = None;
             app.delta_detail = None;
@@ -104,6 +170,42 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     if key.code != KeyCode::Char('g') {
         app.pending_gg = false;
     }
+}
+
+/// Handle delete action in multi-select mode
+fn handle_multi_delete_action(app: &mut App, permanent: bool) {
+    if app.selected_paths.is_empty() {
+        app.set_error("no items selected".into(), 3);
+        return;
+    }
+    let mut paths = app.selected_paths_full();
+    // Filter out protected paths
+    paths.retain(|p| !crate::util::is_protected_path(p));
+    if paths.is_empty() {
+        app.set_error("all selected paths are protected".into(), 3);
+        return;
+    }
+    // Filter out root directory
+    let root_name = app
+        .view_root_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    paths.retain(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string() != root_name)
+            .unwrap_or(true)
+    });
+    if paths.is_empty() {
+        app.set_error("cannot delete root directory".into(), 3);
+        return;
+    }
+    app.delete_target_paths = paths;
+    app.mode = if permanent {
+        AppMode::DeletePermanentPrompt
+    } else {
+        AppMode::DeletePrompt
+    };
 }
 
 pub(crate) fn handle_gg_double_tap(app: &mut App) {
