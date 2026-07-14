@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
 use crate::ipc_client::IpcClient;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     // If delta detail popup is open, intercept j/k for scroll and Esc to dismiss
@@ -118,7 +118,19 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
             start_scan(app);
         }
-        KeyCode::Char('.') => set_root_to_selected(app),
+        KeyCode::Char('.') => {
+            app.show_hidden = !app.show_hidden;
+            app.set_error(
+                if app.show_hidden {
+                    "hidden files shown".into()
+                } else {
+                    "hidden files hidden".into()
+                },
+                2,
+            );
+            app.update_tree_lines();
+        }
+        KeyCode::Char('w') => set_root_to_selected(app),
         KeyCode::Char('o') => {
             if app.multi_select {
                 app.exit_multi_select();

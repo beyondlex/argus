@@ -135,6 +135,7 @@ pub(crate) fn collect_matches_in_order(
     result: &mut Vec<SearchMatch>,
     path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
     delta_cache: Option<&HashMap<Vec<String>, i64>>,
+    show_hidden: bool,
 ) {
     let node = snap.node(idx);
     let is_visible = path_is_visible(path, expanded);
@@ -164,6 +165,9 @@ pub(crate) fn collect_matches_in_order(
         if !skip_subtree {
             let mut children: Vec<(&String, NodeIndex)> =
                 node.children.iter().map(|(n, i)| (n, *i)).collect();
+            if !show_hidden {
+                children.retain(|(name, _)| !name.starts_with('.'));
+            }
             crate::tree_ops::sort_children_snapshot(
                 &mut children,
                 snap,
@@ -185,6 +189,7 @@ pub(crate) fn collect_matches_in_order(
                     result,
                     path_to_walk_idx,
                     delta_cache,
+                    show_hidden,
                 );
                 path.pop();
             }

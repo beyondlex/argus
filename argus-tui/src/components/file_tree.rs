@@ -190,9 +190,11 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
 
         let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
         truncate_name_spans(&mut left_spans, NAME_FIXED_WIDTH as usize);
-        let [name_area, info_area] =
-            Layout::horizontal([Constraint::Length(NAME_FIXED_WIDTH), Constraint::Length(right_width)])
-                .areas(row_area);
+        let [name_area, info_area] = Layout::horizontal([
+            Constraint::Length(NAME_FIXED_WIDTH),
+            Constraint::Length(right_width),
+        ])
+        .areas(row_area);
 
         f.render_widget(Paragraph::new(Line::from(left_spans)), name_area);
         f.render_widget(Paragraph::new(Line::from(right_spans)), info_area);
@@ -281,7 +283,10 @@ struct RowStyle {
 
 impl RowStyle {
     fn new(row_bg: Color, highlighted: bool) -> Self {
-        Self { row_bg, highlighted }
+        Self {
+            row_bg,
+            highlighted,
+        }
     }
 
     fn base(&self) -> Style {
@@ -290,7 +295,9 @@ impl RowStyle {
 
     fn sel(&self) -> Style {
         if self.highlighted {
-            Style::default().bg(self.row_bg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(self.row_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         }
@@ -309,11 +316,9 @@ impl RowStyle {
     }
 
     fn filesize(&self, fg: Color) -> Style {
-        self.base().patch(self.sel()).fg(if self.highlighted {
-            Color::White
-        } else {
-            fg
-        })
+        self.base()
+            .patch(self.sel())
+            .fg(if self.highlighted { Color::White } else { fg })
     }
 
     fn percent(&self) -> Style {
@@ -348,6 +353,10 @@ impl RowStyle {
 }
 
 fn entry_fg(line: &TreeLine) -> Color {
+    let name = line.node.name();
+    if name.starts_with('.') {
+        return Color::DarkGray;
+    }
     if line.node.is_dir() {
         Color::Cyan
     } else if is_symlink(line) {
@@ -479,14 +488,20 @@ fn truncate_name_spans<'a>(spans: &mut Vec<Span<'a>>, max_width: usize) {
 
     if avail < 1 {
         // Show prefix + "..." (or just "..." if prefix is too long)
-        let prefix = spans.first().map(|s| s.content.to_string()).unwrap_or_default();
+        let prefix = spans
+            .first()
+            .map(|s| s.content.to_string())
+            .unwrap_or_default();
         let style = spans.first().map(|s| s.style).unwrap_or_default();
         let truncated: String = prefix.chars().take(max_width.saturating_sub(3)).collect();
         *spans = vec![Span::styled(format!("{}...", truncated), style)];
         return;
     }
 
-    let prefix = spans.first().map(|s| s.content.to_string()).unwrap_or_default();
+    let prefix = spans
+        .first()
+        .map(|s| s.content.to_string())
+        .unwrap_or_default();
     let prefix_style = spans.first().map(|s| s.style).unwrap_or_default();
     let name_style = spans.last().map(|s| s.style).unwrap_or_default();
     let name_text: String = spans[1..].iter().map(|s| s.content.to_string()).collect();
@@ -543,10 +558,7 @@ fn match_highlight_spans<'a>(
         if match_set.contains(&ci) {
             if ci > prev_end {
                 let normal: String = chars[prev_end..ci].iter().collect();
-                spans.push(Span::styled(
-                    normal,
-                    row.name_match_selected_filename(),
-                ));
+                spans.push(Span::styled(normal, row.name_match_selected_filename()));
             }
             spans.push(Span::styled(
                 chars[ci].to_string(),
@@ -691,16 +703,31 @@ mod tests {
     #[test]
     fn test_match_highlight_spans_some_matches() {
         let row = RowStyle::new(Color::Reset, false);
-        let spans =
-            match_highlight_spans("hello", &[0, 1], &row);
+        let spans = match_highlight_spans("hello", &[0, 1], &row);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "h");
         assert_eq!(spans[1].content, "e");
         assert_eq!(spans[2].content, "llo");
     }
 
-    fn render_tree_line_defaults(line: &TreeLine, multi_select: bool, is_selected_item: bool) -> (Vec<Span>, Vec<Span>) {
-        render_tree_line(line, false, false, false, "", false, None, Color::Reset, 0, multi_select, is_selected_item)
+    fn render_tree_line_defaults(
+        line: &TreeLine,
+        multi_select: bool,
+        is_selected_item: bool,
+    ) -> (Vec<Span>, Vec<Span>) {
+        render_tree_line(
+            line,
+            false,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::Reset,
+            0,
+            multi_select,
+            is_selected_item,
+        )
     }
 
     #[test]
@@ -714,8 +741,19 @@ mod tests {
     #[test]
     fn test_render_tree_line_selected() {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
-        let (left, _) =
-            render_tree_line(&line, true, false, false, "", false, None, Color::Green, 0, false, false);
+        let (left, _) = render_tree_line(
+            &line,
+            true,
+            false,
+            false,
+            "",
+            false,
+            None,
+            Color::Green,
+            0,
+            false,
+            false,
+        );
         assert!(!left.is_empty());
     }
 
@@ -876,7 +914,10 @@ mod tests {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
         let (left, _) = render_tree_line_defaults(&line, true, false);
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
-        assert!(left_text.starts_with('○'), "unselected item should show ○, got: {left_text:?}");
+        assert!(
+            left_text.starts_with('○'),
+            "unselected item should show ○, got: {left_text:?}"
+        );
     }
 
     #[test]
@@ -884,7 +925,10 @@ mod tests {
         let line = make_treeline("test.txt", 0, false, FileType::File, false, true);
         let (left, _) = render_tree_line_defaults(&line, true, true);
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
-        assert!(left_text.starts_with('●'), "selected item should show ●, got: {left_text:?}");
+        assert!(
+            left_text.starts_with('●'),
+            "selected item should show ●, got: {left_text:?}"
+        );
     }
 
     #[test]
@@ -892,7 +936,13 @@ mod tests {
         let line = make_treeline("dir", 0, true, FileType::Directory, false, false);
         let (left, _) = render_tree_line_defaults(&line, true, true);
         let left_text: String = left.iter().map(|s| s.content.as_ref()).collect();
-        assert!(left_text.contains('●'), "selected dir should show ●, got: {left_text:?}");
-        assert!(left_text.contains('+'), "collapsed dir should show +, got: {left_text:?}");
+        assert!(
+            left_text.contains('●'),
+            "selected dir should show ●, got: {left_text:?}"
+        );
+        assert!(
+            left_text.contains('+'),
+            "collapsed dir should show +, got: {left_text:?}"
+        );
     }
 }

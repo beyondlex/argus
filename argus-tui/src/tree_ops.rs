@@ -325,6 +325,7 @@ pub(crate) fn flatten_snapshot_tree(
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     delta_cache: Option<&HashMap<Vec<String>, i64>>,
     path: &mut Vec<String>,
+    show_hidden: bool,
 ) {
     let node = snap_arc.node(idx);
     path.push(node.name.clone());
@@ -348,6 +349,9 @@ pub(crate) fn flatten_snapshot_tree(
     if is_expanded && node.is_dir {
         let mut children: Vec<(&String, NodeIndex)> =
             node.children.iter().map(|(n, i)| (n, *i)).collect();
+        if !show_hidden {
+            children.retain(|(name, _)| !name.starts_with('.'));
+        }
         sort_children_snapshot(&mut children, snap_arc, sort_mode, path, delta_cache);
         for (_name, child_idx) in children {
             flatten_snapshot_tree(
@@ -362,6 +366,7 @@ pub(crate) fn flatten_snapshot_tree(
                 root_scan_tree,
                 delta_cache,
                 path,
+                show_hidden,
             );
         }
     }

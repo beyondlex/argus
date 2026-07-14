@@ -78,6 +78,11 @@ pub struct App {
     pub delete_target_path: Option<PathBuf>,
     pub delete_target_paths: Vec<PathBuf>,
 
+    // Delete progress
+    pub deleting: bool,
+    pub delete_progress: Option<(u64, u64)>,
+    pub delete_permanent: bool,
+
     // Multi-select state
     pub multi_select: bool,
     pub selected_paths: HashSet<Vec<String>>,
@@ -115,6 +120,9 @@ pub struct App {
 
     // Finder (Go to Path)
     pub finder_state: Option<FinderState>,
+
+    // Hidden files
+    pub show_hidden: bool,
 }
 
 impl App {
@@ -171,6 +179,9 @@ impl App {
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             delete_target_paths: Vec::new(),
+            deleting: false,
+            delete_progress: None,
+            delete_permanent: false,
             multi_select: false,
             selected_paths: HashSet::new(),
             deleted_bytes: 0,
@@ -188,6 +199,7 @@ impl App {
             time_help_scroll: 0,
             should_quit: false,
             finder_state: None,
+            show_hidden: false,
         }
     }
 
@@ -256,6 +268,7 @@ impl App {
                     root_scan_tree,
                     delta_cache,
                     &mut Vec::new(),
+                    self.show_hidden,
                 );
                 lines
             }
@@ -355,6 +368,32 @@ impl App {
             AppMessage::Info(msg) => {
                 self.set_error(msg, 4);
             }
+            AppMessage::DeleteProgress { current, total } => {
+                self.delete_progress = Some((current, total));
+            }
+            AppMessage::DeleteComplete { errors, paths } => {
+                self.deleting = false;
+                self.delete_progress = None;
+                self.mode = AppMode::Browsing;
+
+                let mut total_freed = 0u64;
+                for path in &paths {
+                    let freed = crate::tree_ops::apply_deletion_to_state(self, path);
+                    total_freed = total_freed.saturating_add(freed);
+                }
+                self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
+                self.update_tree_lines();
+                self.exit_multi_select();
+
+                if !errors.is_empty() {
+                    self.set_error(
+                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
+                        5,
+                    );
+                } else {
+                    self.set_error(format!("deleted {} item(s)", paths.len()), 3);
+                }
+            }
         }
     }
 
@@ -399,6 +438,7 @@ impl App {
             &mut matches,
             &mut self.path_to_walk_idx,
             delta_cache,
+            self.show_hidden,
         );
 
         self.match_indices = matches;
@@ -482,6 +522,7 @@ impl App {
                 root_scan_tree,
                 delta_cache,
                 &mut child_path,
+                self.show_hidden,
             );
         }
 
