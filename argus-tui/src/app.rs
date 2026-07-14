@@ -1,3 +1,4 @@
+use ratatui_finder::FinderState;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -111,6 +112,9 @@ pub struct App {
     // Time help popup
     pub time_help_scroll: usize,
     pub should_quit: bool,
+
+    // Finder (Go to Path)
+    pub finder_state: Option<FinderState>,
 }
 
 impl App {
@@ -183,6 +187,7 @@ impl App {
             log_path,
             time_help_scroll: 0,
             should_quit: false,
+            finder_state: None,
         }
     }
 

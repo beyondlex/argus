@@ -169,6 +169,7 @@ dependencies = [
  "crossterm",
  "ctrlc",
  "ratatui",
+ "ratatui-finder",
  "serde",
  "serde_json",
  "tempfile",
@@ -1469,6 +1470,16 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "ratatui-finder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ratatui",
+ "tempfile",
 ]
 
 [[package]]

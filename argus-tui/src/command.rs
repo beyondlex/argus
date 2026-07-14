@@ -1,6 +1,7 @@
 use crate::app::App;
 use crate::time_utils::*;
 use crate::types::*;
+use ratatui_finder::{FinderState, FinderConfig, FinderMode};
 
 impl App {
     pub const COMMANDS: &'static [&'static str] = &[
@@ -8,6 +9,7 @@ impl App {
         "Delta",
         "FilterClear",
         "FilterFocus",
+        "Finder",
         "Help",
         "Scan",
         "Sort",
@@ -71,6 +73,7 @@ impl App {
             "sd" => self.cmd_sort_quick(SortMode::Delta, "Delta"),
             "ss" => self.cmd_sort_quick(SortMode::Size, "Size"),
             "sn" => self.cmd_sort_quick(SortMode::Name, "Name"),
+            "finder" => self.cmd_finder(),
             "scan" => self.cmd_scan(),
             "consolidate" => self.cmd_consolidate(),
             _ => Err(format!("unknown command: {name}")),
@@ -218,6 +221,16 @@ impl App {
             return Err("already scanning".into());
         }
         Ok("scan started".into())
+    }
+
+    pub(crate) fn cmd_finder(&mut self) -> Result<String, String> {
+        self.finder_state = Some(FinderState::new(FinderConfig {
+            mode: FinderMode::Dir,
+            initial_path: self.view_root_path.to_string_lossy().to_string(),
+            extensions: None,
+        }));
+        self.mode = AppMode::Finder;
+        Ok("finder opened".into())
     }
 
     pub fn cmd_consolidate(&mut self) -> Result<String, String> {

@@ -34,6 +34,7 @@ pub enum AppMode {
     Help,
     TimeHelp,
     Command,
+    Finder,              // Finder mode (Go to Path)
 }
 
 /// Which panel has focus

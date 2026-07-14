@@ -81,7 +81,10 @@ fn next_poll_timeout(
         Duration::MAX
     };
 
-    let time_to_cursor = if app.search_mode == SearchMode::Input || app.mode == AppMode::Command {
+    let time_to_cursor = if app.search_mode == SearchMode::Input
+            || app.mode == AppMode::Command
+            || app.mode == AppMode::Finder
+        {
         cursor_blink_rate.saturating_sub(last_cursor_tick.elapsed())
     } else {
         Duration::MAX
@@ -141,7 +144,9 @@ fn advance_timers(
         }
     }
 
-    let should_blink = app.search_mode == SearchMode::Input || app.mode == AppMode::Command;
+    let should_blink = app.search_mode == SearchMode::Input
+        || app.mode == AppMode::Command
+        || app.mode == AppMode::Finder;
     if should_blink && last_cursor_tick.elapsed() >= cursor_blink_rate {
         *cursor_visible = !*cursor_visible;
         *last_cursor_tick = Instant::now();
@@ -255,6 +260,11 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
             app.command_selected,
         ),
         AppMode::Browsing => {}
+        AppMode::Finder => {
+            if let Some(finder) = app.finder_state.as_mut() {
+                ratatui_finder::render_finder_popup(f, area, finder);
+            }
+        }
     }
 
     if let Some((path, meta)) = &app.info_data {

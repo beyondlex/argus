@@ -2,7 +2,6 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
 use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
 use crate::ipc_client::IpcClient;
 

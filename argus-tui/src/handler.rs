@@ -1,6 +1,7 @@
 mod browsing;
 mod command;
 mod filter;
+mod finder;
 mod prompt;
 mod search;
 
@@ -18,6 +19,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::Help => prompt::handle_help_key(key, app),
         AppMode::TimeHelp => prompt::handle_time_help_key(key, app),
         AppMode::Command => command::handle_command_key(key, app),
+        AppMode::Finder => finder::handle_finder_key(key, app),
     }
 }
 
