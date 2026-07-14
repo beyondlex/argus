@@ -227,7 +227,7 @@ impl App {
         self.finder_state = Some(FinderState::new(FinderConfig {
             mode: FinderMode::Dir,
             initial_path: self.view_root_path.to_string_lossy().to_string(),
-            extensions: None,
+            ..Default::default()
         }));
         self.mode = AppMode::Finder;
         Ok("finder opened".into())
