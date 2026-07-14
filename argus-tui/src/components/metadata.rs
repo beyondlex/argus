@@ -5,21 +5,28 @@ use chrono::{DateTime, Utc};
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame,
 };
 
 use crate::components::popup::{popup_block, PopupStyle};
+use crate::theme::ColorTheme;
 use crate::util;
 use crate::util::key_hints;
 
 /// Render a centered popup with file metadata
-pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metadata) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    theme: &ColorTheme,
+) {
     let popup_area = crate::components::popup::centered_rect(60, 40, area);
 
-    let block = popup_block(" File Info ", PopupStyle::Normal);
+    let block = popup_block(" File Info ", PopupStyle::Normal, theme);
 
     let type_str = if metadata.is_dir() {
         "Directory"
@@ -55,16 +62,16 @@ pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metada
             (
                 Span::styled(
                     format!("{}{}", &size_str[..leading], parts[0]),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(theme.text_secondary),
                 ),
                 Span::styled(
                     parts[1],
-                    Style::default().fg(util::filesize_unit_color(parts[1])),
+                    Style::default().fg(util::filesize_unit_color(parts[1], theme)),
                 ),
             )
         } else {
             (
-                Span::styled(size_str.clone(), Style::default().fg(Color::Gray)),
+                Span::styled(size_str.clone(), Style::default().fg(theme.text_secondary)),
                 Span::raw(""),
             )
         }
@@ -72,39 +79,57 @@ pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metada
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("Path:    ", Style::default().fg(Color::Gray).bold()),
-            Span::styled(path_str, Style::default().fg(Color::White)),
+            Span::styled(
+                "Path:    ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(path_str, Style::default().fg(theme.text)),
         ]),
         Line::from(vec![
-            Span::styled("Size:    ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(
+                "Size:    ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
             num_span,
             Span::styled(" ", Style::default()),
             unit_span,
         ]),
         Line::from(vec![
-            Span::styled("Type:    ", Style::default().fg(Color::Gray).bold()),
-            Span::styled(type_str, Style::default().fg(Color::White)),
+            Span::styled(
+                "Type:    ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(type_str, Style::default().fg(theme.text)),
         ]),
         Line::from(vec![
-            Span::styled("Modified:", Style::default().fg(Color::Gray).bold()),
+            Span::styled(
+                "Modified:",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
             Span::styled(
                 format!(" {}", modified.format("%Y-%m-%d %H:%M:%S")),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Created: ", Style::default().fg(Color::Gray).bold()),
+            Span::styled(
+                "Created: ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
             Span::styled(
                 format!(" {}", created.format("%Y-%m-%d %H:%M:%S")),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Perms:   ", Style::default().fg(Color::Gray).bold()),
-            Span::styled(perm_str, Style::default().fg(Color::White)),
+            Span::styled(
+                "Perms:   ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(perm_str, Style::default().fg(theme.text)),
         ]),
         Line::from(Span::raw("")),
-        Line::from(key_hints(&[("Esc", "Close")])),
+        Line::from(key_hints(&[("Esc", "Close")], theme)),
     ];
 
     let text = Paragraph::new(lines).block(block);
@@ -119,11 +144,11 @@ fn unix_mode_string(mode: u32) -> String {
         if mode & 0o200 != 0 { 'w' } else { '-' },
         if mode & 0o100 != 0 { 'x' } else { '-' },
         if mode & 0o040 != 0 { 'r' } else { '-' },
-        if mode & 0o020 != 0 { 'w' } else { '-' },
+        if mode & 0x020 != 0 { 'w' } else { '-' },
         if mode & 0o010 != 0 { 'x' } else { '-' },
         if mode & 0o004 != 0 { 'r' } else { '-' },
-        if mode & 0o002 != 0 { 'w' } else { '-' },
-        if mode & 0o001 != 0 { 'x' } else { '-' },
+        if mode & 0x002 != 0 { 'w' } else { '-' },
+        if mode & 0x001 != 0 { 'x' } else { '-' },
     ];
     chars.iter().collect()
 }

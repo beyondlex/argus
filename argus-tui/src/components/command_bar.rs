@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -7,7 +7,16 @@ use ratatui::{
 
 use ratatui::layout::Rect;
 
-pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected: usize) {
+use crate::theme::ColorTheme;
+
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    input: &str,
+    matches: &[&str],
+    selected: usize,
+    theme: &ColorTheme,
+) {
     let input_y = area.y + area.height - 1;
 
     if !matches.is_empty() {
@@ -25,8 +34,8 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
 
         let popup_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .style(Style::default().bg(Color::Black));
+            .border_style(Style::default().fg(theme.border_unfocused))
+            .style(Style::default().bg(theme.popup_bg));
         let inner = popup_block.inner(popup_area);
         f.render_widget(popup_block, popup_area);
 
@@ -34,9 +43,9 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
         let mut lines = Vec::new();
         for (i, m) in matches.iter().enumerate().take(8) {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::LightYellow)
+                Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
             } else {
-                Style::default().fg(Color::White).bg(Color::Black)
+                Style::default().fg(theme.text).bg(theme.popup_bg)
             };
             lines.push(Line::from(Span::styled(
                 format!("{:<width$}", m, width = inner_w),
@@ -56,8 +65,8 @@ pub fn render(f: &mut Frame, area: Rect, input: &str, matches: &[&str], selected
 
     let input_text = format!(":{:<width$}", input, width = area.width as usize - 1);
     let input_style = Style::default()
-        .fg(Color::Cyan)
-        .bg(Color::Black)
+        .fg(theme.accent)
+        .bg(theme.bg)
         .add_modifier(ratatui::style::Modifier::BOLD);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(input_text, input_style))),

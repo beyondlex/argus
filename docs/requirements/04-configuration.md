@@ -46,14 +46,18 @@ quit = "q"
 
 ## 3. 色彩与主题组 `[theme]`
 
-支持完全自定义 TUI/GUI 的视觉表现。
+TUI 使用 `ColorTheme` 语义颜色系统，内置暗/亮两套主题。
+`color_scheme` 控制主题选择逻辑：
+
+- `"light"` — 始终使用亮色主题
+- `"dark"` — 始终使用暗色主题
+- `"system"` (默认) — 通过 `terminal-light` crate 自动检测终端背景亮度
 
 ```toml
 [theme]
-# 内置方案: "nord", "dracula", "gruvbox", "system" (跟随系统暗黑模式)
 color_scheme = "system"
 
-# 以下为各项指标的精确颜色控制（十六进制 RGB）
+# 以下为各项指标的精确颜色控制（十六进制 RGB），留作未来扩展
 [theme.colors]
 growth_high = "#FF4444"     # 暴涨颜色
 growth_medium = "#FF8800"   # 中度增长

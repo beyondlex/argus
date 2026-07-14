@@ -1,26 +1,27 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::components::popup::{popup_block, PopupStyle};
+use crate::theme::ColorTheme;
 use crate::util::key_hints;
 
-fn section(text: &str) -> Span<'static> {
+fn section(text: &str, theme: &ColorTheme) -> Span<'static> {
     Span::styled(
         text.to_string(),
         Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(ratatui::style::Modifier::BOLD),
+            .fg(theme.warning)
+            .add_modifier(Modifier::BOLD),
     )
 }
 
-fn all_lines() -> Vec<Line<'static>> {
+fn all_lines(theme: &ColorTheme) -> Vec<Line<'static>> {
     vec![
-        Line::from(vec![section("Usage:")]),
+        Line::from(vec![section("Usage:", theme)]),
         Line::from(vec![Span::raw(
             "  :Time <N>[m|h|d|w]          N minutes/hours/days/weeks ago until now",
         )]),
@@ -34,13 +35,13 @@ fn all_lines() -> Vec<Line<'static>> {
             "  :Time <from> to <to>      range with 'to' separator",
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![section("Duration:")]),
+        Line::from(vec![section("Duration:", theme)]),
         Line::from(vec![Span::raw("  <N>      N hours (e.g. 1, 24)")]),
         Line::from(vec![Span::raw("  <N>h     N hours (e.g. 1h, 12h)")]),
         Line::from(vec![Span::raw("  <N>d     N days (e.g. 7d, 30d)")]),
         Line::from(vec![Span::raw("  <N>w     N weeks (e.g. 1w, 2w)")]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![section("Absolute date:")]),
+        Line::from(vec![section("Absolute date:", theme)]),
         Line::from(vec![Span::raw(
             "  MM-DD            date only (default 00:00)",
         )]),
@@ -49,7 +50,7 @@ fn all_lines() -> Vec<Line<'static>> {
             "  HH:MM            time only (inherits date from left, or today)",
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![section("Examples:")]),
+        Line::from(vec![section("Examples:", theme)]),
         Line::from(vec![Span::raw("  :time 1w")]),
         Line::from(vec![Span::raw("  :time 13:00")]),
         Line::from(vec![Span::raw("  :time 06-12 13:00")]),
@@ -61,15 +62,15 @@ fn all_lines() -> Vec<Line<'static>> {
     ]
 }
 
-pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize) {
+pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize, theme: &ColorTheme) {
     let popup_area = crate::components::popup::centered_rect(55, 60, area);
 
     f.render_widget(Clear, popup_area);
 
-    let lines = all_lines();
+    let lines = all_lines(theme);
     let total = lines.len();
 
-    let block = popup_block(" Time Command ", PopupStyle::Normal);
+    let block = popup_block(" Time Command ", PopupStyle::Normal, theme);
 
     let inner = block.inner(popup_area);
     let visible_height = inner.height.saturating_sub(1) as usize;
@@ -95,8 +96,8 @@ pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize) {
     };
 
     let title = format!(" Time Command{scroll_indicator} ");
-    let block = popup_block(title, PopupStyle::Normal)
-        .title_bottom(key_hints(&[("j/k", "scroll"), ("Esc", "Close")]));
+    let block = popup_block(title, PopupStyle::Normal, theme)
+        .title_bottom(key_hints(&[("j/k", "scroll"), ("Esc", "Close")], theme));
 
     let text = Paragraph::new(visible_lines)
         .block(block)

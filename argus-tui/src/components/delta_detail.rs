@@ -3,7 +3,7 @@ use std::path::Path;
 
 use ratatui::{
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Clear, Row, Table},
     Frame,
@@ -13,6 +13,7 @@ use argus_core::DeltaEntry;
 
 use crate::app::App;
 use crate::components::popup::{popup_block, PopupStyle};
+use crate::theme::ColorTheme;
 use crate::types::*;
 use crate::util::{display_path, format_delta};
 
@@ -144,7 +145,7 @@ fn format_timestamp(ts_ms: u64) -> String {
 }
 
 /// Render the delta detail popup
-pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
+pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &ColorTheme) {
     let popup = crate::components::popup::centered_rect(70, 65, area);
     f.render_widget(Clear, popup);
 
@@ -164,7 +165,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
     } else {
         format!(" {} entries · [Esc close] ", entry_count)
     };
-    let block = popup_block(total_title, PopupStyle::Normal)
+    let block = popup_block(total_title, PopupStyle::Normal, theme)
         .title_bottom(Line::from(footer).right_aligned());
 
     let inner = block.inner(popup);
@@ -180,23 +181,23 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
         Cell::from(Span::styled(
             "Time",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme.text_tertiary)
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(Span::styled(
             "Path",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme.text_tertiary)
                 .add_modifier(Modifier::BOLD),
         )),
         Cell::from(Span::styled(
             "      Delta",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(theme.text_tertiary)
                 .add_modifier(Modifier::BOLD),
         )),
     ])
-    .style(Style::default().bg(crate::components::popup::POPUP_BG))
+    .style(Style::default().bg(theme.popup_bg))
     .height(1);
 
     let mut rows: Vec<Row> = Vec::new();
@@ -206,18 +207,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
         for i in scroll..(scroll + visible_count).min(state.entries.len()) {
             let row = &state.entries[i];
             let prefix = if row.is_aggregated { "- " } else { "  " };
-            let ts_style = Style::default().fg(Color::Gray);
-            let path_style = Style::default().fg(Color::Yellow);
+            let ts_style = Style::default().fg(theme.text_secondary);
+            let path_style = Style::default().fg(theme.text_highlight);
             let delta_style = if row.delta_size >= 0 {
-                Style::default().fg(Color::Red)
+                Style::default().fg(theme.danger)
             } else {
-                Style::default().fg(Color::Green)
+                Style::default().fg(theme.success)
             };
 
             rows.push(
                 Row::new(vec![
                     Cell::from(Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                        Span::styled(prefix, Style::default().fg(theme.text_tertiary)),
                         Span::styled(&row.timestamp, ts_style),
                     ])),
                     Cell::from(Span::styled(&row.child_name, path_style)),
@@ -226,7 +227,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
                         delta_style,
                     )),
                 ])
-                .style(Style::default().bg(crate::components::popup::POPUP_BG))
+                .style(Style::default().bg(theme.popup_bg))
                 .height(1),
             );
         }

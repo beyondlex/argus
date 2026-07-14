@@ -1,12 +1,13 @@
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph},
     Frame,
 };
 
 use crate::app::{AppMode, ScanSummary, SortMode};
+use crate::theme::ColorTheme;
 use crate::util;
 use crate::util::key_hints;
 use std::path::Path;
@@ -29,6 +30,7 @@ pub fn render(
     server_connected: bool,
     sort_mode: SortMode,
     multi_select: bool,
+    theme: &ColorTheme,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
@@ -37,16 +39,16 @@ pub fn render(
         left_spans.push(Span::styled(
             " ● MULTI ",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.text_highlight)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
 
     // Daemon status indicator
     let (status_text, status_color) = if server_connected {
-        (" ● Daemon", Color::Green)
+        (" ● Daemon", theme.success)
     } else {
-        (" ○ Daemon", Color::DarkGray)
+        (" ○ Daemon", theme.text_tertiary)
     };
     left_spans.push(Span::raw("   "));
     left_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
@@ -55,82 +57,91 @@ pub fn render(
         left_spans.push(Span::styled(
             " DELETE CONFIRM ",
             Style::default()
-                .fg(Color::Red)
-                .bg(Color::Black)
+                .fg(theme.danger)
+                .bg(theme.bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     } else if matches!(mode, AppMode::Help) {
         left_spans.push(Span::styled(
             " HELP ",
-            Style::default().fg(Color::Cyan).bg(Color::Black),
+            Style::default().fg(theme.accent).bg(theme.bg),
         ));
     }
 
     if scanning {
         left_spans.push(Span::styled(
             util::display_path(view_root_path),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.text_secondary),
         ));
         left_spans.push(Span::raw("  "));
-        left_spans.push(Span::styled("Size:", Style::default().fg(Color::Gray)));
+        left_spans.push(Span::styled(
+            "Size:",
+            Style::default().fg(theme.text_secondary),
+        ));
         if let Some((current, total_bytes)) = scan_progress {
             left_spans.push(Span::styled(
                 format!(" {}", util::format_size(total_bytes)),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.text_highlight),
             ));
             left_spans.push(Span::raw("  "));
-            left_spans.push(Span::styled("Items:", Style::default().fg(Color::Gray)));
+            left_spans.push(Span::styled(
+                "Items:",
+                Style::default().fg(theme.text_secondary),
+            ));
             left_spans.push(Span::styled(
                 format!(" {}", util::format_count(current)),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.text_highlight),
             ));
         }
         left_spans.push(Span::raw("  "));
-        left_spans.push(Span::styled("Took:", Style::default().fg(Color::Gray)));
+        left_spans.push(Span::styled(
+            "Took:",
+            Style::default().fg(theme.text_secondary),
+        ));
         left_spans.push(Span::styled(
             format!(
                 " {}",
                 util::format_duration(scan_elapsed.unwrap_or_default())
             ),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.text_highlight),
         ));
 
         left_spans.push(Span::styled(
             format!("  {} ", SPINNER_FRAMES[scan_spinner as usize]),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(theme.spinner),
         ));
 
-        left_spans.extend(key_hints(&[("Esc", "cancel")]));
+        left_spans.extend(key_hints(&[("Esc", "cancel")], theme));
     } else if let Some(summary) = scan_summary {
         left_spans.push(Span::raw("   "));
         left_spans.push(Span::styled(
             util::display_path(&summary.root_path),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.text_secondary),
         ));
         left_spans.push(Span::raw("  "));
         left_spans.push(Span::styled(
             "Size:".to_string(),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.text_secondary),
         ));
         left_spans.push(Span::styled(
             format!(" {}", util::format_size(summary.total_size)),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.text_highlight),
         ));
         left_spans.push(Span::styled(
             " Items:".to_string(),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.text_secondary),
         ));
         left_spans.push(Span::styled(
             format!(" {}", util::format_count(summary.total_files)),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.text_highlight),
         ));
         left_spans.push(Span::styled(
             " Took:".to_string(),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.text_secondary),
         ));
         left_spans.push(Span::styled(
             format!(" {}", util::format_duration(summary.duration)),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.text_highlight),
         ));
     }
 
@@ -138,7 +149,7 @@ pub fn render(
         left_spans.push(Span::raw("   "));
         left_spans.push(Span::styled(
             err,
-            Style::default().fg(Color::Red).bg(Color::Black),
+            Style::default().fg(theme.danger).bg(theme.bg),
         ));
     }
 
@@ -148,7 +159,7 @@ pub fn render(
         Span::styled(
             sort_mode.label(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.accent)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
         Span::raw(" "),
@@ -156,7 +167,7 @@ pub fn render(
     let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
     let right_line = Line::from(right_spans);
 
-    let block = Block::default().style(Style::default().bg(Color::Black));
+    let block = Block::default().style(Style::default().bg(theme.bg));
     if right_width + 4 < area.width {
         let [left_area, right_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_width)])

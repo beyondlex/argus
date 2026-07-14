@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 trash = "3"
 bincode = "1"
+terminal-light = "1"
 
 [dev-dependencies]
 tempfile = "3"

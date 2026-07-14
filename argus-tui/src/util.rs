@@ -5,6 +5,8 @@ use std::time::Duration;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
+use crate::theme::ColorTheme;
+
 /// Map common key names to symbolic representations
 pub fn key_symbol(key: &'static str) -> &'static str {
     match key {
@@ -16,25 +18,28 @@ pub fn key_symbol(key: &'static str) -> &'static str {
     }
 }
 
-/// Create a styled key hint pair: `key` (green) `label` (DarkGray)
-pub fn key_hint(key: &'static str, label: &str) -> Vec<Span<'static>> {
+/// Create a styled key hint pair: `key` (accent) `label` (tertiary)
+pub fn key_hint(key: &'static str, label: &str, theme: &ColorTheme) -> Vec<Span<'static>> {
     vec![
         Span::styled(
             format!(" {}", key_symbol(key)),
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme.accent),
         ),
-        Span::styled(format!(" {} ", label), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {} ", label),
+            Style::default().fg(theme.text_tertiary),
+        ),
     ]
 }
 
 /// Create a sequence of key hint pairs separated by double spaces
-pub fn key_hints(hints: &[(&'static str, &str)]) -> Vec<Span<'static>> {
+pub fn key_hints(hints: &[(&'static str, &str)], theme: &ColorTheme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, (key, label)) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" "));
         }
-        spans.extend(key_hint(key, label));
+        spans.extend(key_hint(key, label, theme));
     }
     spans
 }
@@ -170,26 +175,24 @@ pub fn extract_unit(s: &str) -> &str {
 }
 
 /// Map unit to color for positive delta display (entire string colored).
-/// B→Gray, KB→Yellow, MB→Orange, GB→Red
-pub fn delta_unit_color(unit: &str) -> Color {
+pub fn delta_unit_color(unit: &str, theme: &ColorTheme) -> Color {
     match unit {
-        "B" => Color::Gray,
-        "KB" => Color::Yellow,
-        "MB" => Color::Rgb(255, 165, 0),
-        "GB" => Color::Red,
-        _ => Color::Gray,
+        "B" => theme.unit_b,
+        "KB" => theme.unit_kb,
+        "MB" => theme.unit_mb,
+        "GB" => theme.unit_gb,
+        _ => theme.text_secondary,
     }
 }
 
 /// Map unit to color for filesize display (unit part only).
-/// B→Green, KB→Yellow, MB→Orange, GB→Red
-pub fn filesize_unit_color(unit: &str) -> Color {
+pub fn filesize_unit_color(unit: &str, theme: &ColorTheme) -> Color {
     match unit {
-        "B" => Color::Green,
-        "KB" => Color::Yellow,
-        "MB" => Color::Rgb(255, 165, 0),
-        "GB" => Color::Red,
-        _ => Color::Green,
+        "B" => theme.unit_b,
+        "KB" => theme.unit_kb,
+        "MB" => theme.unit_mb,
+        "GB" => theme.unit_gb,
+        _ => theme.unit_b,
     }
 }
 

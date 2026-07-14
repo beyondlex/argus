@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::ipc_client::IpcClient;
+use crate::theme::ColorTheme;
 use crate::time_utils::*;
 pub use crate::types::*;
 use crate::util::{default_log_path, log_msg};
@@ -18,6 +19,7 @@ use crate::util::{default_log_path, log_msg};
 
 pub struct App {
     pub config: crate::config::TuiConfig,
+    pub theme: ColorTheme,
     pub mode: AppMode,
     pub focus: Focus,
     pub sort_mode: SortMode,
@@ -135,8 +137,11 @@ impl App {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let log_path = default_log_path();
 
+        let theme = crate::theme::detect_theme(&config.theme.color_scheme);
+
         Self {
             config,
+            theme,
             tx,
             mode: AppMode::Browsing,
             focus: Focus::Tree,

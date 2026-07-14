@@ -7,6 +7,7 @@ pub mod event;
 pub mod handler;
 pub mod ipc_client;
 pub mod search;
+pub mod theme;
 pub mod time_utils;
 pub mod tree_ops;
 pub mod types;

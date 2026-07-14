@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, TreeNode, DELTA_UNIT_LABELS};
+use crate::app::{App, AppMode, FilterFocus, Focus, TreeNode, DELTA_UNIT_LABELS};
 use crate::components::{
     command_bar, file_tree, help_popup, metadata, popup, status_bar, time_help,
 };
@@ -11,7 +11,7 @@ use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, Paragraph},
     Frame,
@@ -83,7 +83,7 @@ fn next_poll_timeout(
         Duration::MAX
     };
 
-    let time_to_cursor = if app.search_mode == SearchMode::Input
+    let time_to_cursor = if app.search_mode == crate::types::SearchMode::Input
         || app.mode == AppMode::Command
         || app.mode == AppMode::Finder
     {
@@ -150,7 +150,7 @@ fn advance_timers(
         }
     }
 
-    let should_blink = app.search_mode == SearchMode::Input
+    let should_blink = app.search_mode == crate::types::SearchMode::Input
         || app.mode == AppMode::Command
         || app.mode == AppMode::Finder;
     if should_blink && last_cursor_tick.elapsed() >= cursor_blink_rate {
@@ -183,7 +183,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 }
 
 fn render_chrome(f: &mut Frame, app: &App, chunks: &[ratatui::layout::Rect], cursor_visible: bool) {
-    render_header(f, chunks[0]);
+    render_header(f, chunks[0], &app.theme);
     render_filter_pane(f, chunks[1], app);
     render_main_content(f, app, chunks[2], cursor_visible);
     render_status_bar(f, app, chunks[3]);
@@ -228,6 +228,7 @@ fn render_main_content(
             root_total_size,
             multi_select: app.multi_select,
             selected_paths: &app.selected_paths,
+            theme: &app.theme,
         },
     );
 }
@@ -249,6 +250,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         app.server_connected,
         app.sort_mode,
         app.multi_select,
+        &app.theme,
     );
 }
 
@@ -257,14 +259,15 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
         AppMode::Deleting => render_delete_progress(f, area, app),
-        AppMode::Help => help_popup::render(f, area),
-        AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll),
+        AppMode::Help => help_popup::render(f, area, &app.theme),
+        AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll, &app.theme),
         AppMode::Command => command_bar::render(
             f,
             area,
             &app.command_input,
             &app.command_matches,
             app.command_selected,
+            &app.theme,
         ),
         AppMode::Browsing => {}
         AppMode::Finder => {
@@ -275,52 +278,55 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     }
 
     if let Some((path, meta)) = &app.info_data {
-        metadata::render(f, area, path, meta);
+        metadata::render(f, area, path, meta, &app.theme);
     }
 
     if let Some(ref state) = app.delta_detail {
-        crate::components::delta_detail::render(f, area, state);
+        crate::components::delta_detail::render(f, area, state, &app.theme);
     }
 }
 
 /// Render header bar
-fn render_header(f: &mut Frame, area: ratatui::layout::Rect) {
+fn render_header(f: &mut Frame, area: ratatui::layout::Rect, theme: &crate::theme::ColorTheme) {
     let mut header_spans: Vec<Span> = vec![
         Span::styled(
             " Argus v0.1.0 ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
     ];
-    header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")]));
+    header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")], theme));
     let line = Line::from(header_spans);
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn focus_highlight_style(active: bool, inactive_fg: Color) -> Style {
+fn focus_highlight_style(active: bool, theme: &crate::theme::ColorTheme) -> Style {
     if active {
-        Style::default().fg(Color::Black).bg(Color::LightYellow)
+        Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
     } else {
-        Style::default().fg(inactive_fg).bg(Color::Black)
+        Style::default().fg(theme.text).bg(theme.bg)
     }
 }
 
 /// Render the filter pane (time range + delta filter)
-fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+fn render_filter_pane(f: &mut Frame, area: Rect, app: &App) {
     let is_focused = app.focus == Focus::FilterPane;
 
     let border_style = Style::default().fg(if is_focused {
-        Color::Magenta
+        app.theme.accent
     } else {
-        Color::DarkGray
+        app.theme.border_unfocused
     });
 
     let hint: Vec<Span> = if is_focused {
-        key_hints(&[("Tab", "cycle"), ("Esc", "Files"), ("c", "Clear")])
+        key_hints(
+            &[("Tab", "cycle"), ("Esc", "Files"), ("c", "Clear")],
+            &app.theme,
+        )
     } else {
-        key_hints(&[("f", "Focus"), ("c", "Clear")])
+        key_hints(&[("f", "Focus"), ("c", "Clear")], &app.theme)
     };
 
     let block = Block::default()
@@ -330,18 +336,18 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .title_alignment(Alignment::Right);
     let inner = block.inner(area);
 
-    let default_bg = Color::Black;
-
     if !app.server_connected {
         let line = Line::from(vec![
-            Span::styled(" ", Style::default().bg(default_bg)),
+            Span::styled(" ", Style::default().bg(app.theme.bg)),
             Span::styled(
                 "Press R to connect to daemon",
-                Style::default().fg(Color::DarkGray).bg(default_bg),
+                Style::default()
+                    .fg(app.theme.text_tertiary)
+                    .bg(app.theme.bg),
             ),
         ]);
         f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(default_bg)),
+            Paragraph::new(line).style(Style::default().bg(app.theme.bg)),
             inner,
         );
         f.render_widget(block, area);
@@ -355,20 +361,22 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     };
     let time_style = focus_highlight_style(
         is_focused && app.filter_focus == FilterFocus::TimePreset && !app.time_custom,
-        Color::White,
+        &app.theme,
     );
 
     let delta_value_style = focus_highlight_style(
         is_focused && app.filter_focus == FilterFocus::DeltaValue,
-        Color::Yellow,
+        &app.theme,
     );
 
     let delta_unit_style = focus_highlight_style(
         is_focused && app.filter_focus == FilterFocus::DeltaUnit,
-        Color::Cyan,
+        &app.theme,
     );
 
-    let delta_prefix_style = Style::default().fg(Color::DarkGray).bg(default_bg);
+    let delta_prefix_style = Style::default()
+        .fg(app.theme.text_tertiary)
+        .bg(app.theme.bg);
 
     let mut left: Vec<Span> = vec![
         Span::styled(time_label, time_style),
@@ -407,11 +415,14 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         if padding > 0 {
             left.push(Span::raw(" ".repeat(padding as usize)));
         }
-        left.push(Span::styled(right_text, Style::default().fg(Color::Green)));
+        left.push(Span::styled(
+            right_text,
+            Style::default().fg(app.theme.success),
+        ));
     }
 
     f.render_widget(
-        Paragraph::new(Line::from(left)).style(Style::default().bg(default_bg)),
+        Paragraph::new(Line::from(left)).style(Style::default().bg(app.theme.bg)),
         inner,
     );
     f.render_widget(block, area);
@@ -470,23 +481,30 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
         )
     };
 
-    let block = popup::popup_block(title, popup::PopupStyle::Danger)
-        .title_bottom(Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])).centered());
+    let block = popup::popup_block(title, popup::PopupStyle::Danger, &app.theme).title_bottom(
+        Line::from(key_hints(
+            &[("y", confirm_label), ("n", "Cancel")],
+            &app.theme,
+        ))
+        .centered(),
+    );
 
     let text = Paragraph::new(vec![
         Line::from(vec![Span::styled(
             "WARNING:",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.danger)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
             &path_display,
-            Style::default().fg(Color::White),
+            Style::default().fg(app.theme.text),
         )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
             action_text,
-            Style::default().fg(Color::White),
+            Style::default().fg(app.theme.text),
         )]),
     ])
     .block(block)
@@ -518,6 +536,7 @@ fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
     let block = popup::popup_block(
         format!(" {} ({}/{}) ", label, current, total),
         popup::PopupStyle::Danger,
+        &app.theme,
     );
 
     let ratio = if total > 0 {
@@ -530,8 +549,8 @@ fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
         .block(block)
         .gauge_style(
             Style::default()
-                .fg(Color::Red)
-                .bg(Color::Black)
+                .fg(app.theme.danger)
+                .bg(app.theme.bg)
                 .add_modifier(Modifier::BOLD),
         )
         .ratio(ratio)
@@ -555,12 +574,13 @@ mod tests {
 
     #[test]
     fn test_render_header_contains_title() {
+        let app = make_app();
         let backend = TestBackend::new(80, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
                 let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-                render_header(f, area);
+                render_header(f, area, &app.theme);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -573,12 +593,13 @@ mod tests {
 
     #[test]
     fn test_render_header_shows_help_and_quit_hints() {
+        let app = make_app();
         let backend = TestBackend::new(80, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
                 let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-                render_header(f, area);
+                render_header(f, area, &app.theme);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
