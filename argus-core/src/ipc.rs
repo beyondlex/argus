@@ -10,6 +10,8 @@ pub enum DaemonRequest {
         path: PathBuf,
         from_ms: u64,
         to_ms: u64,
+        /// When false, daemon returns totals only (empty `entries`).
+        include_entries: bool,
     },
     GetDeltaDetail {
         path: PathBuf,
@@ -82,6 +84,7 @@ mod tests {
             path: PathBuf::from("/tmp/test"),
             from_ms: 1000,
             to_ms: 2000,
+            include_entries: true,
         };
         let encoded = bincode::serialize(&req).unwrap();
         let decoded: DaemonRequest = bincode::deserialize(&encoded).unwrap();
@@ -90,10 +93,32 @@ mod tests {
                 path,
                 from_ms,
                 to_ms,
+                include_entries,
             } => {
                 assert_eq!(path, PathBuf::from("/tmp/test"));
                 assert_eq!(from_ms, 1000);
                 assert_eq!(to_ms, 2000);
+                assert!(include_entries);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_get_delta_totals_only_roundtrip() {
+        let req = DaemonRequest::GetDelta {
+            path: PathBuf::from("/tmp/test"),
+            from_ms: 1000,
+            to_ms: 2000,
+            include_entries: false,
+        };
+        let encoded = bincode::serialize(&req).unwrap();
+        let decoded: DaemonRequest = bincode::deserialize(&encoded).unwrap();
+        match decoded {
+            DaemonRequest::GetDelta {
+                include_entries, ..
+            } => {
+                assert!(!include_entries);
             }
             _ => panic!("wrong variant"),
         }

@@ -15,6 +15,11 @@ use tokio::sync::mpsc;
 
 use argus_core::DeltaEvent;
 
+/// Cap for `size_cache` / `hardlink_cache`. Past this, drop roughly half so
+/// long-lived daemons do not grow unbounded. Hardlink dedup still works for
+/// entries that remain after eviction.
+const MAX_CACHE_ENTRIES: usize = 100_000;
+
 pub struct WatcherState {
     pub size_cache: HashMap<PathBuf, u64>,
     pub hardlink_cache: HashMap<(u64, u64), PathBuf>,
@@ -26,6 +31,11 @@ impl WatcherState {
             size_cache: HashMap::new(),
             hardlink_cache: HashMap::new(),
         }
+    }
+
+    fn trim_caches_if_needed(&mut self) {
+        trim_map_half_if_over(&mut self.size_cache, MAX_CACHE_ENTRIES);
+        trim_map_half_if_over(&mut self.hardlink_cache, MAX_CACHE_ENTRIES);
     }
 
     pub fn file_size(&mut self, path: &Path) -> Option<u64> {
@@ -50,6 +60,7 @@ impl WatcherState {
                             tracing::trace!("hardlink detected: {existing:?} -> {path:?}");
                             if let Some(&cached_size) = self.size_cache.get(existing) {
                                 self.size_cache.insert(path.to_path_buf(), cached_size);
+                                self.trim_caches_if_needed();
                                 return Some(cached_size);
                             }
                         }
@@ -60,6 +71,7 @@ impl WatcherState {
 
             let size = meta.len();
             self.size_cache.insert(path.to_path_buf(), size);
+            self.trim_caches_if_needed();
             Some(size)
         } else {
             None
@@ -72,10 +84,25 @@ impl WatcherState {
 
     pub fn update_size(&mut self, path: &Path, size: u64) {
         self.size_cache.insert(path.to_path_buf(), size);
+        self.trim_caches_if_needed();
     }
 
     pub fn last_known_size(&self, path: &Path) -> Option<u64> {
         self.size_cache.get(path).copied()
+    }
+}
+
+fn trim_map_half_if_over<K, V>(map: &mut HashMap<K, V>, max: usize)
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    if map.len() <= max {
+        return;
+    }
+    let remove_count = map.len() / 2;
+    let keys: Vec<K> = map.keys().take(remove_count).cloned().collect();
+    for k in keys {
+        map.remove(&k);
     }
 }
 
@@ -382,5 +409,20 @@ mod tests {
         assert_eq!(state.last_known_size(&path), Some(200));
         state.remove(&path);
         assert!(state.last_known_size(&path).is_none());
+    }
+
+    #[test]
+    fn test_cache_evicts_when_over_max() {
+        let mut state = WatcherState::new();
+        // Use a tiny local max via direct trim to avoid inserting 100k entries.
+        for i in 0..10 {
+            state
+                .size_cache
+                .insert(PathBuf::from(format!("/tmp/f{i}")), i as u64);
+        }
+        assert_eq!(state.size_cache.len(), 10);
+        trim_map_half_if_over(&mut state.size_cache, 5);
+        assert!(state.size_cache.len() <= 5);
+        assert!(!state.size_cache.is_empty());
     }
 }

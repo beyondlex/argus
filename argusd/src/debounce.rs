@@ -102,8 +102,8 @@ impl DebounceEngine {
 
         let events: Vec<DeltaEntry> = self.pending.drain().map(|(_, entry)| entry.event).collect();
 
-        let conn = self.db.lock().await;
-        if let Err(e) = insert_events(&conn, &events) {
+        let mut conn = self.db.lock().await;
+        if let Err(e) = insert_events(&mut conn, &events) {
             error!("failed to insert debounced events: {e}");
             // Re-insert pending entries on failure
             for event in events {
@@ -139,8 +139,8 @@ impl DebounceEngine {
             .map(|entry| entry.event)
             .collect();
 
-        let conn = self.db.lock().await;
-        if let Err(e) = insert_events(&conn, &events) {
+        let mut conn = self.db.lock().await;
+        if let Err(e) = insert_events(&mut conn, &events) {
             error!("failed to insert expired events: {e}");
             for event in events {
                 self.pending.insert(

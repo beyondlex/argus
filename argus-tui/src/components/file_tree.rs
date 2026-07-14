@@ -145,7 +145,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         let global_idx = scroll_offset + display_offset;
         let is_selected = global_idx == ctx.cursor;
         let is_current_match =
-            is_active_match && ctx.match_indices[ctx.current_match].tree_idx == Some(tree_idx);
+            is_active_match && ctx.match_indices[ctx.current_match].tree_line_idx == Some(tree_idx);
 
         let row_bg = if is_current_match {
             ctx.theme.match_bg

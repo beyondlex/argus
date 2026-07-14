@@ -34,8 +34,8 @@ pub struct App {
     pub scroll_offset: usize,
     pub expanded: HashSet<Vec<String>>,
 
-    // Scan cache: path → full scanned snapshot
-    pub scan_cache: HashMap<PathBuf, Snapshot>,
+    // Scan cache: path → full scanned snapshot (shared; treat as immutable after insert)
+    pub scan_cache: HashMap<PathBuf, Arc<Snapshot>>,
 
     // Server mode (connected to daemon)
     pub server_mode: bool,
@@ -221,8 +221,8 @@ impl App {
 
     fn build_current_tree(&mut self) {
         // Use full scan data when available, otherwise fall back to list_dir (one level)
-        if let Some(snapshot) = self.scan_cache.get(&self.view_root_path).cloned() {
-            self.tree_root = Some(TreeNode::Snapshot(Arc::new(snapshot), ROOT_NODE));
+        if let Some(snapshot) = self.scan_cache.get(&self.view_root_path) {
+            self.tree_root = Some(TreeNode::Snapshot(Arc::clone(snapshot), ROOT_NODE));
         } else {
             match argus_core::list_dir(&self.view_root_path) {
                 Ok(mut snap) => {
@@ -320,12 +320,13 @@ impl App {
                 });
                 self.scan_progress = None;
 
-                // Update scan cache
-                self.scan_cache
-                    .insert(snapshot.root_path.clone(), snapshot.clone());
+                // Update scan cache (share Arc; no full Snapshot clone)
+                let root_path = snapshot.root_path.clone();
+                let matches_view = root_path == self.view_root_path;
+                self.scan_cache.insert(root_path, Arc::new(snapshot));
 
                 // Rebuild tree if scanned path matches current view
-                if snapshot.root_path == self.view_root_path {
+                if matches_view {
                     self.rebuild_tree();
                 }
             }
@@ -421,7 +422,6 @@ impl App {
         };
 
         let query = &self.search_word;
-        let expanded = &self.expanded;
         let sort_mode = self.sort_mode;
 
         let delta_cache = if self.delta_cache.is_empty() {
@@ -431,17 +431,14 @@ impl App {
         };
         let mut matches = Vec::new();
         let mut walk_index = 0usize;
-        let mut visible_count = 0usize;
         let mut current_path = vec![snap_arc.node(*root_idx).name.clone()];
         crate::search::collect_matches_in_order(
             snap_arc,
             *root_idx,
             query,
-            expanded,
             sort_mode,
             &mut current_path,
             &mut walk_index,
-            &mut visible_count,
             &mut matches,
             &mut self.path_to_walk_idx,
             delta_cache,
@@ -449,6 +446,7 @@ impl App {
         );
 
         self.match_indices = matches;
+        self.remap_match_tree_indices();
         if self.current_match >= self.match_indices.len() && !self.match_indices.is_empty() {
             self.current_match = self.match_indices.len() - 1;
         }
@@ -541,8 +539,18 @@ impl App {
             .map(|(i, l)| (l.path.clone(), i))
             .collect();
         self.refresh_filtered_lines();
-        self.recompute_matches();
+        // Expand does not change match identity or walk order — only tree_line
+        // indices. Remap instead of a full O(n) rematch (P2).
+        self.remap_match_tree_indices();
         true
+    }
+
+    /// Update `SearchMatch.tree_line_idx` from the current `path_to_tree_idx` map.
+    /// Avoids re-walking the snapshot when only visibility/line indices changed.
+    pub fn remap_match_tree_indices(&mut self) {
+        for m in &mut self.match_indices {
+            m.tree_line_idx = self.path_to_tree_idx.get(&m.path).copied();
+        }
     }
 
     /// Get the currently selected tree line (from filtered view)
@@ -793,7 +801,8 @@ mod tests {
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = root_path.clone();
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(live_snap), ROOT_NODE));
-        app.scan_cache.insert(root_path.clone(), scan_snap);
+        app.scan_cache
+            .insert(root_path.clone(), Arc::new(scan_snap));
 
         app.expanded
             .insert(vec!["test".to_string(), "target".to_string()]);

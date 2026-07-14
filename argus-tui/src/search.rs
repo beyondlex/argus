@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use argus_core::{NodeIndex, Snapshot};
@@ -127,36 +127,27 @@ pub(crate) fn collect_matches_in_order(
     snap: &Snapshot,
     idx: NodeIndex,
     query: &str,
-    expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     path: &mut Vec<String>,
     walk_index: &mut usize,
-    visible_count: &mut usize,
     result: &mut Vec<SearchMatch>,
     path_to_walk_idx: &mut HashMap<Vec<String>, usize>,
     delta_cache: Option<&HashMap<Vec<String>, i64>>,
     show_hidden: bool,
 ) {
     let node = snap.node(idx);
-    let is_visible = path_is_visible(path, expanded);
 
     path_to_walk_idx.insert(path.clone(), *walk_index);
 
     if fuzzy_match_indices(query, &node.name).is_some() {
         result.push(SearchMatch {
             path: path.clone(),
-            tree_idx: if is_visible {
-                Some(*visible_count)
-            } else {
-                None
-            },
+            // Resolved from path_to_tree_idx after collect (tree_lines is source of truth).
+            tree_line_idx: None,
             walk_idx: *walk_index,
         });
     }
 
-    if is_visible {
-        *visible_count += 1;
-    }
     *walk_index += 1;
 
     if node.is_dir {
@@ -181,11 +172,9 @@ pub(crate) fn collect_matches_in_order(
                     snap,
                     child_idx,
                     query,
-                    expanded,
                     sort_mode,
                     path,
                     walk_index,
-                    visible_count,
                     result,
                     path_to_walk_idx,
                     delta_cache,
@@ -197,18 +186,27 @@ pub(crate) fn collect_matches_in_order(
     }
 }
 
-fn path_is_visible(path: &[String], expanded: &HashSet<Vec<String>>) -> bool {
-    if path.len() <= 1 {
-        return true;
-    }
-    (1..path.len()).all(|len| expanded.contains(&path[..len].to_vec()))
-}
-
-/// Simple substring-based match returning character indices for highlighting.
+/// Substring match (case-insensitive) returning character indices for highlighting.
+/// ASCII path avoids heap allocation; non-ASCII falls back to lowercase strings.
 pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
     if query.is_empty() {
         return None;
     }
+    if query.is_ascii() && target.is_ascii() {
+        let target_bytes = target.as_bytes();
+        let query_bytes = query.as_bytes();
+        let qlen = query_bytes.len();
+        if qlen > target_bytes.len() {
+            return None;
+        }
+        for start in 0..=(target_bytes.len() - qlen) {
+            if target_bytes[start..start + qlen].eq_ignore_ascii_case(query_bytes) {
+                return Some((start..start + qlen).collect());
+            }
+        }
+        return None;
+    }
+
     let target_lc = target.to_lowercase();
     let query_lc = query.to_lowercase();
     let byte_pos = target_lc.find(&query_lc)?;
@@ -271,7 +269,8 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), Arc::new(scan_snap));
         app.update_tree_lines();
         app
     }
@@ -340,8 +339,8 @@ mod tests {
 
         assert_eq!(app.match_indices.len(), 1);
         assert!(
-            app.match_indices[0].tree_idx.is_none(),
-            "match should be hidden (tree_idx=None) before expansion"
+            app.match_indices[0].tree_line_idx.is_none(),
+            "match should be hidden (tree_line_idx=None) before expansion"
         );
 
         app.cursor = 0;
@@ -366,6 +365,47 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_path_remaps_matches_without_clearing() {
+        let root_arena = vec![
+            dir_node("test", vec![("a", 1)]),
+            dir_node("a", vec![("target_file", 2)]),
+            file_node("target_file", 1),
+        ];
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 1);
+        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
+
+        let mut app = make_app(snap, scan_snap);
+        app.sort_mode = crate::app::SortMode::Name;
+        app.search_word = "target".to_string();
+        app.recompute_matches();
+
+        assert_eq!(app.match_indices.len(), 1);
+        let match_path = app.match_indices[0].path.clone();
+        let walk_idx = app.match_indices[0].walk_idx;
+        assert!(
+            app.match_indices[0].tree_line_idx.is_none(),
+            "match should be hidden before expand"
+        );
+
+        let expand_path = vec!["test".to_string(), "a".to_string()];
+        app.expanded.insert(expand_path.clone());
+        assert!(
+            app.expand_path_in_tree(&expand_path),
+            "expand_path_in_tree should splice children"
+        );
+
+        assert_eq!(app.match_indices.len(), 1, "matches must not be cleared");
+        assert_eq!(app.match_indices[0].path, match_path);
+        assert_eq!(app.match_indices[0].walk_idx, walk_idx);
+        assert!(
+            app.match_indices[0].tree_line_idx.is_some(),
+            "tree_line_idx should be remapped for newly visible match"
+        );
+        let idx = app.match_indices[0].tree_line_idx.unwrap();
+        assert_eq!(app.tree_lines[idx].path, match_path);
+    }
+
+    #[test]
     fn test_jump_auto_expands_deeply_nested() {
         let root_arena = vec![
             dir_node("test", vec![("a", 1)]),
@@ -383,7 +423,7 @@ mod tests {
         app.recompute_matches();
 
         assert_eq!(app.match_indices.len(), 1);
-        assert!(app.match_indices[0].tree_idx.is_none());
+        assert!(app.match_indices[0].tree_line_idx.is_none());
 
         app.cursor = 0;
         jump_to_next_match(&mut app, 1);
@@ -438,7 +478,7 @@ mod tests {
 
         assert_eq!(app.match_indices.len(), 1);
         assert!(
-            app.match_indices[0].tree_idx.is_none(),
+            app.match_indices[0].tree_line_idx.is_none(),
             "match should be hidden because 'a/b' is collapsed"
         );
 
@@ -476,8 +516,8 @@ mod tests {
 
         assert_eq!(app.match_indices.len(), 1);
         assert!(
-            app.match_indices[0].tree_idx.is_none(),
-            "match in collapsed subtree should have tree_idx=None"
+            app.match_indices[0].tree_line_idx.is_none(),
+            "match in collapsed subtree should have tree_line_idx=None"
         );
 
         app.refresh_filtered_lines();
@@ -487,8 +527,8 @@ mod tests {
             "hidden matches must survive refresh_filtered_lines"
         );
         assert_eq!(
-            app.match_indices[0].tree_idx, None,
-            "hidden match should still have tree_idx=None after refresh"
+            app.match_indices[0].tree_line_idx, None,
+            "hidden match should still have tree_line_idx=None after refresh"
         );
 
         app.cursor = 0;
@@ -547,17 +587,17 @@ mod tests {
         let matches = vec![
             SearchMatch {
                 path: vec!["a".to_string()],
-                tree_idx: Some(0),
+                tree_line_idx: Some(0),
                 walk_idx: 0,
             },
             SearchMatch {
                 path: vec!["b".to_string()],
-                tree_idx: Some(1),
+                tree_line_idx: Some(1),
                 walk_idx: 5,
             },
             SearchMatch {
                 path: vec!["c".to_string()],
-                tree_idx: Some(2),
+                tree_line_idx: Some(2),
                 walk_idx: 10,
             },
         ];
@@ -574,12 +614,12 @@ mod tests {
         let matches = vec![
             SearchMatch {
                 path: vec!["a".to_string()],
-                tree_idx: Some(0),
+                tree_line_idx: Some(0),
                 walk_idx: 0,
             },
             SearchMatch {
                 path: vec!["b".to_string()],
-                tree_idx: Some(1),
+                tree_line_idx: Some(1),
                 walk_idx: 5,
             },
         ];
@@ -600,17 +640,17 @@ mod tests {
         let matches = vec![
             SearchMatch {
                 path: vec!["a".to_string()],
-                tree_idx: Some(0),
+                tree_line_idx: Some(0),
                 walk_idx: 0,
             },
             SearchMatch {
                 path: vec!["b".to_string()],
-                tree_idx: Some(1),
+                tree_line_idx: Some(1),
                 walk_idx: 5,
             },
             SearchMatch {
                 path: vec!["c".to_string()],
-                tree_idx: Some(2),
+                tree_line_idx: Some(2),
                 walk_idx: 10,
             },
         ];
@@ -627,12 +667,12 @@ mod tests {
         let matches = vec![
             SearchMatch {
                 path: vec!["a".to_string()],
-                tree_idx: Some(0),
+                tree_line_idx: Some(0),
                 walk_idx: 0,
             },
             SearchMatch {
                 path: vec!["b".to_string()],
-                tree_idx: Some(1),
+                tree_line_idx: Some(1),
                 walk_idx: 5,
             },
         ];

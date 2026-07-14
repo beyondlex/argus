@@ -79,7 +79,8 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), Arc::new(scan_snap));
         app.update_tree_lines();
         app
     }
@@ -446,8 +447,9 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = tmp.path().to_path_buf();
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(tmp.path().to_path_buf(), scan_snap);
-        app.scan_cache.insert(sub, sub_snap);
+        app.scan_cache
+            .insert(tmp.path().to_path_buf(), Arc::new(scan_snap));
+        app.scan_cache.insert(sub, Arc::new(sub_snap));
         app.sort_mode = crate::app::SortMode::Name;
         app.update_tree_lines();
         app.cursor = 1; // on "sub"

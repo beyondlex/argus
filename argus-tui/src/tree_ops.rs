@@ -205,7 +205,9 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
             // Prune in-place: remove the deleted path from this snapshot.
             // This preserves parent/ancestor scans needed by resolve_scan_tree
             // when the view root is a subdirectory (not the scanned root).
-            if let Some(snapshot) = app.scan_cache.get_mut(&key) {
+            if let Some(arc) = app.scan_cache.get_mut(&key) {
+                // COW: clone only if another Arc still shares this snapshot
+                let snapshot = Arc::make_mut(arc);
                 let freed = node_size_in_snapshot(snapshot, deleted_path);
                 remove_path_from_snapshot(snapshot, deleted_path);
                 total_freed = total_freed.saturating_add(freed);
@@ -320,7 +322,7 @@ pub(crate) fn flatten_snapshot_tree(
     expanded: &HashSet<Vec<String>>,
     sort_mode: SortMode,
     lines: &mut Vec<TreeLine>,
-    scan_cache: &HashMap<PathBuf, Snapshot>,
+    scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     delta_cache: Option<&HashMap<Vec<String>, i64>>,
@@ -329,11 +331,11 @@ pub(crate) fn flatten_snapshot_tree(
 ) {
     let node = snap_arc.node(idx);
     path.push(node.name.clone());
-    let path_key = path.clone();
-    let is_expanded = depth == 0 || expanded.contains(&path_key);
+    // One clone only: into TreeLine.path. expanded / size_for_path use &path.
+    let is_expanded = depth == 0 || expanded.contains(path);
 
     let node_has_scan = if node.is_dir {
-        size_for_path(scan_cache, view_root_path, root_scan_tree, &path_key).is_some()
+        size_for_path(scan_cache, view_root_path, root_scan_tree, path).is_some()
     } else {
         false
     };
@@ -377,7 +379,7 @@ pub(crate) fn flatten_snapshot_tree(
 pub(crate) fn enrich_snapshot_sizes(
     snap: &mut Snapshot,
     idx: NodeIndex,
-    scan_cache: &HashMap<PathBuf, Snapshot>,
+    scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path: &mut Vec<String>,
@@ -412,7 +414,7 @@ pub(crate) fn enrich_snapshot_sizes(
 }
 
 pub(crate) fn size_for_path(
-    scan_cache: &HashMap<PathBuf, Snapshot>,
+    scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path_key: &[String],
@@ -442,11 +444,11 @@ pub(crate) fn size_for_path(
 /// the path hierarchy to find a parent-level scan, then walks down
 /// the scan tree to find the subtree matching the view root.
 pub(crate) fn resolve_scan_tree<'a>(
-    scan_cache: &'a HashMap<PathBuf, Snapshot>,
+    scan_cache: &'a HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
 ) -> Option<(&'a Snapshot, NodeIndex)> {
     if let Some(snapshot) = scan_cache.get(view_root_path) {
-        return Some((snapshot, ROOT_NODE));
+        return Some((snapshot.as_ref(), ROOT_NODE));
     }
 
     let mut parent = view_root_path.parent()?;
@@ -458,7 +460,7 @@ pub(crate) fn resolve_scan_tree<'a>(
                 let name = component.as_os_str().to_str()?;
                 idx = snapshot.node(idx).child_idx(name)?;
             }
-            return Some((snapshot, idx));
+            return Some((snapshot.as_ref(), idx));
         }
         parent = parent.parent()?;
     }
@@ -540,7 +542,8 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(PathBuf::from("/tmp/test"), scan_snap);
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), Arc::new(scan_snap));
         app.update_tree_lines();
         app
     }
@@ -585,7 +588,7 @@ mod tests {
         ];
         let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880);
         let mut scan_cache = HashMap::new();
-        scan_cache.insert(root_path.clone(), scan_snap);
+        scan_cache.insert(root_path.clone(), Arc::new(scan_snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
 
         enrich_snapshot_sizes(
@@ -607,7 +610,11 @@ mod tests {
         let mut scan_cache = HashMap::new();
         scan_cache.insert(
             sub_path.clone(),
-            Snapshot::new(sub_path, vec![node("src", true, 100, vec![])], 100),
+            Arc::new(Snapshot::new(
+                sub_path,
+                vec![node("src", true, 100, vec![])],
+                100,
+            )),
         );
         let size = size_for_path(
             &scan_cache,
@@ -630,7 +637,7 @@ mod tests {
             ],
             200,
         );
-        scan_cache.insert(root_path.clone(), snap);
+        scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
         let size = size_for_path(
             &scan_cache,
@@ -646,7 +653,7 @@ mod tests {
         let root_path = PathBuf::from("/tmp/test");
         let mut scan_cache = HashMap::new();
         let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0);
-        scan_cache.insert(root_path.clone(), snap);
+        scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
         let size = size_for_path(
             &scan_cache,
@@ -689,7 +696,8 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = root_path.clone();
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache.insert(root_path.clone(), scan_snap);
+        app.scan_cache
+            .insert(root_path.clone(), Arc::new(scan_snap));
         app.update_tree_lines();
         app.cursor = 1;
 
@@ -727,7 +735,7 @@ mod tests {
         app.view_root_path = PathBuf::from("/tmp/test");
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
         app.scan_cache
-            .insert(PathBuf::from("/tmp/test"), root_snapshot);
+            .insert(PathBuf::from("/tmp/test"), Arc::new(root_snapshot));
         app.update_tree_lines();
 
         apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
@@ -778,7 +786,7 @@ mod tests {
         app.view_root_path = PathBuf::from("/tmp/test");
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
         app.scan_cache
-            .insert(PathBuf::from("/tmp/test"), root_snapshot);
+            .insert(PathBuf::from("/tmp/test"), Arc::new(root_snapshot));
         app.update_tree_lines();
 
         // verify initial state
@@ -881,7 +889,7 @@ mod tests {
         app.view_root_path = PathBuf::from("/tmp/github/argus");
         // Store parent scan in cache (subdirectory is NOT in cache)
         app.scan_cache
-            .insert(PathBuf::from("/tmp/github"), parent_scan);
+            .insert(PathBuf::from("/tmp/github"), Arc::new(parent_scan));
         // Enrich subdirectory snapshot (simulating build_current_tree)
         let root_scan_tree = resolve_scan_tree(&app.scan_cache, &app.view_root_path);
         enrich_snapshot_sizes(
@@ -1074,7 +1082,8 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = sub;
-        app.scan_cache.insert(tmp.path().to_path_buf(), snap);
+        app.scan_cache
+            .insert(tmp.path().to_path_buf(), Arc::new(snap));
 
         navigate_up_root(&mut app);
 

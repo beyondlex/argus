@@ -54,6 +54,11 @@ pub fn init_db(conn: &Connection) -> Result<(), DbError> {
 
         CREATE INDEX IF NOT EXISTS idx_delta_is_agg
             ON delta_events(is_agg);
+
+        -- Speeds GetDelta/detail anti-join over aggregate coverage rows
+        -- (is_agg filter + path prefix + time window).
+        CREATE INDEX IF NOT EXISTS idx_delta_agg_path_time
+            ON delta_events(is_agg, path, timestamp);
         ",
     )?;
     Ok(())
@@ -178,22 +183,27 @@ pub fn query_delta_summary(
     .map_err(DbError::from)
 }
 
-pub fn insert_events(conn: &Connection, events: &[DeltaEntry]) -> Result<(), DbError> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO delta_events (path, delta_size, event_type, timestamp)
-         VALUES (?1, ?2, ?3, ?4)",
-    )?;
-
-    for event in events {
-        let path_str = event.path.to_string_lossy();
-        stmt.execute(params![
-            path_str.as_ref(),
-            event.delta_size,
-            event.event_type,
-            event.timestamp,
-        ])?;
+pub fn insert_events(conn: &mut Connection, events: &[DeltaEntry]) -> Result<(), DbError> {
+    if events.is_empty() {
+        return Ok(());
     }
-
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp)
+             VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for event in events {
+            let path_str = event.path.to_string_lossy();
+            stmt.execute(params![
+                path_str.as_ref(),
+                event.delta_size,
+                event.event_type,
+                event.timestamp,
+            ])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -221,54 +231,46 @@ pub fn clear_all_events(conn: &Connection) -> Result<u64, DbError> {
 }
 
 pub fn consolidate_events(conn: &mut Connection, threshold: u64) -> Result<u64, DbError> {
-    let rows: Vec<(i64, String, i64, u64)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, path, delta_size, timestamp FROM delta_events WHERE is_agg = 0")?;
-
-        let result = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, u64>(3)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(stmt);
-        result
-    };
-
-    let mut parent_map: HashMap<String, Vec<(i64, i64, u64)>> = HashMap::new();
-
-    for (id, path_str, delta, ts) in &rows {
-        let path = Path::new(path_str);
-        if let Some(parent) = path.parent() {
+    // Stream rows into per-parent aggregates (count/sum/max_ts) instead of
+    // materializing every event id in RAM.
+    let mut parent_map: HashMap<String, (u64, i64, u64)> = HashMap::new();
+    {
+        let mut stmt =
+            conn.prepare("SELECT path, delta_size, timestamp FROM delta_events WHERE is_agg = 0")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (path_str, delta, ts) = row?;
+            let path = Path::new(&path_str);
+            let Some(parent) = path.parent() else {
+                continue;
+            };
             if parent.as_os_str().is_empty() {
                 continue;
             }
-            parent_map
+            let entry = parent_map
                 .entry(parent.to_string_lossy().into_owned())
-                .or_default()
-                .push((*id, *delta, *ts));
+                .or_insert((0, 0, 0));
+            entry.0 = entry.0.saturating_add(1);
+            entry.1 = entry.1.saturating_add(delta);
+            if ts > entry.2 {
+                entry.2 = ts;
+            }
         }
     }
 
     let tx = conn.transaction()?;
     let mut total_consolidated: u64 = 0;
 
-    for (parent, children) in &parent_map {
-        if (children.len() as u64) <= threshold {
+    for (parent, &(count, total_delta, max_ts)) in &parent_map {
+        if count <= threshold {
             continue;
         }
-
-        let total_delta: i64 = children.iter().map(|(_, d, _)| d).sum();
-        let max_ts: u64 = children
-            .iter()
-            .map(|(_, _, ts)| ts)
-            .copied()
-            .max()
-            .unwrap_or(0);
 
         // We intentionally keep aggregation local to one parent path.
         // Do not try to infer or merge descendant aggregate rows here; the
@@ -279,7 +281,7 @@ pub fn consolidate_events(conn: &mut Connection, threshold: u64) -> Result<u64, 
             "DELETE FROM delta_events WHERE is_agg = 0 AND path LIKE ?1 AND path NOT LIKE ?2",
             params![parent_prefix, nested_prefix],
         )?;
-        total_consolidated += children.len() as u64;
+        total_consolidated = total_consolidated.saturating_add(count);
 
         match tx.query_row(
             "SELECT id FROM delta_events WHERE path = ?1 AND is_agg = 1",
@@ -347,6 +349,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(table_count, 1);
+
+        let idx_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_delta_agg_path_time'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_count, 1);
     }
 
     #[test]
@@ -369,7 +380,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let total = query_delta_total(&conn, Path::new("/tmp/test.txt"), 0, 3000).unwrap();
         assert_eq!(total, 150);
@@ -377,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_query_delta_total_empty_range() {
-        let (mut conn, _) = setup_db();
+        let (conn, _) = setup_db();
         let total = query_delta_total(&conn, Path::new("/tmp/nonexistent"), 0, 3000).unwrap();
         assert_eq!(total, 0);
     }
@@ -402,7 +413,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let entries = query_delta_detail(&conn, Path::new("/tmp/test.txt"), 0, 3000).unwrap();
         assert_eq!(entries.len(), 2);
@@ -437,7 +448,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let entries = query_delta_detail(&conn, Path::new("/tmp/test.txt"), 1500, 2500).unwrap();
         assert_eq!(entries.len(), 1);
@@ -471,7 +482,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let summary = query_delta_summary(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
         assert_eq!(summary.event_count, 3);
@@ -507,7 +518,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let total_a = query_delta_total(&conn, Path::new("/tmp/a.txt"), 0, 3000).unwrap();
         let total_b = query_delta_total(&conn, Path::new("/tmp/b.txt"), 0, 3000).unwrap();
@@ -535,7 +546,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let deleted = purge_events_before(&conn, 2000).unwrap();
         assert_eq!(deleted, 1);
@@ -571,7 +582,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
         assert_eq!(total, 250);
@@ -600,7 +611,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let consolidated = consolidate_events(&mut conn, 10).unwrap();
         assert_eq!(consolidated, 0);
@@ -623,7 +634,7 @@ mod tests {
                 is_agg: false,
             });
         }
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let consolidated = consolidate_events(&mut conn, 10).unwrap();
         assert_eq!(consolidated, 15);
@@ -653,7 +664,7 @@ mod tests {
                 is_agg: false,
             });
         }
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let consolidated = consolidate_events(&mut conn, 10).unwrap();
         assert_eq!(consolidated, 15);
@@ -692,7 +703,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let consolidated = consolidate_events(&mut conn, 1).unwrap();
         assert_eq!(consolidated, 2);
@@ -750,7 +761,7 @@ mod tests {
                 is_agg: false,
             },
         ];
-        insert_events(&conn, &events).unwrap();
+        insert_events(&mut conn, &events).unwrap();
 
         let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
         assert_eq!(total, 300);

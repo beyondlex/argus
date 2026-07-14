@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -6,6 +6,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use ignore::WalkBuilder;
 
 use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, ROOT_NODE};
+
+// P9: skipped aggressive `WalkBuilder::build_parallel` — arena inserts and
+// hardlink `seen_inodes` are sequential; parallel path collect would need a
+// larger rewrite. Instead: reuse DirEntry metadata when available, and sort
+// children by name before snapshot finalize for deterministic order.
 
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
@@ -76,6 +81,8 @@ impl ProgressTracker {
 
 struct TreeBuilder {
     arena: Vec<FileNode>,
+    /// Scan-time O(1) child lookup; children Vec remains the public layout.
+    child_lookup: HashMap<NodeIndex, HashMap<String, NodeIndex>>,
 }
 
 impl TreeBuilder {
@@ -89,16 +96,12 @@ impl TreeBuilder {
                 size: 0,
                 children: Vec::new(),
             }],
+            child_lookup: HashMap::new(),
         }
     }
 
     fn find_or_create_child(&mut self, parent: NodeIndex, name: &str) -> NodeIndex {
-        if let Some(&idx) = self.arena[parent as usize]
-            .children
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, idx)| idx)
-        {
+        if let Some(&idx) = self.child_lookup.get(&parent).and_then(|m| m.get(name)) {
             return idx;
         }
         let new_idx = self.arena.len() as NodeIndex;
@@ -113,6 +116,10 @@ impl TreeBuilder {
         self.arena[parent as usize]
             .children
             .push((name.to_string(), new_idx));
+        self.child_lookup
+            .entry(parent)
+            .or_default()
+            .insert(name.to_string(), new_idx);
         new_idx
     }
 
@@ -138,6 +145,10 @@ impl TreeBuilder {
         self.arena[parent as usize]
             .children
             .push((name.to_string(), new_idx));
+        self.child_lookup
+            .entry(parent)
+            .or_default()
+            .insert(name.to_string(), new_idx);
     }
 
     fn ensure_path(&mut self, path: &Path, root_path: &Path) -> NodeIndex {
@@ -152,73 +163,88 @@ impl TreeBuilder {
     }
 }
 
-fn skeleton_walk(arena: &mut Vec<FileNode>, parent_idx: NodeIndex, path: &Path) {
+/// One FS walk for a skipped directory: skeleton dirs+files, hardlink-deduped
+/// size rollup, and progress updates (replaces walk_dir_size + skeleton_walk +
+/// patch_skeleton_sizes).
+fn walk_skip_dir(
+    arena: &mut Vec<FileNode>,
+    parent_idx: NodeIndex,
+    path: &Path,
+    cancel: &AtomicBool,
+    seen_inodes: &mut HashSet<(u64, u64)>,
+    progress: &mut ProgressTracker,
+) -> u64 {
+    if cancel.load(Ordering::Relaxed) {
+        return 0;
+    }
+
     let Ok(read_dir) = std::fs::read_dir(path) else {
-        return;
+        arena[parent_idx as usize].size = 0;
+        return 0;
     };
+
+    let mut total = 0u64;
     for entry in read_dir.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+
         let name = entry.file_name().to_string_lossy().to_string();
+        let entry_path = entry.path();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let file_type = if is_dir {
-            FileType::Directory
-        } else {
-            dir_entry_file_type(&entry)
+
+        if is_dir {
+            let new_idx = arena.len() as NodeIndex;
+            arena.push(FileNode {
+                name: name.clone(),
+                parent: Some(parent_idx),
+                is_dir: true,
+                file_type: FileType::Directory,
+                size: 0,
+                children: Vec::new(),
+            });
+            arena[parent_idx as usize].children.push((name, new_idx));
+            let sub = walk_skip_dir(arena, new_idx, &entry_path, cancel, seen_inodes, progress);
+            total = total.saturating_add(sub);
+            continue;
+        }
+
+        let file_type = dir_entry_file_type(&entry);
+        let meta = std::fs::symlink_metadata(&entry_path).ok();
+        let (size, contribute) = match &meta {
+            Some(m) if m.is_file() => {
+                let mut contribute = true;
+                if let (Ok(device), Ok(inode)) = (get_device(m), get_inode(m)) {
+                    if !seen_inodes.insert((device, inode)) {
+                        contribute = false;
+                    }
+                }
+                (m.len(), contribute)
+            }
+            Some(m) if m.is_symlink() => (0, false),
+            Some(m) => (m.len(), false),
+            None => (0, false),
         };
 
         let new_idx = arena.len() as NodeIndex;
         arena.push(FileNode {
             name: name.clone(),
             parent: Some(parent_idx),
-            is_dir,
+            is_dir: false,
             file_type,
-            size: 0,
+            size,
             children: Vec::new(),
         });
         arena[parent_idx as usize].children.push((name, new_idx));
 
-        if is_dir {
-            skeleton_walk(arena, new_idx, &entry.path());
+        if contribute {
+            total = total.saturating_add(size);
+            progress.record(1, size);
         }
     }
-}
 
-fn patch_skeleton_sizes(
-    arena: &mut [FileNode],
-    idx: NodeIndex,
-    path: &Path,
-    cancel: &AtomicBool,
-) -> u64 {
-    if cancel.load(Ordering::Relaxed) {
-        return 0;
-    }
-
-    if arena[idx as usize].is_dir {
-        let mut total = 0u64;
-        if let Ok(read_dir) = std::fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(child_idx) = arena[idx as usize]
-                    .children
-                    .iter()
-                    .find(|(n, _)| n == &name)
-                    .map(|(_, idx)| *idx)
-                {
-                    total = total.saturating_add(patch_skeleton_sizes(
-                        arena,
-                        child_idx,
-                        &entry.path(),
-                        cancel,
-                    ));
-                }
-            }
-        }
-        arena[idx as usize].size = total;
-        total
-    } else {
-        let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-        arena[idx as usize].size = size;
-        size
-    }
+    arena[parent_idx as usize].size = total;
+    total
 }
 
 pub fn scan_path(
@@ -274,17 +300,18 @@ pub fn scan_path(
             Err(_) => continue,
         };
 
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or_else(|| {
-            std::fs::symlink_metadata(entry.path())
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
-        });
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
 
         if is_dir {
             continue;
         }
 
-        let meta = match std::fs::symlink_metadata(entry.path()) {
+        // Prefer walk-cached metadata (follow_links=false → symlink meta) to
+        // avoid a redundant symlink_metadata syscall per file.
+        let meta = match entry
+            .metadata()
+            .or_else(|_| std::fs::symlink_metadata(entry.path()))
+        {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -311,20 +338,19 @@ pub fn scan_path(
             return Err(ScanError::Cancelled);
         }
 
-        let size = walk_dir_size(&skip_path, cancel, &mut seen_inodes, &mut progress);
-
         let parent_idx = tree.ensure_path(&skip_path, path);
-        skeleton_walk(&mut tree.arena, parent_idx, &skip_path);
-
-        {
-            let skip_node = &mut tree.arena[parent_idx as usize];
-            skip_node.size = size;
-        }
-
-        patch_skeleton_sizes(&mut tree.arena, parent_idx, &skip_path, cancel);
+        walk_skip_dir(
+            &mut tree.arena,
+            parent_idx,
+            &skip_path,
+            cancel,
+            &mut seen_inodes,
+            &mut progress,
+        );
     }
 
     compute_size(&mut tree.arena, ROOT_NODE);
+    sort_children_by_name(&mut tree.arena);
     let total_size = tree.arena[ROOT_NODE as usize].size;
     let snapshot = Snapshot::new(path.to_path_buf(), tree.arena, total_size);
 
@@ -505,7 +531,7 @@ fn compute_size(arena: &mut [FileNode], idx: NodeIndex) -> u64 {
         return arena[idx as usize].size;
     }
 
-    // Nodes already sized by skeleton_walk (skip-dirs): don't recompute
+    // Nodes already sized by walk_skip_dir: don't recompute
     if arena[idx as usize].size > 0 {
         return arena[idx as usize].size;
     }
@@ -523,61 +549,10 @@ fn compute_size(arena: &mut [FileNode], idx: NodeIndex) -> u64 {
     total
 }
 
-fn walk_dir_size(
-    path: &Path,
-    cancel: &AtomicBool,
-    seen_inodes: &mut HashSet<(u64, u64)>,
-    progress: &mut ProgressTracker,
-) -> u64 {
-    let (size, _) = walk_dir_size_impl(path, cancel, seen_inodes, Some(progress));
-    size
-}
-
-fn walk_dir_size_impl(
-    path: &Path,
-    cancel: &AtomicBool,
-    seen_inodes: &mut HashSet<(u64, u64)>,
-    mut progress: Option<&mut ProgressTracker>,
-) -> (u64, u64) {
-    let mut total = 0u64;
-    let mut count = 0u64;
-
-    let walker = WalkBuilder::new(path)
-        .follow_links(false)
-        .git_ignore(false)
-        .hidden(false)
-        .build();
-
-    for result in walker {
-        if cancel.load(Ordering::Relaxed) {
-            return (total, count);
-        }
-
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let meta = match std::fs::symlink_metadata(entry.path()) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        if meta.is_file() {
-            if let (Ok(device), Ok(inode)) = (get_device(&meta), get_inode(&meta)) {
-                if !seen_inodes.insert((device, inode)) {
-                    continue;
-                }
-            }
-            total = total.saturating_add(meta.len());
-            count += 1;
-            if let Some(progress) = progress.as_deref_mut() {
-                progress.record(1, meta.len());
-            }
-        }
+fn sort_children_by_name(arena: &mut [FileNode]) {
+    for node in arena.iter_mut() {
+        node.children.sort_by(|a, b| a.0.cmp(&b.0));
     }
-
-    (total, count)
 }
 
 #[cfg(test)]
@@ -818,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_walk_dir_size_counts_nested_files() {
+    fn test_walk_skip_dir_counts_nested_files() {
         let dir = TempDir::new().unwrap();
         let sub = dir.path().join("sub");
         fs::create_dir_all(sub.join("deep")).unwrap();
@@ -828,9 +803,63 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let mut seen = HashSet::new();
         let mut progress = ProgressTracker::new(None);
-        let (size, count) = walk_dir_size_impl(&sub, &cancel, &mut seen, Some(&mut progress));
+        let mut arena = vec![FileNode {
+            name: "sub".into(),
+            parent: None,
+            is_dir: true,
+            file_type: FileType::Directory,
+            size: 0,
+            children: Vec::new(),
+        }];
+        let size = walk_skip_dir(
+            &mut arena,
+            ROOT_NODE,
+            &sub,
+            &cancel,
+            &mut seen,
+            &mut progress,
+        );
         assert_eq!(size, 11);
-        assert_eq!(count, 2);
+        assert_eq!(arena[ROOT_NODE as usize].size, 11);
+        // skeleton includes dirs + files
+        assert!(arena.len() >= 4);
+    }
+
+    #[test]
+    fn test_find_or_create_child_many_siblings() {
+        let mut tree = TreeBuilder::new("root");
+        let n = 200;
+        for i in 0..n {
+            let name = format!("file_{i:03}");
+            let idx = tree.find_or_create_child(ROOT_NODE, &name);
+            assert_eq!(tree.arena[idx as usize].name, name);
+        }
+        assert_eq!(tree.arena[ROOT_NODE as usize].children.len(), n);
+        // Idempotent: same names resolve to existing nodes
+        for i in 0..n {
+            let name = format!("file_{i:03}");
+            let idx = tree.find_or_create_child(ROOT_NODE, &name);
+            assert_eq!(tree.arena[idx as usize].name, name);
+        }
+        assert_eq!(tree.arena[ROOT_NODE as usize].children.len(), n);
+    }
+
+    #[test]
+    fn test_scan_children_sorted_by_name() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("z.txt"), "z").unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::write(dir.path().join("m.txt"), "m").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None, &[]).unwrap();
+        let names: Vec<&str> = snapshot
+            .node(ROOT_NODE)
+            .children
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, vec!["a.txt", "m.txt", "z.txt"]);
     }
 
     #[test]

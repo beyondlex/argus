@@ -104,7 +104,8 @@ impl SortMode {
 #[derive(Debug, Clone)]
 pub struct SearchMatch {
     pub path: Vec<String>,
-    pub tree_idx: Option<usize>,
+    /// Index into `tree_lines` when the match is currently visible; `None` if collapsed.
+    pub tree_line_idx: Option<usize>,
     pub walk_idx: usize,
 }
 

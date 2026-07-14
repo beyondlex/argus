@@ -34,12 +34,14 @@ impl IpcClient {
         path: &Path,
         from_ms: u64,
         to_ms: u64,
+        include_entries: bool,
     ) -> Result<(i64, Vec<DeltaEntry>), String> {
         let resp = self
             .send_request(&DaemonRequest::GetDelta {
                 path: path.to_path_buf(),
                 from_ms,
                 to_ms,
+                include_entries,
             })
             .await?;
         match resp {

@@ -131,22 +131,8 @@ async fn handle_connection(
                 path,
                 from_ms,
                 to_ms,
-            } => {
-                let conn = db.lock().await;
-                match query_delta_total(&conn, &path, from_ms, to_ms) {
-                    Ok(total_delta) => {
-                        let entries =
-                            query_delta_detail(&conn, &path, from_ms, to_ms).unwrap_or_default();
-                        DaemonResponse::Delta {
-                            total_delta,
-                            entries,
-                        }
-                    }
-                    Err(e) => DaemonResponse::Error {
-                        message: e.to_string(),
-                    },
-                }
-            }
+                include_entries,
+            } => handle_get_delta(&db, path, from_ms, to_ms, include_entries).await,
             DaemonRequest::GetDeltaDetail {
                 path,
                 from_ms,
@@ -195,11 +181,85 @@ async fn handle_connection(
     Ok(())
 }
 
+async fn handle_get_delta(
+    db: &Arc<Mutex<Connection>>,
+    path: PathBuf,
+    from_ms: u64,
+    to_ms: u64,
+    include_entries: bool,
+) -> DaemonResponse {
+    let conn = db.lock().await;
+    match query_delta_total(&conn, &path, from_ms, to_ms) {
+        Ok(total_delta) => {
+            let entries = if include_entries {
+                query_delta_detail(&conn, &path, from_ms, to_ms).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            DaemonResponse::Delta {
+                total_delta,
+                entries,
+            }
+        }
+        Err(e) => DaemonResponse::Error {
+            message: e.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use argus_core::{insert_events, open_db, DeltaEntry};
+    use tempfile::tempdir;
+
     #[test]
     fn test_uds_path_location() {
         let path = argus_core::DEFAULT_UDS_PATH;
         assert!(path.contains("argusd.sock"));
+    }
+
+    #[tokio::test]
+    async fn test_get_delta_totals_only_returns_empty_entries() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("test.db");
+        let mut conn = open_db(&db_path).unwrap();
+        insert_events(
+            &mut conn,
+            &[DeltaEntry {
+                path: PathBuf::from("/tmp/a.txt"),
+                delta_size: 42,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            }],
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Arc::new(Mutex::new(open_db(&db_path).unwrap()));
+        let resp = handle_get_delta(&db, PathBuf::from("/tmp"), 0, 9999, false).await;
+        match resp {
+            DaemonResponse::Delta {
+                total_delta,
+                entries,
+            } => {
+                assert_eq!(total_delta, 42);
+                assert!(entries.is_empty());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let resp_full = handle_get_delta(&db, PathBuf::from("/tmp"), 0, 9999, true).await;
+        match resp_full {
+            DaemonResponse::Delta {
+                total_delta,
+                entries,
+            } => {
+                assert_eq!(total_delta, 42);
+                assert_eq!(entries.len(), 1);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }

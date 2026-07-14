@@ -124,7 +124,7 @@ impl App {
             log_path,
             &format!("fetch_deltas: connected in {:?}", t1 - t0),
         );
-        let (_total, entries) = match client.get_delta(view_root, from, to).await {
+        let (_total, entries) = match client.get_delta(view_root, from, to, true).await {
             Ok(r) => r,
             Err(e) => {
                 log_msg(log_path, &format!("fetch_deltas: query failed: {e}"));
@@ -291,9 +291,9 @@ mod tests {
         assert_eq!(snapshot.root_path, root);
 
         let db = temp.path().join("delta.db");
-        let conn = open_db(&db).expect("open db");
+        let mut conn = open_db(&db).expect("open db");
         let events = add_delta_events(&root);
-        insert_events(&conn, &events).expect("insert events");
+        insert_events(&mut conn, &events).expect("insert events");
 
         let entries = query_delta_detail(&conn, &root, 0, i64::MAX as u64).expect("query deltas");
         assert_eq!(entries.len(), events.len());
@@ -411,9 +411,9 @@ mod tests {
         touch_with_size(&root.join("target/debug/build/nested/leaf-b.bin"), 200);
 
         let db = temp.path().join("preagg.db");
-        let conn = open_db(&db).expect("open db");
+        let mut conn = open_db(&db).expect("open db");
         let events = preaggregated_delta_events(&root);
-        insert_events(&conn, &events).expect("insert events");
+        insert_events(&mut conn, &events).expect("insert events");
         let agg_path = root.join("target/debug/build");
         let agg_path_str = agg_path.to_string_lossy().to_string();
         let agg_path_ref = agg_path_str.as_str();
