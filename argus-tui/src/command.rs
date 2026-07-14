@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::time_utils::*;
 use crate::types::*;
-use ratatui_finder::{FinderState, FinderConfig, FinderMode};
+use ratatui_finder::{FinderConfig, FinderMode, FinderState};
 
 impl App {
     pub const COMMANDS: &'static [&'static str] = &[

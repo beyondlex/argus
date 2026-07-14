@@ -16,6 +16,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::Browsing => browsing::handle_browsing_key(key, app),
         AppMode::DeletePrompt => prompt::handle_delete_prompt_key(key, app),
         AppMode::DeletePermanentPrompt => prompt::handle_delete_permanent_prompt_key(key, app),
+        AppMode::Deleting => {} // ignore all keys during deletion
         AppMode::Help => prompt::handle_help_key(key, app),
         AppMode::TimeHelp => prompt::handle_time_help_key(key, app),
         AppMode::Command => command::handle_command_key(key, app),

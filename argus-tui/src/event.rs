@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph},
     Frame,
 };
 
@@ -82,9 +82,9 @@ fn next_poll_timeout(
     };
 
     let time_to_cursor = if app.search_mode == SearchMode::Input
-            || app.mode == AppMode::Command
-            || app.mode == AppMode::Finder
-        {
+        || app.mode == AppMode::Command
+        || app.mode == AppMode::Finder
+    {
         cursor_blink_rate.saturating_sub(last_cursor_tick.elapsed())
     } else {
         Duration::MAX
@@ -133,6 +133,10 @@ fn advance_timers(
     if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
         app.scan_spinner = (app.scan_spinner + 1) % 10;
         app.scan_spinner_tick = Instant::now();
+        dirty = true;
+    }
+
+    if app.deleting {
         dirty = true;
     }
 
@@ -250,6 +254,7 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     match app.mode {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
+        AppMode::Deleting => render_delete_progress(f, area, app),
         AppMode::Help => help_popup::render(f, area),
         AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll),
         AppMode::Command => command_bar::render(
@@ -484,9 +489,10 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled(&path_display, Style::default().fg(Color::White)),
-        ]),
+        Line::from(vec![Span::styled(
+            &path_display,
+            Style::default().fg(Color::White),
+        )]),
         Line::from(vec![Span::raw("")]),
         Line::from(vec![Span::styled(
             action_text,
@@ -496,6 +502,60 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
     .block(block)
     .alignment(Alignment::Center);
     f.render_widget(text, popup);
+}
+
+fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
+    let width_pct = 50;
+    let height_fixed: u16 = 3;
+
+    let horiz = Layout::horizontal([
+        Constraint::Percentage((100 - width_pct) / 2),
+        Constraint::Percentage(width_pct),
+        Constraint::Percentage((100 - width_pct) / 2),
+    ])
+    .split(area);
+
+    let height = height_fixed.min(area.height);
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect {
+        x: horiz[1].x,
+        y,
+        width: horiz[1].width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
+
+    let (current, total) = app.delete_progress.unwrap_or((0, 1));
+    let label = if app.delete_permanent {
+        "Permanently Deleting..."
+    } else {
+        "Moving to Trash..."
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ({}/{}) ", label, current, total))
+        .style(Style::default().fg(Color::Red).bg(Color::Black));
+
+    let ratio = if total > 0 {
+        current as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    let gauge = Gauge::default()
+        .block(block)
+        .gauge_style(
+            Style::default()
+                .fg(Color::Red)
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
+        .ratio(ratio)
+        .label(format!("{:.0}%", ratio * 100.0));
+
+    f.render_widget(gauge, popup);
 }
 
 #[cfg(test)]

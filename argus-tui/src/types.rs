@@ -10,12 +10,23 @@ use argus_core::{FileNode, FileType, NodeIndex, Snapshot};
 /// Messages from background tasks to the UI
 #[derive(Debug)]
 pub enum AppMessage {
-    ScanProgress { file_count: u64, total_bytes: u64 },
+    ScanProgress {
+        file_count: u64,
+        total_bytes: u64,
+    },
     ScanComplete(Snapshot),
     DaemonConnected(IpcClient),
     DaemonDisconnected,
     DeltaData(HashMap<Vec<String>, i64>, Option<IpcClient>),
     DeltaDetailLoaded(DeltaDetailState),
+    DeleteProgress {
+        current: u64,
+        total: u64,
+    },
+    DeleteComplete {
+        errors: Vec<String>,
+        paths: Vec<PathBuf>,
+    },
     Error(String),
     Info(String),
 }
@@ -31,10 +42,11 @@ pub enum AppMode {
     Browsing,
     DeletePrompt,
     DeletePermanentPrompt,
+    Deleting,
     Help,
     TimeHelp,
     Command,
-    Finder,              // Finder mode (Go to Path)
+    Finder, // Finder mode (Go to Path)
 }
 
 /// Which panel has focus

@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent};
+use tokio::sync::mpsc;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMessage, AppMode};
 
 pub(crate) fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
     handle_delete_common(key, app, |path| {
@@ -24,54 +25,65 @@ pub(crate) fn handle_delete_permanent_prompt_key(key: KeyEvent, app: &mut App) {
 
 pub(crate) fn handle_delete_common<F>(key: KeyEvent, app: &mut App, delete_fn: F)
 where
-    F: Fn(&Path) -> Result<String, String>,
+    F: Fn(&Path) -> Result<String, String> + Send + 'static,
 {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let is_batch = !app.delete_target_paths.is_empty();
             if is_batch {
-                // Batch delete
-                let paths = std::mem::take(&mut app.delete_target_paths);
-                let mut total_freed = 0u64;
-                let mut errors: Vec<String> = Vec::new();
-                for path in &paths {
-                    match delete_fn(path) {
-                        Ok(_msg) => {
-                            total_freed = total_freed
-                                .saturating_add(crate::tree_ops::apply_deletion_to_state(app, path));
-                        }
-                        Err(e) => {
+                let paths: Vec<PathBuf> = std::mem::take(&mut app.delete_target_paths);
+                let total = paths.len() as u64;
+                let tx = app.tx.clone();
+                app.deleting = true;
+                app.delete_progress = Some((0, total));
+                app.delete_permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
+                app.mode = AppMode::Deleting;
+
+                tokio::task::spawn_blocking(move || {
+                    let mut errors: Vec<String> = Vec::new();
+                    for (i, path) in paths.iter().enumerate() {
+                        if let Err(e) = delete_fn(path) {
                             errors.push(format!("{}: {}", path.display(), e));
                         }
+                        let _ = tx.blocking_send(AppMessage::DeleteProgress {
+                            current: (i + 1) as u64,
+                            total,
+                        });
                     }
-                }
-                if !errors.is_empty() {
-                    app.set_error(
-                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
-                        5,
-                    );
-                } else {
-                    app.set_error(format!("deleted {} item(s)", paths.len()), 3);
-                }
-                app.deleted_bytes = app.deleted_bytes.saturating_add(total_freed);
-                app.update_tree_lines();
-                app.exit_multi_select();
+                    let _ = tx.blocking_send(AppMessage::DeleteComplete { errors, paths });
+                });
             } else if let Some(path) = app.delete_target_path.clone() {
-                match delete_fn(&path) {
-                    Ok(msg) => {
-                        app.set_error(msg, 3);
-                        let freed = crate::tree_ops::apply_deletion_to_state(app, &path);
-                        app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
-                        app.update_tree_lines();
+                if path.is_dir() {
+                    let tx = app.tx.clone();
+                    let permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
+                    app.deleting = true;
+                    app.delete_progress = Some((0, 1));
+                    app.delete_permanent = permanent;
+                    app.mode = AppMode::Deleting;
+
+                    tokio::task::spawn_blocking(move || {
+                        let errors = delete_dir_progressive(&path, permanent, &tx);
+                        let _ = tx.blocking_send(AppMessage::DeleteComplete {
+                            errors,
+                            paths: vec![path],
+                        });
+                    });
+                } else {
+                    match delete_fn(&path) {
+                        Ok(msg) => {
+                            app.set_error(msg, 3);
+                            let freed = crate::tree_ops::apply_deletion_to_state(app, &path);
+                            app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
+                            app.update_tree_lines();
+                        }
+                        Err(e) => {
+                            app.set_error(format!("delete failed: {}", e), 5);
+                        }
                     }
-                    Err(e) => {
-                        app.set_error(format!("delete failed: {}", e), 5);
-                    }
+                    app.delete_target_path = None;
+                    app.mode = AppMode::Browsing;
                 }
             }
-            app.delete_target_path = None;
-            app.delete_target_paths.clear();
-            app.mode = AppMode::Browsing;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.delete_target_path = None;
@@ -80,6 +92,63 @@ where
         }
         _ => {}
     }
+}
+
+fn collect_items(path: &Path, items: &mut Vec<PathBuf>) {
+    items.push(path.to_path_buf());
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            collect_items(&entry.path(), items);
+        }
+    }
+}
+
+fn delete_dir_progressive(
+    path: &Path,
+    permanent: bool,
+    tx: &mpsc::Sender<AppMessage>,
+) -> Vec<String> {
+    let mut items = Vec::new();
+    collect_items(path, &mut items);
+
+    items.sort_by(|a, b| {
+        let depth_cmp = b.components().count().cmp(&a.components().count());
+        if depth_cmp != std::cmp::Ordering::Equal {
+            return depth_cmp;
+        }
+        let a_is_dir = a.is_dir();
+        let b_is_dir = b.is_dir();
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+
+    let total = items.len() as u64;
+    let _ = tx.blocking_send(AppMessage::DeleteProgress { current: 0, total });
+
+    let mut errors = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let result = if permanent {
+            if item.is_dir() {
+                std::fs::remove_dir(item)
+            } else {
+                std::fs::remove_file(item)
+            }
+            .map_err(|e| e.to_string())
+        } else {
+            trash::delete(item).map_err(|e| e.to_string())
+        };
+        if let Err(e) = result {
+            errors.push(format!("{}: {}", item.display(), e));
+        }
+        let _ = tx.blocking_send(AppMessage::DeleteProgress {
+            current: (i + 1) as u64,
+            total,
+        });
+    }
+    errors
 }
 
 pub(crate) fn handle_help_key(key: KeyEvent, app: &mut App) {
