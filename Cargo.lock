@@ -1479,7 +1479,6 @@ dependencies = [
  "anyhow",
  "crossterm",
  "ratatui",
- "tempfile",
 ]
 
 [[package]]

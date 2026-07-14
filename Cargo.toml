@@ -4,6 +4,5 @@ members = [
     "argus-cli",
     "argus-tui",
     "argusd",
-    "ratatui-finder",
 ]
 resolver = "2"
