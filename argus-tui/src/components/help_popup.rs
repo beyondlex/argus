@@ -1,33 +1,28 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Style},
+    layout::Rect,
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
+use crate::components::popup::{popup_block, PopupStyle};
 use crate::util::key_hints;
 
 /// Render the help popup overlay
 pub fn render(f: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(60, 80, area);
+    let popup_area = crate::components::popup::centered_rect(60, 80, area);
 
-    // Clear the area behind the popup
     f.render_widget(Clear, popup_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Help ")
-        .title_alignment(Alignment::Center)
-        .style(Style::default().fg(Color::White).bg(Color::Black));
+    let block = popup_block(" Help ", PopupStyle::Normal);
 
-    let _inner = block.inner(popup_area);
     let lines = vec![
         Line::from(vec![Span::styled(
             "Keyboard Shortcuts",
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(ratatui::style::Modifier::BOLD),
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw("")]),
         Line::from(key_hints(&[("j/k", "Move cursor up/down")])),
@@ -54,7 +49,7 @@ pub fn render(f: &mut Frame, area: Rect) {
             "Sort Modes:",
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(ratatui::style::Modifier::BOLD),
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw("  Name: Alphabetical by name")]),
         Line::from(vec![Span::raw("  Size: By total size (desc)")]),
@@ -64,7 +59,7 @@ pub fn render(f: &mut Frame, area: Rect) {
             "Filter Bar:",
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(ratatui::style::Modifier::BOLD),
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::raw(
             "  :Time <N>[m|h|d|w] | <from> to <to>  Set time range",
@@ -79,20 +74,4 @@ pub fn render(f: &mut Frame, area: Rect) {
         .block(block)
         .wrap(Wrap { trim: false });
     f.render_widget(text, popup_area);
-}
-
-pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(area);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }

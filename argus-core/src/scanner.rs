@@ -182,6 +182,45 @@ fn skeleton_walk(arena: &mut Vec<FileNode>, parent_idx: NodeIndex, path: &Path) 
     }
 }
 
+fn patch_skeleton_sizes(
+    arena: &mut [FileNode],
+    idx: NodeIndex,
+    path: &Path,
+    cancel: &AtomicBool,
+) -> u64 {
+    if cancel.load(Ordering::Relaxed) {
+        return 0;
+    }
+
+    if arena[idx as usize].is_dir {
+        let mut total = 0u64;
+        if let Ok(read_dir) = std::fs::read_dir(path) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if let Some(child_idx) = arena[idx as usize]
+                    .children
+                    .iter()
+                    .find(|(n, _)| n == &name)
+                    .map(|(_, idx)| *idx)
+                {
+                    total = total.saturating_add(patch_skeleton_sizes(
+                        arena,
+                        child_idx,
+                        &entry.path(),
+                        cancel,
+                    ));
+                }
+            }
+        }
+        arena[idx as usize].size = total;
+        total
+    } else {
+        let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        arena[idx as usize].size = size;
+        size
+    }
+}
+
 pub fn scan_path(
     path: &Path,
     cancel: &AtomicBool,
@@ -282,28 +321,7 @@ pub fn scan_path(
             skip_node.size = size;
         }
 
-        let child_ids = tree.arena[parent_idx as usize].children.clone();
-
-        let mut child_seen_inodes: HashSet<(u64, u64)> = HashSet::new();
-        if let Ok(read_dir) = std::fs::read_dir(&skip_path) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(child_idx) = child_ids
-                    .iter()
-                    .find(|(n, _)| n == &name)
-                    .map(|(_, idx)| *idx)
-                {
-                    let child = &mut tree.arena[child_idx as usize];
-                    if child.is_dir {
-                        let (child_size, _) =
-                            walk_dir_size_quiet(&entry.path(), cancel, &mut child_seen_inodes);
-                        child.size = child_size;
-                    } else if let Ok(meta) = entry.metadata() {
-                        child.size = meta.len();
-                    }
-                }
-            }
-        }
+        patch_skeleton_sizes(&mut tree.arena, parent_idx, &skip_path, cancel);
     }
 
     compute_size(&mut tree.arena, ROOT_NODE);
@@ -513,14 +531,6 @@ fn walk_dir_size(
 ) -> u64 {
     let (size, _) = walk_dir_size_impl(path, cancel, seen_inodes, Some(progress));
     size
-}
-
-fn walk_dir_size_quiet(
-    path: &Path,
-    cancel: &AtomicBool,
-    seen_inodes: &mut HashSet<(u64, u64)>,
-) -> (u64, u64) {
-    walk_dir_size_impl(path, cancel, seen_inodes, None)
 }
 
 fn walk_dir_size_impl(

@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::{App, AppMode, FilterFocus, Focus, SearchMode, TreeNode, DELTA_UNIT_LABELS};
-use crate::components::{command_bar, file_tree, help_popup, metadata, status_bar, time_help};
+use crate::components::{
+    command_bar, file_tree, help_popup, metadata, popup, status_bar, time_help,
+};
 use crate::handler;
 use crate::util::{format_size, key_hints};
 use argus_core::ROOT_NODE;
@@ -415,23 +417,14 @@ fn render_filter_pane(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     f.render_widget(block, area);
 }
 fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
-    // Fixed-height popup centered in the available area
-    let width_pct = 50;
     let height_fixed: u16 = 11;
-
-    let horiz = Layout::horizontal([
-        Constraint::Percentage((100 - width_pct) / 2),
-        Constraint::Percentage(width_pct),
-        Constraint::Percentage((100 - width_pct) / 2),
-    ])
-    .split(area);
-
+    let popup_area = popup::centered_rect(50, 70, area);
     let height = height_fixed.min(area.height);
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect {
-        x: horiz[1].x,
+        x: popup_area.x,
         y,
-        width: horiz[1].width,
+        width: popup_area.width,
         height,
     };
 
@@ -477,11 +470,8 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
         )
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_bottom(Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])).centered())
-        .style(Style::default().fg(Color::Red).bg(Color::Black));
+    let block = popup::popup_block(title, popup::PopupStyle::Danger)
+        .title_bottom(Line::from(key_hints(&[("y", confirm_label), ("n", "Cancel")])).centered());
 
     let text = Paragraph::new(vec![
         Line::from(vec![Span::styled(
@@ -505,22 +495,14 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
 }
 
 fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
-    let width_pct = 50;
     let height_fixed: u16 = 3;
-
-    let horiz = Layout::horizontal([
-        Constraint::Percentage((100 - width_pct) / 2),
-        Constraint::Percentage(width_pct),
-        Constraint::Percentage((100 - width_pct) / 2),
-    ])
-    .split(area);
-
+    let popup_area = popup::centered_rect(50, 20, area);
     let height = height_fixed.min(area.height);
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup = Rect {
-        x: horiz[1].x,
+        x: popup_area.x,
         y,
-        width: horiz[1].width,
+        width: popup_area.width,
         height,
     };
 
@@ -533,10 +515,10 @@ fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
         "Moving to Trash..."
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ({}/{}) ", label, current, total))
-        .style(Style::default().fg(Color::Red).bg(Color::Black));
+    let block = popup::popup_block(
+        format!(" {} ({}/{}) ", label, current, total),
+        popup::PopupStyle::Danger,
+    );
 
     let ratio = if total > 0 {
         current as f64 / total as f64

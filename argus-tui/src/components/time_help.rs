@@ -1,11 +1,12 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
+use crate::components::popup::{popup_block, PopupStyle};
 use crate::util::key_hints;
 
 fn section(text: &str) -> Span<'static> {
@@ -61,18 +62,14 @@ fn all_lines() -> Vec<Line<'static>> {
 }
 
 pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize) {
-    let popup_area = centered_rect(55, 60, area);
+    let popup_area = crate::components::popup::centered_rect(55, 60, area);
 
     f.render_widget(Clear, popup_area);
 
     let lines = all_lines();
     let total = lines.len();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Time Command ")
-        .title_alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Cyan).bg(Color::Black));
+    let block = popup_block(" Time Command ", PopupStyle::Normal);
 
     let inner = block.inner(popup_area);
     let visible_height = inner.height.saturating_sub(1) as usize;
@@ -98,31 +95,11 @@ pub fn render(f: &mut Frame, area: Rect, scroll: &mut usize) {
     };
 
     let title = format!(" Time Command{scroll_indicator} ");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_alignment(Alignment::Center)
-        .title_bottom(key_hints(&[("j/k", "scroll"), ("Esc", "Close")]))
-        .style(Style::default().fg(Color::Cyan).bg(Color::Black));
+    let block = popup_block(title, PopupStyle::Normal)
+        .title_bottom(key_hints(&[("j/k", "scroll"), ("Esc", "Close")]));
 
     let text = Paragraph::new(visible_lines)
         .block(block)
         .wrap(Wrap { trim: false });
     f.render_widget(text, popup_area);
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(area);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
 }

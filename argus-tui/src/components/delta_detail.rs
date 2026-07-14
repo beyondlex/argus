@@ -5,14 +5,14 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Row, Table},
+    widgets::{Cell, Clear, Row, Table},
     Frame,
 };
 
 use argus_core::DeltaEntry;
 
 use crate::app::App;
-use crate::components::help_popup;
+use crate::components::popup::{popup_block, PopupStyle};
 use crate::types::*;
 use crate::util::{display_path, format_delta};
 
@@ -69,7 +69,7 @@ async fn fetch_delta_detail(
 fn build_detail_state(path: &Path, entries: &[DeltaEntry]) -> DeltaDetailState {
     // Group entries by direct child (first component after selected path)
     let mut exact_events: Vec<DeltaEntry> = Vec::new();
-    let mut agg_children: HashMap<String, (i64, u64)> = HashMap::new(); // (sum, latest_ts)
+    let mut agg_children: HashMap<String, (i64, u64)> = HashMap::new();
 
     for entry in entries {
         let Ok(relative) = entry.path.strip_prefix(path) else {
@@ -82,10 +82,8 @@ fn build_detail_state(path: &Path, entries: &[DeltaEntry]) -> DeltaDetailState {
         let child_name = first.as_os_str().to_string_lossy().to_string();
 
         if components.next().is_none() {
-            // Exact match: path == selected/<child>
             exact_events.push(entry.clone());
         } else {
-            // Deeper: aggregate under <child>
             let (sum, latest) = agg_children.entry(child_name).or_insert((0, 0));
             *sum += entry.delta_size;
             if entry.timestamp > *latest {
@@ -96,7 +94,6 @@ fn build_detail_state(path: &Path, entries: &[DeltaEntry]) -> DeltaDetailState {
 
     let mut rows: Vec<DeltaDetailRow> = Vec::new();
 
-    // Add exact-match rows (individual raw events)
     for entry in &exact_events {
         let child_name = entry
             .path
@@ -114,7 +111,6 @@ fn build_detail_state(path: &Path, entries: &[DeltaEntry]) -> DeltaDetailState {
         });
     }
 
-    // Add aggregated rows (one per directory child)
     for (child_name, (sum, ts)) in &agg_children {
         rows.push(DeltaDetailRow {
             timestamp: format_timestamp(*ts),
@@ -125,7 +121,6 @@ fn build_detail_state(path: &Path, entries: &[DeltaEntry]) -> DeltaDetailState {
         });
     }
 
-    // Sort by timestamp descending, then by path ascending
     rows.sort_by(|a, b| {
         b.timestamp
             .cmp(&a.timestamp)
@@ -150,7 +145,7 @@ fn format_timestamp(ts_ms: u64) -> String {
 
 /// Render the delta detail popup
 pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
-    let popup = help_popup::centered_rect(70, 65, area);
+    let popup = crate::components::popup::centered_rect(70, 65, area);
     f.render_widget(Clear, popup);
 
     let entry_count = state.entries.len();
@@ -169,25 +164,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
     } else {
         format!(" {} entries · [Esc close] ", entry_count)
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray))
-        .title(total_title.as_str())
-        .title_bottom(Line::from(footer.as_str()).right_aligned())
-        .title_style(Style::default().fg(Color::Cyan))
-        .style(Style::default().fg(Color::Cyan).bg(Color::Black));
+    let block = popup_block(total_title, PopupStyle::Normal)
+        .title_bottom(Line::from(footer).right_aligned());
 
     let inner = block.inner(popup);
     let scroll = state.scroll;
 
-    // Column constraints: time fixed, path expands, delta fixed right-aligned
     let widths = [
-        Constraint::Length(22), // timestamp + prefix
-        Constraint::Fill(1),    // path fills remaining space
-        Constraint::Length(15), // delta right-aligned
+        Constraint::Length(22),
+        Constraint::Fill(1),
+        Constraint::Length(15),
     ];
 
-    // Header row
     let header = Row::new(vec![
         Cell::from(Span::styled(
             "Time",
@@ -208,14 +196,12 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
                 .add_modifier(Modifier::BOLD),
         )),
     ])
-    .style(Style::default().bg(Color::Black))
+    .style(Style::default().bg(crate::components::popup::POPUP_BG))
     .height(1);
 
     let mut rows: Vec<Row> = Vec::new();
 
-    if state.entries.is_empty() {
-        // No data row needed, the table will be empty
-    } else {
+    if !state.entries.is_empty() {
         let visible_count = (inner.height as usize).saturating_sub(2);
         for i in scroll..(scroll + visible_count).min(state.entries.len()) {
             let row = &state.entries[i];
@@ -240,7 +226,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState) {
                         delta_style,
                     )),
                 ])
-                .style(Style::default().bg(Color::Black))
+                .style(Style::default().bg(crate::components::popup::POPUP_BG))
                 .height(1),
             );
         }

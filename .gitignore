@@ -1,9 +1,6 @@
 
 ignore/
 target/
-tmp/
 .idea/
 reasonix.toml
-10mb
-20mb
 .DS_Store

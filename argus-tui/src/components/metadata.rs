@@ -7,23 +7,19 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
-use crate::components::help_popup::centered_rect;
+use crate::components::popup::{popup_block, PopupStyle};
 use crate::util;
 use crate::util::key_hints;
 
 /// Render a centered popup with file metadata
 pub fn render(f: &mut Frame, area: Rect, path: &Path, metadata: &std::fs::Metadata) {
-    let popup_area = centered_rect(60, 40, area);
+    let popup_area = crate::components::popup::centered_rect(60, 40, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .title(" File Info ")
-        .title_alignment(ratatui::layout::Alignment::Center);
+    let block = popup_block(" File Info ", PopupStyle::Normal);
 
     let type_str = if metadata.is_dir() {
         "Directory"

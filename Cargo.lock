@@ -1474,9 +1474,9 @@ dependencies = [
 
 [[package]]
 name = "ratatui-finder"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07070e3ac381cf534a84082af9b1781fa7b02ee68fce364796fe4db2566f42a6"
+checksum = "00f047072566b86655f5ee4a7e3c13ace707164a91650ef161e594edf6997bee"
 dependencies = [
  "anyhow",
  "crossterm",

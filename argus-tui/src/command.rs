@@ -1,7 +1,9 @@
 use crate::app::App;
 use crate::time_utils::*;
 use crate::types::*;
-use ratatui_finder::{FinderConfig, FinderMode, FinderState};
+use ratatui::style::Color;
+use ratatui::widgets::BorderType;
+use ratatui_finder::{FinderColors, FinderConfig, FinderMode, FinderState};
 
 impl App {
     pub const COMMANDS: &'static [&'static str] = &[
@@ -227,6 +229,13 @@ impl App {
         self.finder_state = Some(FinderState::new(FinderConfig {
             mode: FinderMode::Dir,
             initial_path: self.view_root_path.to_string_lossy().to_string(),
+            title: " Go to Path ".to_string(),
+            border_type: BorderType::Plain,
+            colors: FinderColors {
+                border_fg: Color::White,
+                border_bg: Color::Black,
+                ..Default::default()
+            },
             ..Default::default()
         }));
         self.mode = AppMode::Finder;
