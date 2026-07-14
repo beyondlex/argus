@@ -235,6 +235,7 @@ fn render_main_content(
 
 fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let error_str = app.last_error.as_deref();
+    let status_is_error = app.status_is_error;
     let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
@@ -247,6 +248,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         scan_elapsed,
         app.last_scan_summary.as_ref(),
         error_str,
+        status_is_error,
         app.server_connected,
         app.sort_mode,
         app.multi_select,

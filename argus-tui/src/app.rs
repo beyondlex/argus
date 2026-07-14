@@ -93,8 +93,9 @@ pub struct App {
     pub tx: mpsc::Sender<AppMessage>,
     pub rx: mpsc::Receiver<AppMessage>,
 
-    // Error display
+    // Status message display (error or info)
     pub last_error: Option<String>,
+    pub status_is_error: bool,
     pub error_clear_at: Option<std::time::Instant>,
 
     // Log file path (~/.config/argus/argus.log)
@@ -199,6 +200,7 @@ impl App {
             command_history_idx: None,
             rx,
             last_error: None,
+            status_is_error: false,
             error_clear_at: None,
             log_path,
             time_help_scroll: 0,
@@ -337,7 +339,7 @@ impl App {
                 self.server_connected = true;
                 self.daemon_client = Some(client);
                 self.default_time_range();
-                self.set_error("connected to daemon".into(), 2);
+                self.set_info("connected to daemon".into(), 2);
                 self.request_delta_refresh();
             }
             AppMessage::DaemonDisconnected => {
@@ -396,7 +398,7 @@ impl App {
                         5,
                     );
                 } else {
-                    self.set_error(format!("deleted {} item(s)", paths.len()), 3);
+                    self.set_info(format!("deleted {} item(s)", paths.len()), 3);
                 }
             }
         }
@@ -553,6 +555,7 @@ impl App {
     /// Set error message and log to file.
     pub fn set_error(&mut self, msg: String, duration_secs: u64) {
         self.last_error = Some(msg.clone());
+        self.status_is_error = true;
         self.error_clear_at =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
         let now = chrono::Local::now();
@@ -562,6 +565,14 @@ impl App {
             .append(true)
             .open(&self.log_path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    }
+
+    /// Set info/status message (not an error). Displayed in status bar with success color.
+    pub fn set_info(&mut self, msg: String, duration_secs: u64) {
+        self.last_error = Some(msg);
+        self.status_is_error = false;
+        self.error_clear_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
     }
 
     /// Return the relative path of the tree line at `idx` (into filtered view), rooted at `view_root_path`.

@@ -186,7 +186,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
 /// Handle delete action in multi-select mode
 fn handle_multi_delete_action(app: &mut App, permanent: bool) {
     if app.selected_paths.is_empty() {
-        app.set_error("no items selected".into(), 3);
+        app.set_info("no items selected".into(), 3);
         return;
     }
     let mut paths = app.selected_paths_full();
@@ -231,11 +231,11 @@ pub(crate) fn handle_gg_double_tap(app: &mut App) {
 pub(crate) fn handle_time_toggle(app: &mut App) {
     if app.time_custom {
         app.set_time_preset(0);
-        app.set_error(format!("time range: {}", App::time_preset_label(0)), 2);
+        app.set_info(format!("time range: {}", App::time_preset_label(0)), 2);
     } else {
         let next = (app.time_preset + 1) % crate::app::TIME_PRESET_COUNT;
         app.set_time_preset(next);
-        app.set_error(format!("time range: {}", App::time_preset_label(next)), 2);
+        app.set_info(format!("time range: {}", App::time_preset_label(next)), 2);
     }
     app.request_delta_refresh();
 }
@@ -282,7 +282,7 @@ pub(crate) fn handle_copy_path(app: &mut App) {
         Ok(mut cb) => {
             let path_str = path.display().to_string();
             if cb.set_text(path_str.clone()).is_ok() {
-                app.set_error(format!("copied: {}", path_str), 2);
+                app.set_info(format!("copied: {}", path_str), 2);
             } else {
                 app.set_error("clipboard write failed".into(), 3);
             }

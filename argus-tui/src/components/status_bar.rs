@@ -27,6 +27,7 @@ pub fn render(
     scan_elapsed: Option<Duration>,
     scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
+    status_is_error: bool,
     server_connected: bool,
     sort_mode: SortMode,
     multi_select: bool,
@@ -145,12 +146,14 @@ pub fn render(
         ));
     }
 
-    if let Some(err) = has_error {
+    if let Some(msg) = has_error {
         left_spans.push(Span::raw("   "));
-        left_spans.push(Span::styled(
-            err,
-            Style::default().fg(theme.danger).bg(theme.bg),
-        ));
+        let fg = if status_is_error {
+            theme.danger
+        } else {
+            theme.success
+        };
+        left_spans.push(Span::styled(msg, Style::default().fg(fg).bg(theme.bg)));
     }
 
     // Right side: sort mode indicator

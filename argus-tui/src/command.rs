@@ -1,7 +1,6 @@
 use crate::app::App;
 use crate::time_utils::*;
 use crate::types::*;
-use ratatui::style::Color;
 use ratatui::widgets::BorderType;
 use ratatui_finder::{FinderColors, FinderConfig, FinderMode, FinderState};
 
@@ -232,9 +231,19 @@ impl App {
             title: " Go to Path ".to_string(),
             border_type: BorderType::Plain,
             colors: FinderColors {
-                border_fg: Color::White,
-                border_bg: Color::Black,
-                ..Default::default()
+                border_fg: self.theme.popup_border_normal,
+                border_bg: self.theme.bg,
+                input_fg: self.theme.text,
+                input_bg: self.theme.bg,
+                hint_fg: self.theme.text_tertiary,
+                hint_bg: self.theme.bg,
+                selected_bg: self.theme.success,
+                selected_fg: self.theme.focus_fg,
+                normal_bg: self.theme.popup_bg,
+                normal_fg: self.theme.text,
+                match_fg: self.theme.success,
+                path_fg: self.theme.text_tertiary,
+                separator_fg: self.theme.text_tertiary,
             },
             ..Default::default()
         }));
