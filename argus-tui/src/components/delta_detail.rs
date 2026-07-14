@@ -29,7 +29,7 @@ pub fn load_delta_detail(app: &mut App, path: &Path) {
         return;
     }
 
-    app.set_info("loading delta detail...".into(), 5);
+    app.set_info("loading delta detail...".into(), 1);
     let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
     let from = app.time_from;
     let to = app.time_to;

@@ -45,15 +45,6 @@ pub fn render(
         ));
     }
 
-    // Daemon status indicator
-    let (status_text, status_color) = if server_connected {
-        (" ● Daemon", theme.success)
-    } else {
-        (" ○ Daemon", theme.text_tertiary)
-    };
-    left_spans.push(Span::raw("   "));
-    left_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
-
     if matches!(mode, AppMode::DeletePrompt | AppMode::DeletePermanentPrompt) {
         left_spans.push(Span::styled(
             " DELETE CONFIRM ",
@@ -69,7 +60,17 @@ pub fn render(
         ));
     }
 
+    // Daemon status indicator
+    let (status_text, status_color) = if server_connected {
+        (" ● Daemon", theme.success)
+    } else {
+        (" ○ Daemon", theme.text_tertiary)
+    };
+    left_spans.push(Span::raw("   "));
+    left_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+
     if scanning {
+        left_spans.push(Span::raw(" Scanning "));
         left_spans.push(Span::styled(
             util::display_path(view_root_path),
             Style::default().fg(theme.text_secondary),
