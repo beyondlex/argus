@@ -24,6 +24,13 @@ pub enum DaemonRequest {
     ClearDb,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WatchDirInfo {
+    pub path: PathBuf,
+    pub include: Option<String>,
+    pub exclude: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum DaemonResponse {
     Delta {
@@ -36,7 +43,7 @@ pub enum DaemonResponse {
     Pong,
     Status {
         version: String,
-        watch_dirs: Vec<PathBuf>,
+        watch_dirs: Vec<WatchDirInfo>,
         uptime_secs: u64,
         start_time_secs: u64,
         log_level: Option<String>,
@@ -128,7 +135,11 @@ mod tests {
     fn test_get_status_roundtrip() {
         let resp = DaemonResponse::Status {
             version: "0.1.0".into(),
-            watch_dirs: vec![PathBuf::from("/tmp")],
+            watch_dirs: vec![WatchDirInfo {
+                path: PathBuf::from("/tmp"),
+                include: None,
+                exclude: None,
+            }],
             uptime_secs: 42,
             start_time_secs: 1700000000,
             log_level: Some("info".into()),
@@ -152,7 +163,9 @@ mod tests {
                 db_size_bytes,
             } => {
                 assert_eq!(version, "0.1.0");
-                assert_eq!(watch_dirs, vec![PathBuf::from("/tmp")]);
+                assert_eq!(watch_dirs.len(), 1);
+                assert_eq!(watch_dirs[0].path, PathBuf::from("/tmp"));
+                assert!(watch_dirs[0].include.is_none());
                 assert_eq!(uptime_secs, 42);
                 assert_eq!(start_time_secs, 1700000000);
                 assert_eq!(log_level, Some("info".into()));

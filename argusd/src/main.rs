@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::EnvFilter;
 
-use argus_core::{init_db, open_db, DeltaEvent};
+use argus_core::{init_db, open_db, DeltaEvent, WatchDirInfo};
 use daemonize::{DaemonGuard, ServiceTemplate};
 
 pub(crate) static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
@@ -111,7 +111,7 @@ async fn run(args: Args) {
         config.uds_path = uds_path.clone();
     }
 
-    tracing::info!("argusd starting, watching {:?}", config.watch_dirs);
+    tracing::info!("argusd starting, watching {:?}", config.watch_dirs.iter().map(|w| &w.path).collect::<Vec<_>>());
 
     let db_path = argus_core::default_db_path();
     let conn = open_db(&db_path).expect("failed to open database");
@@ -133,8 +133,17 @@ async fn run(args: Args) {
     let retention_handle = retention::start_retention_worker(retention_db, config.clone());
 
     let ipc_db = db.clone();
+    let watch_dir_info: Vec<WatchDirInfo> = config
+        .watch_dirs
+        .iter()
+        .map(|wd| WatchDirInfo {
+            path: wd.path.clone(),
+            include: wd.include.as_ref().map(|g| g.glob().to_string()),
+            exclude: wd.exclude.as_ref().map(|g| g.glob().to_string()),
+        })
+        .collect();
     let ipc_cfg = ipc_server::ServerConfig {
-        watch_dirs: config.watch_dirs.clone(),
+        watch_dirs: watch_dir_info,
         log_level: config.log_level.clone(),
         debounce_seconds: config.debounce_seconds,
         delta_retention_days: config.delta_retention_days,

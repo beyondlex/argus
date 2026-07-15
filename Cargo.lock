@@ -187,6 +187,7 @@ dependencies = [
  "bincode",
  "clap",
  "ctrlc",
+ "globset",
  "libc",
  "notify",
  "rusqlite",

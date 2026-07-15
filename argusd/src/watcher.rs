@@ -14,6 +14,7 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
 use argus_core::DeltaEvent;
+use crate::config::WatchDir;
 
 /// Cap for `size_cache` / `hardlink_cache`. Past this, drop roughly half so
 /// long-lived daemons do not grow unbounded. Hardlink dedup still works for
@@ -104,6 +105,15 @@ where
     for k in keys {
         map.remove(&k);
     }
+}
+
+/// Find the matching watch dir with the longest path prefix.
+/// Returns None if the event path is not under any watched directory.
+fn match_watch_dir<'a>(path: &Path, watch_dirs: &'a [WatchDir]) -> Option<&'a WatchDir> {
+    watch_dirs
+        .iter()
+        .filter(|wd| path.starts_with(&wd.path))
+        .max_by_key(|wd| wd.path.as_os_str().len())
 }
 
 fn event_to_delta(
@@ -202,7 +212,7 @@ fn is_ignored(path: &Path) -> bool {
 }
 
 pub fn start_watcher(
-    watch_dirs: Vec<PathBuf>,
+    watch_dirs: Vec<WatchDir>,
     event_tx: mpsc::Sender<DeltaEvent>,
 ) -> Arc<AtomicBool> {
     let running = Arc::new(AtomicBool::new(true));
@@ -214,7 +224,8 @@ pub fn start_watcher(
         let mut watcher: RecommendedWatcher =
             Watcher::new(tx, Config::default()).expect("failed to create watcher");
 
-        for dir in &watch_dirs {
+        for wd in &watch_dirs {
+            let dir = wd.path();
             if dir.exists() {
                 watcher
                     .watch(dir, RecursiveMode::Recursive)
@@ -222,6 +233,13 @@ pub fn start_watcher(
                         tracing::warn!("cannot watch {dir:?}: {e}");
                     });
                 tracing::info!("watching {dir:?}");
+                if wd.include.is_some() || wd.exclude.is_some() {
+                    tracing::info!(
+                        "  filters: include={:?}, exclude={:?}",
+                        wd.include.as_ref().map(|g| g.glob()),
+                        wd.exclude.as_ref().map(|g| g.glob()),
+                    );
+                }
             } else {
                 tracing::warn!("watch dir {dir:?} does not exist, skipping");
             }
@@ -241,6 +259,12 @@ pub fn start_watcher(
                         event_to_delta(&event.kind, &event.paths, &mut state, timestamp);
 
                     for ev in delta_events {
+                        let keep = match_watch_dir(&ev.path, &watch_dirs)
+                            .map(|wd| wd.matches(&ev.path))
+                            .unwrap_or(false);
+                        if !keep {
+                            continue;
+                        }
                         if event_tx.blocking_send(ev).is_err() {
                             tracing::error!("event channel closed");
                             return;
@@ -267,8 +291,67 @@ pub fn start_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use globset::GlobBuilder;
     use std::fs;
     use tempfile::tempdir;
+
+    fn glob(pattern: &str) -> globset::Glob {
+        GlobBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_match_watch_dir_longest_prefix_wins() {
+        let dirs = vec![
+            WatchDir {
+                path: PathBuf::from("/home/user"),
+                include: None,
+                exclude: None,
+            },
+            WatchDir {
+                path: PathBuf::from("/home/user/downloads"),
+                include: Some(glob("*.pdf")),
+                exclude: None,
+            },
+        ];
+
+        // Under /home/user/downloads -> second watch dir (longer prefix)
+        let matched = match_watch_dir(PathBuf::from("/home/user/downloads/report.pdf").as_path(), &dirs);
+        assert!(matched.is_some());
+        assert_eq!(matched.unwrap().path, PathBuf::from("/home/user/downloads"));
+        assert!(matched.unwrap().include.is_some());
+
+        // Under /home/user but not /home/user/downloads -> first watch dir
+        let matched = match_watch_dir(PathBuf::from("/home/user/docs/file.txt").as_path(), &dirs);
+        assert!(matched.is_some());
+        assert_eq!(matched.unwrap().path, PathBuf::from("/home/user"));
+
+        // Outside all watch dirs
+        let matched = match_watch_dir(PathBuf::from("/other/file.txt").as_path(), &dirs);
+        assert!(matched.is_none());
+    }
+
+    #[test]
+    fn test_match_watch_dir_identical_paths() {
+        let dirs = vec![
+            WatchDir {
+                path: PathBuf::from("/tmp"),
+                include: None,
+                exclude: None,
+            },
+            WatchDir {
+                path: PathBuf::from("/tmp"),
+                include: Some(glob("*.log")),
+                exclude: None,
+            },
+        ];
+
+        // Both have same prefix length; any match is valid
+        let matched = match_watch_dir(PathBuf::from("/tmp/test.log").as_path(), &dirs);
+        assert!(matched.is_some());
+    }
 
     #[test]
     fn test_create_event() {
@@ -414,7 +497,6 @@ mod tests {
     #[test]
     fn test_cache_evicts_when_over_max() {
         let mut state = WatcherState::new();
-        // Use a tiny local max via direct trim to avoid inserting 100k entries.
         for i in 0..10 {
             state
                 .size_cache

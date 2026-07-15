@@ -90,8 +90,23 @@ custom_ignore_paths = [
 
 ```toml
 [daemon]
-# 监控的根目录列表
-watch_dirs = ["/home/user", "/var/log"]
+# 监控的根目录列表（支持纯路径字符串或带过滤规则的结构化格式）
+# 冲突规则：路径前缀最长的 watch_dir 的 filter 生效
+watch_dirs = [
+    "/home/user/docs",
+    { path = "/home/user/downloads", include = "*.{pdf,iso,dmg}" },
+    { path = "/var/log", include = "*.log", exclude = "*.gz" },
+]
+
+# include/exclude 的 glob 语法（基于 globset 库，默认不区分大小写）：
+#   *        任意字符（无 / 时跨目录，有 / 时单级）
+#   **       任意字符跨目录（必须独立使用，如 a/**/b 或 **）
+#   ?        单个字符
+#   [abc]    集合中的一个字符
+#   [!abc]   不在集合中的字符
+#   {a,b,c}  多选一
+#   \        转义
+# 参考: https://docs.rs/globset/latest/globset/#syntax
 
 # 事件去抖延迟（秒）
 debounce_seconds = 10

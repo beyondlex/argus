@@ -11,12 +11,12 @@ use tracing::{error, info, warn};
 
 use argus_core::{
     clear_all_events, consolidate_events, query_db_size, query_delta_detail, query_delta_total,
-    query_event_count, DaemonRequest, DaemonResponse,
+    query_event_count, DaemonRequest, DaemonResponse, WatchDirInfo,
 };
 
 #[derive(Clone)]
 pub struct ServerConfig {
-    pub watch_dirs: Vec<PathBuf>,
+    pub watch_dirs: Vec<WatchDirInfo>,
     pub log_level: Option<String>,
     pub debounce_seconds: u64,
     pub delta_retention_days: u64,

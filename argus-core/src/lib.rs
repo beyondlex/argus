@@ -8,7 +8,7 @@ pub use db::{
     purge_events_before, query_db_size, query_delta_detail, query_delta_summary, query_delta_total,
     query_event_count, DbError,
 };
-pub use ipc::{DaemonRequest, DaemonResponse, DEFAULT_UDS_PATH};
+pub use ipc::{DaemonRequest, DaemonResponse, WatchDirInfo, DEFAULT_UDS_PATH};
 pub use model::{
     hash_root_path, parse_human_size, DeltaEntry, DeltaEvent, DeltaSummary, FileNode, FileType,
     NodeIndex, ParseSizeError, ScanError, Snapshot, SnapshotError, ROOT_NODE, SNAPSHOT_VERSION,

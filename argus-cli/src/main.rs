@@ -222,7 +222,14 @@ fn cmd_status() -> Result<i32> {
                 println!("db_size: {}", format_size(db_size_bytes));
                 println!("watch_dirs:");
                 for dir in &watch_dirs {
-                    println!("  {}", dir.display());
+                    let mut line = format!("  {}", dir.path.display());
+                    if let Some(ref include) = dir.include {
+                        line.push_str(&format!(" (include: {include})"));
+                    }
+                    if let Some(ref exclude) = dir.exclude {
+                        line.push_str(&format!(" (exclude: {exclude})"));
+                    }
+                    println!("{line}");
                 }
                 Ok(0i32)
             }
