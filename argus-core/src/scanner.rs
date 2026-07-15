@@ -204,6 +204,7 @@ fn walk_skip_dir(
                 children: Vec::new(),
             });
             arena[parent_idx as usize].children.push((name, new_idx));
+            progress.record_files_only(1);
             let sub = walk_skip_dir(arena, new_idx, &entry_path, cancel, seen_inodes, progress);
             total = total.saturating_add(sub);
             continue;
@@ -303,6 +304,7 @@ pub fn scan_path(
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
 
         if is_dir {
+            progress.record_files_only(1);
             continue;
         }
 
@@ -863,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_progress_does_not_double_count_skipped_dir_children() {
+    fn test_scan_progress_counts_dirs_and_files() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("readme.md"), "project").unwrap();
 
@@ -880,7 +882,8 @@ mod tests {
         let final_update = rx.try_iter().last().unwrap();
         assert_eq!(final_update.total_bytes, snapshot.total_size);
         assert_eq!(final_update.total_bytes, 7 + 18 + 15);
-        assert_eq!(final_update.file_count, 3);
+        // file_count includes directories too (readme.md + node_modules/pkg/index.js/lib.js + 3 skip-dir entries)
+        assert_eq!(final_update.file_count, 6);
     }
 
     #[test]
