@@ -16,7 +16,6 @@ use crate::util;
 use crate::util::key_hints;
 
 const SCROLL_MARGIN: usize = 3;
-const NAME_FIXED_WIDTH: u16 = 30;
 const DELTA_WIDTH: usize = 12;
 const SIZE_WIDTH: usize = 14;
 
@@ -160,7 +159,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
 
         let is_selected_item = ctx.multi_select && ctx.selected_paths.contains(&entry.path);
 
-        let (mut left_spans, right_spans) = render_flat_entry(
+        let (info_spans, mut name_spans) = render_flat_entry(
             entry,
             is_selected,
             ctx.search_mode != SearchMode::Inactive && !ctx.search_word.is_empty(),
@@ -192,16 +191,17 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
             );
         }
 
-        let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
-        truncate_name_spans(&mut left_spans, NAME_FIXED_WIDTH as usize);
-        let [name_area, info_area] = Layout::horizontal([
-            Constraint::Length(NAME_FIXED_WIDTH),
-            Constraint::Length(right_width),
+        let info_width: u16 = info_spans.iter().map(|s| s.content.len() as u16).sum();
+        let name_max_width = row_area.width.saturating_sub(info_width);
+        truncate_name_spans(&mut name_spans, name_max_width as usize);
+        let [info_area, name_area] = Layout::horizontal([
+            Constraint::Length(info_width),
+            Constraint::Fill(1),
         ])
         .areas(row_area);
 
-        f.render_widget(Paragraph::new(Line::from(left_spans)), name_area);
-        f.render_widget(Paragraph::new(Line::from(right_spans)), info_area);
+        f.render_widget(Paragraph::new(Line::from(info_spans)), info_area);
+        f.render_widget(Paragraph::new(Line::from(name_spans)), name_area);
     }
 }
 
@@ -295,57 +295,9 @@ fn render_flat_entry(
 
     let size_str = util::display_size_label(entry.is_dir, entry.has_scan_data, entry.size);
 
-    let left = name_spans(
-        &name_text,
-        &name_prefix,
-        has_search,
-        search_word,
-        &row,
-        theme,
-    );
+    let mut info = Vec::new();
 
-    let mut right = Vec::new();
-
-    // Percent column
-    if current_dir_total > 0 && entry.has_scan_data {
-        let pct = (entry.size as f64 / current_dir_total as f64) * 100.0;
-        right.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
-        right.push(Span::raw(" "));
-    } else {
-        right.push(Span::styled(format!("{:>7}", "?"), row.percent()));
-        right.push(Span::raw(" "));
-    }
-
-    // Size column
-    if entry.is_dir && !entry.has_scan_data {
-        let real_size = util::format_size(entry.size);
-        let padded = format!("{:>width$}", real_size, width = SIZE_WIDTH);
-        right.push(Span::styled(padded, row.filesize(theme.text_tertiary)));
-        right.push(Span::raw(" "));
-    } else {
-        let trimmed = size_str.trim().to_string();
-        if let Some(space_idx) = trimmed.rfind(' ') {
-            let size_total = size_str.len();
-            if size_total < SIZE_WIDTH {
-                right.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
-            }
-            let leading = size_str.len() - size_str.trim_start().len();
-            let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
-            right.push(Span::styled(num, row.filesize(theme.text_secondary)));
-            let unit = &trimmed[space_idx + 1..];
-            right.push(Span::styled(
-                unit.to_string(),
-                row.filesize(util::filesize_unit_color(unit, theme)),
-            ));
-            right.push(Span::raw(" "));
-        } else {
-            let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
-            right.push(Span::styled(padded, row.filesize(theme.text_secondary)));
-            right.push(Span::raw(" "));
-        }
-    }
-
-    // Delta column
+    // Delta column (first)
     if has_delta {
         let (delta_str, delta_fg) = match delta {
             Some(d) if d > 0 => {
@@ -360,10 +312,59 @@ fn render_flat_entry(
             Some(_) | None => ("-".to_string(), theme.text_tertiary),
         };
         let padded = format!("{:>width$}", delta_str, width = DELTA_WIDTH);
-        right.push(Span::styled(padded, row.delta(delta_fg)));
+        info.push(Span::styled(padded, row.delta(delta_fg)));
+        info.push(Span::raw(" "));
     }
 
-    (left, right)
+    // Percent column
+    if current_dir_total > 0 && entry.has_scan_data {
+        let pct = (entry.size as f64 / current_dir_total as f64) * 100.0;
+        info.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
+        info.push(Span::raw(" "));
+    } else {
+        info.push(Span::styled(format!("{:>7}", "?"), row.percent()));
+        info.push(Span::raw(" "));
+    }
+
+    // Size column
+    if entry.is_dir && !entry.has_scan_data {
+        let real_size = util::format_size(entry.size);
+        let padded = format!("{:>width$}", real_size, width = SIZE_WIDTH);
+        info.push(Span::styled(padded, row.filesize(theme.text_tertiary)));
+        info.push(Span::raw(" "));
+    } else {
+        let trimmed = size_str.trim().to_string();
+        if let Some(space_idx) = trimmed.rfind(' ') {
+            let size_total = size_str.len();
+            if size_total < SIZE_WIDTH {
+                info.push(Span::raw(" ".repeat(SIZE_WIDTH - size_total)));
+            }
+            let leading = size_str.len() - size_str.trim_start().len();
+            let num = format!("{}{} ", &size_str[..leading], &trimmed[..space_idx]);
+            info.push(Span::styled(num, row.filesize(theme.text_secondary)));
+            let unit = &trimmed[space_idx + 1..];
+            info.push(Span::styled(
+                unit.to_string(),
+                row.filesize(util::filesize_unit_color(unit, theme)),
+            ));
+            info.push(Span::raw(" "));
+        } else {
+            let padded = format!("{:>width$}", size_str.clone(), width = SIZE_WIDTH);
+            info.push(Span::styled(padded, row.filesize(theme.text_secondary)));
+            info.push(Span::raw(" "));
+        }
+    }
+
+    let name = name_spans(
+        &name_text,
+        &name_prefix,
+        has_search,
+        search_word,
+        &row,
+        theme,
+    );
+
+    (info, name)
 }
 
 // ── Reusable helper types/functions (adapted from file_tree.rs) ──

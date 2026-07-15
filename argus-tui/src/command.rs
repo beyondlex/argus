@@ -244,6 +244,7 @@ impl App {
                 match_fg: self.theme.success,
                 path_fg: self.theme.text_tertiary,
                 separator_fg: self.theme.text_tertiary,
+                title_fg: self.theme.success,
             },
             ..Default::default()
         }));
