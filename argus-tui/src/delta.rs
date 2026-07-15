@@ -287,7 +287,7 @@ mod tests {
         touch_with_size(&root.join("target/release/ignored.bin"), 1);
 
         let cancel = AtomicBool::new(false);
-        let snapshot = scan_path(&root, &cancel, None, &[]).expect("scan snapshot");
+        let snapshot = scan_path(&root, &cancel, None).expect("scan snapshot");
         assert_eq!(snapshot.root_path, root);
 
         let db = temp.path().join("delta.db");

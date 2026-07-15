@@ -82,7 +82,7 @@ fn cmd_scan(path: &PathBuf) -> Result<i32> {
     .context("failed to set Ctrl+C handler")?;
 
     let snapshot =
-        scan_path(path, &cancel, None, &[]).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
+        scan_path(path, &cancel, None).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
 
     println!("scan path: {}", path.display());
     println!("total files: {}", count_files(&snapshot, ROOT_NODE));

@@ -28,26 +28,12 @@ impl Default for DaemonAccessConfig {
 #[derive(Debug, Clone)]
 pub struct BrowsingConfig {
     pub auto_scan_on_start: bool,
-    pub skip_dirs: Vec<String>,
 }
 
 impl Default for BrowsingConfig {
     fn default() -> Self {
         Self {
             auto_scan_on_start: false,
-            skip_dirs: vec![
-                "node_modules".into(),
-                "target".into(),
-                ".git".into(),
-                "__pycache__".into(),
-                ".venv".into(),
-                "vendor".into(),
-                "dist".into(),
-                "build".into(),
-                ".cache".into(),
-                ".next".into(),
-                ".nuxt".into(),
-            ],
         }
     }
 }
@@ -121,7 +107,6 @@ struct RawDaemon {
 #[derive(Debug, Deserialize)]
 struct RawBrowsing {
     auto_scan_on_start: Option<bool>,
-    skip_dirs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,9 +185,6 @@ pub fn load_config(path: &Path) -> TuiConfig {
         if let Some(v) = b.auto_scan_on_start {
             config.browsing.auto_scan_on_start = v;
         }
-        if let Some(v) = b.skip_dirs {
-            config.browsing.skip_dirs = v;
-        }
     }
 
     if let Some(d) = raw.daemon {
@@ -231,9 +213,6 @@ mod tests {
         assert!(config.theme.colors.contains_key("growth_high"));
         assert!(config.theme.colors.contains_key("text_primary"));
         assert!(!config.browsing.auto_scan_on_start);
-        assert!(config.browsing.skip_dirs.contains(&"node_modules".into()));
-        assert!(config.browsing.skip_dirs.contains(&"target".into()));
-        assert!(config.browsing.skip_dirs.contains(&".git".into()));
         assert_eq!(config.daemon.uds_path, argus_core::DEFAULT_UDS_PATH);
     }
 
@@ -296,7 +275,6 @@ colors.custom_key = "#00FF00"
 
 [browsing]
 auto_scan_on_start = true
-skip_dirs = ["node_modules", ".git"]
 
 [daemon]
 uds_path = "/tmp/argus.sock"
@@ -310,7 +288,6 @@ uds_path = "/tmp/argus.sock"
         assert_eq!(config.theme.colors.get("growth_high").unwrap(), "#FF0000");
         assert_eq!(config.theme.colors.get("custom_key").unwrap(), "#00FF00");
         assert!(config.browsing.auto_scan_on_start);
-        assert_eq!(config.browsing.skip_dirs, vec!["node_modules", ".git"]);
         assert_eq!(config.daemon.uds_path, "/tmp/argus.sock");
     }
 
@@ -355,7 +332,5 @@ auto_scan_on_start = true
         .unwrap();
         let config = load_config(&path);
         assert!(config.browsing.auto_scan_on_start);
-        // skip_dirs should still have defaults
-        assert!(config.browsing.skip_dirs.contains(&"node_modules".into()));
     }
 }

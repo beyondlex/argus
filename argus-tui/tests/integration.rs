@@ -42,7 +42,7 @@ fn test_scan_cancelled() {
     std::fs::write(dir.join("test.txt"), "data").unwrap();
 
     let cancel = AtomicBool::new(true);
-    let result = argus_core::scan_path(&dir, &cancel, None, &[]);
+    let result = argus_core::scan_path(&dir, &cancel, None);
     assert!(result.is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -376,8 +376,6 @@ pub fn start_scan(app: &mut App) {
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();
     let path = app.view_root_path.clone();
-    let scan_skip_dirs: Vec<String> = app.config.browsing.skip_dirs.clone();
-
     tokio::task::spawn_blocking(move || {
         let (progress_tx, progress_rx) =
             std::sync::mpsc::channel::<argus_core::scanner::ProgressUpdate>();
@@ -397,7 +395,7 @@ pub fn start_scan(app: &mut App) {
             }
         });
 
-        match argus_core::scan_path(&path, &cancel, Some(progress_tx), &scan_skip_dirs) {
+        match argus_core::scan_path(&path, &cancel, Some(progress_tx)) {
             Ok(snapshot) => {
                 let _ = tx.blocking_send(AppMessage::ScanComplete(snapshot));
             }
