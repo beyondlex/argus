@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 
 use ratatui::{
     layout::Rect,
@@ -26,7 +26,8 @@ pub fn render(
 ) {
     let popup_area = crate::components::popup::centered_rect(60, 40, area);
 
-    let block = popup_block(" File Info ", PopupStyle::Normal, theme);
+    let block = popup_block(" File Info ", PopupStyle::Normal, theme)
+        .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme))).title_alignment(ratatui::layout::Alignment::Right);
 
     let type_str = if metadata.is_dir() {
         "Directory"
@@ -38,15 +39,21 @@ pub fn render(
         "Other"
     };
 
-    let modified: DateTime<Utc> = metadata
+    let modified: DateTime<Local> = metadata
         .modified()
         .ok()
-        .map(|t| t.into())
+        .map(|t| -> DateTime<Local> {
+            let utc: DateTime<Utc> = t.into();
+            utc.with_timezone(&Local)
+        })
         .unwrap_or_default();
-    let created: DateTime<Utc> = metadata
+    let created: DateTime<Local> = metadata
         .created()
         .ok()
-        .map(|t| t.into())
+        .map(|t| -> DateTime<Local> {
+            let utc: DateTime<Utc> = t.into();
+            utc.with_timezone(&Local)
+        })
         .unwrap_or_default();
 
     let mode = metadata.permissions().mode();
@@ -129,7 +136,6 @@ pub fn render(
             Span::styled(perm_str, Style::default().fg(theme.text)),
         ]),
         Line::from(Span::raw("")),
-        Line::from(key_hints(&[("Esc", "Close")], theme)),
     ];
 
     let text = Paragraph::new(lines).block(block);

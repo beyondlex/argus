@@ -145,6 +145,12 @@ pub fn render(
             format!(" {}", util::format_duration(summary.duration)),
             Style::default().fg(theme.text_highlight),
         ));
+    } else {
+        left_spans.push(Span::raw("   "));
+        left_spans.push(Span::styled(
+            "Press 's' to scan",
+            Style::default().fg(theme.text_tertiary),
+        ));
     }
 
     if let Some(msg) = has_error {

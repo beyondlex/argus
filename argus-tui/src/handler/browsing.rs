@@ -23,7 +23,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                     }
                 }
             }
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 app.delta_detail = None;
             }
             _ => {}
@@ -156,7 +156,13 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
         KeyCode::Char('i') => handle_info_popup(app),
         KeyCode::Char('K') => handle_delta_detail_popup(app),
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => {
+            if app.info_data.is_some() {
+                app.info_data = None;
+            } else {
+                app.should_quit = true;
+            }
+        }
         KeyCode::Char('y') => handle_copy_path(app),
         KeyCode::Char('f') if app.server_mode => {
             if app.multi_select {

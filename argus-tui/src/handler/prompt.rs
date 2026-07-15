@@ -85,7 +85,7 @@ where
                 }
             }
         }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') | KeyCode::Esc => {
             app.delete_target_path = None;
             app.delete_target_paths.clear();
             app.mode = AppMode::Browsing;
@@ -153,7 +153,7 @@ fn delete_dir_progressive(
 
 pub(crate) fn handle_help_key(key: KeyEvent, app: &mut App) {
     match key.code {
-        KeyCode::Char('?') | KeyCode::Esc => {
+        KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
             app.mode = AppMode::Browsing;
         }
         _ => {}
@@ -162,7 +162,7 @@ pub(crate) fn handle_help_key(key: KeyEvent, app: &mut App) {
 
 pub(crate) fn handle_time_help_key(key: KeyEvent, app: &mut App) {
     match key.code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             app.mode = AppMode::Browsing;
             app.time_help_scroll = 0;
         }
