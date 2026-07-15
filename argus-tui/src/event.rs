@@ -262,16 +262,10 @@ fn render_main_content(
 fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let error_str = app.last_error.as_deref();
     let status_is_error = app.status_is_error;
-    let scan_elapsed = app.scan_started_at.map(|started| started.elapsed());
     status_bar::render(
         f,
         area,
         app.mode,
-        &app.view_root_path,
-        app.scanning,
-        app.scan_progress,
-        app.scan_spinner,
-        scan_elapsed,
         app.last_scan_summary.as_ref(),
         error_str,
         status_is_error,
@@ -284,7 +278,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-    let popup_area = popup::centered_rect(70, 35, area);
+    // Fixed-size popup: 7 rows (1 spacer + path + 1 spacer + stats + 1 spacer + 2 borders)
+    let width = ((area.width * 70 / 100) as u16).max(40).min(area.width).min(120);
+    let height: u16 = 7.min(area.height);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect { x, y, width, height };
+
     let root_display = display_path(&app.view_root_path);
     let title = format!(" Scanning {} ", root_display);
     let block = popup::popup_block(title, popup::PopupStyle::Normal, &app.theme)
@@ -298,26 +298,33 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
         .as_deref()
         .unwrap_or("");
 
-    let mut lines: Vec<Line> = Vec::new();
+    let mut path_lines: Vec<Line> = Vec::new();
 
     // Spacer
-    lines.push(Line::from(""));
+    path_lines.push(Line::from(""));
 
-    // Current file path (truncated to fit)
+    // Current file path (truncated in the middle to fit, char-aware, 2-char padding)
     let max_width = inner.width.saturating_sub(4) as usize;
-    let display_path_str = if current_path.len() > max_width {
-        let prefix_len = max_width.saturating_sub(3);
-        format!("...{}", &current_path[current_path.len().saturating_sub(prefix_len)..])
+    let chars: Vec<char> = current_path.chars().collect();
+    let display_path_str = if chars.len() > max_width {
+        let ellipsis = "...";
+        let ellipsis_len = ellipsis.chars().count();
+        let available = max_width.saturating_sub(ellipsis_len);
+        let left_len = available / 2;
+        let right_len = available - left_len;
+        let left: String = chars[..left_len].iter().collect();
+        let right: String = chars[chars.len() - right_len..].iter().collect();
+        format!("{}{}{}", left, ellipsis, right)
     } else {
         current_path.to_string()
     };
-    lines.push(Line::from(Span::styled(
-        format!("     {}", display_path_str),
+    path_lines.push(Line::from(Span::styled(
+        format!("  {}", display_path_str),
         Style::default().fg(app.theme.text_secondary),
     )));
 
     // Spacer
-    lines.push(Line::from(""));
+    path_lines.push(Line::from(""));
 
     // Stats row: Size, Items, Took, Spinner
     let mut stats_spans: Vec<Span> = Vec::new();
@@ -365,10 +372,18 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(app.theme.spinner),
     ));
 
-    lines.push(Line::from(stats_spans));
+    // Split inner area: top part for path, bottom part for centered stats
+    let [path_area, stats_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
+    f.render_widget(Clear, popup_area);
     f.render_widget(block, popup_area);
-    f.render_widget(ratatui::widgets::Paragraph::new(lines), inner);
+    f.render_widget(ratatui::widgets::Paragraph::new(path_lines), path_area);
+    f.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(stats_spans))
+            .alignment(ratatui::layout::Alignment::Center),
+        stats_area,
+    );
 }
 
 fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {

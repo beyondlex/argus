@@ -124,9 +124,9 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
     );
 
     let status_area = Rect {
-        x: inner.x,
+        x: inner.x + 2,
         y: inner.y,
-        width: content_width,
+        width: content_width.saturating_sub(2),
         height: 1,
     };
 
@@ -176,9 +176,9 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
 
         let row_y = inner.y + 1 + display_offset as u16;
         let row_area = Rect {
-            x: inner.x,
+            x: inner.x + 2,
             y: row_y,
-            width: content_width,
+            width: content_width.saturating_sub(2),
             height: 1,
         };
 
