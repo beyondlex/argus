@@ -102,15 +102,44 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('k') | KeyCode::Up => move_cursor(app, -1),
         KeyCode::Char('g') => handle_gg_double_tap(app),
         KeyCode::Char('G') => {
-            if !app.filtered_tree_lines.is_empty() {
-                app.cursor = app.filtered_tree_lines.len() - 1;
+            let len = if !app.current_children.is_empty() {
+                app.current_filtered.len()
+            } else {
+                app.filtered_tree_lines.len()
+            };
+            if len > 0 {
+                app.cursor = len - 1;
             }
             app.pending_gg = false;
         }
-        KeyCode::Char('l') | KeyCode::Right => crate::tree_ops::expand_node(app),
-        KeyCode::Char('h') | KeyCode::Left => crate::tree_ops::collapse_or_navigate_up(app),
-        KeyCode::Char('H') => crate::tree_ops::collapse_all_children(app),
-        KeyCode::Char('u') => crate::tree_ops::navigate_up_root(app),
+        KeyCode::Char('l') | KeyCode::Right => {
+            if !app.current_children.is_empty() {
+                app.enter_directory();
+            } else {
+                crate::tree_ops::expand_node(app);
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if !app.current_children.is_empty() {
+                app.go_to_parent();
+            } else {
+                crate::tree_ops::collapse_or_navigate_up(app);
+            }
+        }
+        KeyCode::Char('H') => {
+            if !app.current_children.is_empty() {
+                app.go_to_root();
+            } else {
+                crate::tree_ops::collapse_all_children(app);
+            }
+        }
+        KeyCode::Char('u') => {
+            if !app.current_children.is_empty() {
+                app.go_to_root();
+            } else {
+                crate::tree_ops::navigate_up_root(app);
+            }
+        }
         KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
         KeyCode::Char('s') => {
             if app.multi_select {
@@ -130,13 +159,21 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             );
             app.update_tree_lines();
         }
-        KeyCode::Char('w') => set_root_to_selected(app),
+        KeyCode::Char('w') => {
+            if app.current_children.is_empty() {
+                set_root_to_selected(app);
+            }
+        }
         KeyCode::Char('o') => {
             if app.multi_select {
                 app.exit_multi_select();
             }
             app.sort_mode = app.sort_mode.toggle();
-            app.update_tree_lines();
+            if !app.current_children.is_empty() {
+                crate::handler::browsing::sort_children_flat(app);
+            } else {
+                app.update_tree_lines();
+            }
         }
         KeyCode::Char('d') => handle_delete_action(app, false),
         KeyCode::Char('D') => handle_delete_action(app, true),
@@ -300,18 +337,30 @@ pub(crate) fn handle_copy_path(app: &mut App) {
 }
 
 pub(crate) fn handle_delete_action(app: &mut App, permanent: bool) {
-    let Some(line) = app.selected_line() else {
-        return;
-    };
     let root_name = app
         .view_root_path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    if line.node.is_dir() && line.node.name() == root_name {
-        app.set_error("cannot delete root directory".into(), 3);
-        return;
+
+    if !app.current_children.is_empty() {
+        let Some(entry) = app.selected_entry() else {
+            return;
+        };
+        if entry.is_dir && entry.node.name() == root_name {
+            app.set_error("cannot delete root directory".into(), 3);
+            return;
+        }
+    } else {
+        let Some(line) = app.selected_line() else {
+            return;
+        };
+        if line.node.is_dir() && line.node.name() == root_name {
+            app.set_error("cannot delete root directory".into(), 3);
+            return;
+        }
     }
+
     let Some(full_path) = app.selected_node_full_path() else {
         return;
     };
@@ -328,20 +377,41 @@ pub(crate) fn handle_delete_action(app: &mut App, permanent: bool) {
 }
 
 pub(crate) fn move_cursor(app: &mut App, delta: isize) {
-    if app.filtered_tree_lines.is_empty() {
+    let len = if !app.current_children.is_empty() {
+        app.current_filtered.len()
+    } else {
+        app.filtered_tree_lines.len()
+    };
+    if len == 0 {
         return;
     }
     let new_cursor = app.cursor as isize + delta;
     if new_cursor < 0 {
         app.cursor = 0;
-    } else if new_cursor >= app.filtered_tree_lines.len() as isize {
-        app.cursor = app.filtered_tree_lines.len() - 1;
+    } else if new_cursor >= len as isize {
+        app.cursor = len - 1;
     } else {
         app.cursor = new_cursor as usize;
     }
 }
 
 pub(crate) fn set_root_to_selected(app: &mut App) {
+    if !app.current_children.is_empty() {
+        let Some(entry) = app.selected_entry().cloned() else {
+            return;
+        };
+        if !entry.is_dir {
+            return;
+        }
+        if let Some(full_path) = app.selected_node_full_path() {
+            if full_path == app.view_root_path {
+                return;
+            }
+            app.view_root_path = full_path;
+            app.rebuild_tree();
+        }
+        return;
+    }
     let Some(line) = app.selected_line().cloned() else {
         return;
     };
@@ -404,4 +474,10 @@ pub fn start_scan(app: &mut App) {
             }
         }
     });
+}
+
+/// Re-sort flat-mode children in-place and refresh filtered view.
+pub fn sort_children_flat(app: &mut App) {
+    crate::app::sort_children(&mut app.current_children, app.sort_mode, &app.delta_cache);
+    app.refresh_current_filtered();
 }

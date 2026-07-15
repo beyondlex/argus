@@ -109,6 +109,17 @@ pub struct SearchMatch {
     pub walk_idx: usize,
 }
 
+/// A single entry in the flat directory view (ncdu-like).
+/// Represents one direct child of the current directory.
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub node: TreeNode,
+    pub path: Vec<String>,
+    pub has_scan_data: bool,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
 /// Unified tree node for rendering (currently only Snapshot variant, Diff reserved for future daemon mode)
 #[derive(Debug, Clone)]
 pub enum TreeNode {

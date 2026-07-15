@@ -9,22 +9,50 @@ pub(crate) fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
             match key.code {
                 KeyCode::Char(c) => {
                     app.search_word.push(c);
+                    // Live filter in flat mode
+                    if !app.current_children.is_empty() {
+                        if app.search_word.is_empty() {
+                            app.refresh_current_filtered();
+                        } else {
+                            app.apply_search();
+                        }
+                    }
                 }
                 KeyCode::Backspace => {
                     app.search_word.pop();
+                    // Live filter in flat mode
+                    if !app.current_children.is_empty() {
+                        if app.search_word.is_empty() {
+                            app.refresh_current_filtered();
+                        } else {
+                            app.apply_search();
+                        }
+                    }
                 }
                 KeyCode::Enter => {
                     if app.search_word.is_empty() {
-                        app.recompute_matches();
+                        if !app.current_children.is_empty() {
+                            app.refresh_current_filtered();
+                        } else {
+                            app.recompute_matches();
+                        }
                         app.search_mode = SearchMode::Inactive;
                     } else {
-                        app.recompute_matches();
+                        if !app.current_children.is_empty() {
+                            app.apply_search();
+                        } else {
+                            app.recompute_matches();
+                        }
                         app.search_mode = SearchMode::Active;
                     }
                 }
                 KeyCode::Esc => {
                     app.search_word.clear();
-                    app.recompute_matches();
+                    if !app.current_children.is_empty() {
+                        app.refresh_current_filtered();
+                    } else {
+                        app.recompute_matches();
+                    }
                     app.search_mode = SearchMode::Inactive;
                 }
                 _ => {}
@@ -33,16 +61,36 @@ pub(crate) fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
         }
         SearchMode::Active => {
             match key.code {
-                KeyCode::Char('n') => crate::search::jump_to_next_match(app, 1),
-                KeyCode::Char('N') => crate::search::jump_to_next_match(app, -1),
+                KeyCode::Char('n') => {
+                    if !app.current_children.is_empty() {
+                        app.cycle_match(true);
+                    } else {
+                        crate::search::jump_to_next_match(app, 1);
+                    }
+                }
+                KeyCode::Char('N') => {
+                    if !app.current_children.is_empty() {
+                        app.cycle_match(false);
+                    } else {
+                        crate::search::jump_to_next_match(app, -1);
+                    }
+                }
                 KeyCode::Char('/') => {
                     app.search_word.clear();
-                    app.recompute_matches();
+                    if !app.current_children.is_empty() {
+                        app.refresh_current_filtered();
+                    } else {
+                        app.recompute_matches();
+                    }
                     app.search_mode = SearchMode::Input;
                 }
                 KeyCode::Esc => {
                     app.search_word.clear();
-                    app.recompute_matches();
+                    if !app.current_children.is_empty() {
+                        app.refresh_current_filtered();
+                    } else {
+                        app.recompute_matches();
+                    }
                     app.search_mode = SearchMode::Inactive;
                     return true;
                 }
