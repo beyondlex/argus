@@ -16,6 +16,7 @@ use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, ROOT_NODE
 pub struct ProgressUpdate {
     pub file_count: u64,
     pub total_bytes: u64,
+    pub current_path: Option<String>,
 }
 
 struct ProgressTracker {
@@ -23,6 +24,7 @@ struct ProgressTracker {
     total_bytes: u64,
     last_reported_file_count: u64,
     last_reported_total_bytes: u64,
+    current_path: Option<String>,
     progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
 }
 
@@ -36,18 +38,22 @@ impl ProgressTracker {
             total_bytes: 0,
             last_reported_file_count: 0,
             last_reported_total_bytes: 0,
+            current_path: None,
             progress_tx,
         }
     }
 
-    fn record(&mut self, files: u64, bytes: u64) {
+    fn record(&mut self, files: u64, bytes: u64, path: Option<String>) {
         self.file_count = self.file_count.saturating_add(files);
         self.total_bytes = self.total_bytes.saturating_add(bytes);
+        if path.is_some() {
+            self.current_path = path;
+        }
         self.maybe_report();
     }
 
     fn record_files_only(&mut self, files: u64) {
-        self.record(files, 0);
+        self.record(files, 0, None);
     }
 
     fn maybe_report(&mut self) {
@@ -64,6 +70,7 @@ impl ProgressTracker {
                 let _ = tx.send(ProgressUpdate {
                     file_count: self.file_count,
                     total_bytes: self.total_bytes,
+                    current_path: self.current_path.clone(),
                 });
             }
         }
@@ -74,6 +81,7 @@ impl ProgressTracker {
             let _ = tx.send(ProgressUpdate {
                 file_count: self.file_count,
                 total_bytes: self.total_bytes,
+                current_path: None,
             });
         }
     }
@@ -211,8 +219,9 @@ pub fn scan_path(
                     continue;
                 }
             }
+            let current_path = entry.path().to_string_lossy().to_string();
             if meta.is_file() {
-                progress.record(1, meta.len());
+                progress.record(1, meta.len(), Some(current_path));
             } else {
                 progress.record_files_only(1);
             }

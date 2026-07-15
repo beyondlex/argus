@@ -6,11 +6,11 @@ use crate::components::{
     command_bar, file_tree, flat_tree, help_popup, metadata, popup, status_bar, time_help,
 };
 use crate::handler;
-use crate::util::{format_size, key_hints};
+use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
 use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, Paragraph},
@@ -183,7 +183,7 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 }
 
 fn render_chrome(f: &mut Frame, app: &App, chunks: &[ratatui::layout::Rect], cursor_visible: bool) {
-    render_header(f, chunks[0], &app.theme);
+    render_header(f, chunks[0], app);
     render_filter_pane(f, chunks[1], app);
     render_main_content(f, app, chunks[2], cursor_visible);
     render_status_bar(f, app, chunks[3]);
@@ -275,14 +275,109 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         app.last_scan_summary.as_ref(),
         error_str,
         status_is_error,
-        app.server_connected,
         app.sort_mode,
         app.multi_select,
         &app.theme,
     );
 }
 
+fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
+    const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    let popup_area = popup::centered_rect(70, 35, area);
+    let root_display = display_path(&app.view_root_path);
+    let title = format!(" Scanning {} ", root_display);
+    let block = popup::popup_block(title, popup::PopupStyle::Normal, &app.theme)
+        .title_bottom(Line::from(key_hints(&[("Esc", "Cancel")], &app.theme)).right_aligned());
+
+    let inner = block.inner(popup_area);
+
+    // Current file path being scanned
+    let current_path = app
+        .scan_current_path
+        .as_deref()
+        .unwrap_or("");
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Spacer
+    lines.push(Line::from(""));
+
+    // Current file path (truncated to fit)
+    let max_width = inner.width.saturating_sub(4) as usize;
+    let display_path_str = if current_path.len() > max_width {
+        let prefix_len = max_width.saturating_sub(3);
+        format!("...{}", &current_path[current_path.len().saturating_sub(prefix_len)..])
+    } else {
+        current_path.to_string()
+    };
+    lines.push(Line::from(Span::styled(
+        format!("     {}", display_path_str),
+        Style::default().fg(app.theme.text_secondary),
+    )));
+
+    // Spacer
+    lines.push(Line::from(""));
+
+    // Stats row: Size, Items, Took, Spinner
+    let mut stats_spans: Vec<Span> = Vec::new();
+    if let Some((current, total_bytes)) = app.scan_progress {
+        stats_spans.push(Span::styled(
+            "Size:",
+            Style::default().fg(app.theme.text_secondary),
+        ));
+        stats_spans.push(Span::styled(
+            format!(" {}", format_size(total_bytes)),
+            Style::default().fg(app.theme.text_highlight),
+        ));
+        stats_spans.push(Span::raw("  "));
+        stats_spans.push(Span::styled(
+            "Items:",
+            Style::default().fg(app.theme.text_secondary),
+        ));
+        stats_spans.push(Span::styled(
+            format!(" {}", format_count(current)),
+            Style::default().fg(app.theme.text_highlight),
+        ));
+    }
+    stats_spans.push(Span::raw("  "));
+    stats_spans.push(Span::styled(
+        "Took:",
+        Style::default().fg(app.theme.text_secondary),
+    ));
+    stats_spans.push(Span::styled(
+        format!(
+            " {}",
+            format_duration(
+                app.scan_started_at
+                    .map(|started| started.elapsed())
+                    .unwrap_or_default()
+            )
+        ),
+        Style::default().fg(app.theme.text_highlight),
+    ));
+    stats_spans.push(Span::raw("  "));
+    stats_spans.push(Span::styled(
+        format!(
+            "{} ",
+            SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()]
+        ),
+        Style::default().fg(app.theme.spinner),
+    ));
+
+    lines.push(Line::from(stats_spans));
+
+    f.render_widget(block, popup_area);
+    f.render_widget(ratatui::widgets::Paragraph::new(lines), inner);
+}
+
 fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    // Render scanning popup on top of everything if a scan is in progress
+    if app.scanning {
+        render_scan_popup(f, area, app);
+        return;
+    }
+
     match app.mode {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
@@ -315,19 +410,45 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
 }
 
 /// Render header bar
-fn render_header(f: &mut Frame, area: ratatui::layout::Rect, theme: &crate::theme::ColorTheme) {
+fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    // Left side: title + key hints
     let mut header_spans: Vec<Span> = vec![
         Span::styled(
             " Argus v0.1.0 ",
             Style::default()
-                .fg(theme.accent)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
     ];
-    header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")], theme));
-    let line = Line::from(header_spans);
-    f.render_widget(Paragraph::new(line), area);
+    header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")], &app.theme));
+
+    // Right side: daemon status
+    let (daemon_text, daemon_color) = if app.server_connected {
+        ("● Daemon", app.theme.success)
+    } else {
+        ("○ Daemon", app.theme.text_tertiary)
+    };
+    let daemon_span = Span::styled(daemon_text, Style::default().fg(daemon_color));
+    let daemon_line = Line::from(vec![Span::raw(" "), daemon_span, Span::raw(" ")]);
+
+    // Split layout: left takes Fill, right is fixed-width daemon label
+    let daemon_width: u16 = daemon_text.len() as u16 + 2; // spaces
+    if daemon_width + 4 < area.width {
+        let [left_area, right_area] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(daemon_width),
+        ])
+        .flex(Flex::SpaceBetween)
+        .areas(area);
+        f.render_widget(Paragraph::new(Line::from(header_spans)), left_area);
+        f.render_widget(Paragraph::new(daemon_line), right_area);
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(header_spans)),
+            area,
+        );
+    }
 }
 
 fn focus_highlight_style(active: bool, theme: &crate::theme::ColorTheme) -> Style {
@@ -608,7 +729,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-                render_header(f, area, &app.theme);
+                render_header(f, area, &app);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -627,7 +748,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-                render_header(f, area, &app.theme);
+                render_header(f, area, &app);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();

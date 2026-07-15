@@ -71,6 +71,7 @@ pub struct App {
     // Scan state
     pub scanning: bool,
     pub scan_progress: Option<(u64, u64)>,
+    pub scan_current_path: Option<String>,
     pub scan_spinner: u8,
     pub scan_spinner_tick: Instant,
     pub scan_started_at: Option<Instant>,
@@ -199,6 +200,7 @@ impl App {
             pending_gg: false,
             scanning: false,
             scan_progress: None,
+            scan_current_path: None,
             scan_spinner: 0,
             scan_spinner_tick: Instant::now(),
             scan_started_at: None,
@@ -338,11 +340,14 @@ impl App {
             AppMessage::ScanProgress {
                 file_count,
                 total_bytes,
+                current_path,
             } => {
                 self.scan_progress = Some((file_count, total_bytes));
+                self.scan_current_path = current_path;
             }
             AppMessage::ScanComplete(snapshot) => {
                 self.scanning = false;
+                self.scan_current_path = None;
                 let duration = self
                     .scan_started_at
                     .take()
@@ -368,6 +373,7 @@ impl App {
             }
             AppMessage::Error(e) => {
                 self.scanning = false;
+                self.scan_current_path = None;
                 self.scan_started_at = None;
                 self.set_error(e, 5);
             }

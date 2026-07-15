@@ -28,7 +28,6 @@ pub fn render(
     scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
     status_is_error: bool,
-    server_connected: bool,
     sort_mode: SortMode,
     multi_select: bool,
     theme: &ColorTheme,
@@ -60,14 +59,7 @@ pub fn render(
         ));
     }
 
-    // Daemon status indicator
-    let (status_text, status_color) = if server_connected {
-        (" ● Daemon", theme.success)
-    } else {
-        (" ○ Daemon", theme.text_tertiary)
-    };
-    left_spans.push(Span::raw("   "));
-    left_spans.push(Span::styled(status_text, Style::default().fg(status_color)));
+    // Daemon status indicator removed — moved to header (top-right)
 
     if scanning {
         left_spans.push(Span::raw(" Scanning "));

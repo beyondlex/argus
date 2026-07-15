@@ -13,6 +13,7 @@ pub enum AppMessage {
     ScanProgress {
         file_count: u64,
         total_bytes: u64,
+        current_path: Option<String>,
     },
     ScanComplete(Snapshot),
     DaemonConnected(IpcClient),
