@@ -292,11 +292,21 @@ impl App {
                 let matches_view =
                     root_path == self.view_root_path || root_path == self.current_scan_path();
                 let was_in_subdir = self.current_dir_path.len() > 1;
-                self.scan_cache.insert(root_path, Arc::new(snapshot));
+                let scanned_subdir = root_path != self.view_root_path;
+                self.scan_cache
+                    .insert(root_path.clone(), Arc::new(snapshot));
 
                 // Rebuild tree if scanned path matches current view
                 if matches_view {
-                    let saved_dir = if was_in_subdir {
+                    if scanned_subdir {
+                        // Subdirectory was scanned: update view_root_path so
+                        // rebuild_tree() finds the scan result in the cache.
+                        self.view_root_path = root_path.clone();
+                    }
+                    // Only restore saved_dir when scanning the root (not a subdirectory),
+                    // because a subdirectory scan changes view_root_path and invalidates
+                    // the old navigation path which referenced the parent tree root name.
+                    let saved_dir = if was_in_subdir && !scanned_subdir {
                         Some(self.current_dir_path.clone())
                     } else {
                         None
@@ -475,7 +485,7 @@ impl App {
 
     /// Get the full path of the directory currently being browsed.
     pub fn current_scan_path(&self) -> PathBuf {
-        if !self.current_children.is_empty() && self.current_dir_path.len() > 1 {
+        if self.current_dir_path.len() > 1 {
             let mut path = self.view_root_path.clone();
             for component in self.current_dir_path.iter().skip(1) {
                 path.push(component);

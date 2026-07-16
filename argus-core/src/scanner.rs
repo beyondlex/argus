@@ -134,6 +134,15 @@ impl TreeBuilder {
         new_idx
     }
 
+    fn ensure_dir_path(&mut self, rel: &Path) {
+        let components: Vec<_> = rel.components().collect();
+        let mut parent = ROOT_NODE;
+        for comp in &components {
+            let name = comp.as_os_str().to_string_lossy();
+            parent = self.find_or_create_child(parent, &name);
+        }
+    }
+
     fn insert_file(&mut self, path: &Path, root_path: &Path, node: FileNode) {
         let rel = path.strip_prefix(root_path).unwrap_or(path);
         let components: Vec<_> = rel.components().collect();
@@ -216,6 +225,11 @@ pub fn scan_path(
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
 
         if is_dir {
+            let entry_path = entry.path();
+            let rel = entry_path.strip_prefix(path).unwrap_or(&entry_path);
+            if !rel.as_os_str().is_empty() {
+                tree.ensure_dir_path(rel);
+            }
             progress.record_files_only(1);
             continue;
         }
@@ -680,6 +694,97 @@ mod tests {
             assert_eq!(tree.arena[idx as usize].name, name);
         }
         assert_eq!(tree.arena[ROOT_NODE as usize].children.len(), n);
+    }
+
+    #[test]
+    fn test_scan_empty_subdirectory_included_in_arena() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("empty_sub")).unwrap();
+        fs::write(dir.path().join("file.txt"), "data").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+
+        let root = snapshot.node(ROOT_NODE);
+        assert!(root.is_dir);
+        assert_eq!(root.children.len(), 2);
+
+        let empty = child(&snapshot, ROOT_NODE, "empty_sub");
+        assert!(empty.is_dir);
+        assert_eq!(empty.size, 0);
+        assert!(empty.children.is_empty());
+
+        let file = child(&snapshot, ROOT_NODE, "file.txt");
+        assert!(!file.is_dir);
+        assert_eq!(file.size, 4);
+
+        assert_eq!(root.size, 4);
+    }
+
+    #[test]
+    fn test_scan_deeply_nested_empty_directories() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+
+        let root = snapshot.node(ROOT_NODE);
+        assert!(root.is_dir);
+        assert_eq!(root.size, 0);
+        assert_eq!(root.children.len(), 1);
+
+        let a_idx = child_idx(&snapshot, ROOT_NODE, "a");
+        let a = snapshot.node(a_idx);
+        assert!(a.is_dir);
+        assert_eq!(a.size, 0);
+        assert_eq!(a.children.len(), 1);
+
+        let b_idx = child_idx(&snapshot, a_idx, "b");
+        let b = snapshot.node(b_idx);
+        assert!(b.is_dir);
+        assert_eq!(b.size, 0);
+        assert_eq!(b.children.len(), 1);
+
+        let c_idx = child_idx(&snapshot, b_idx, "c");
+        let c = snapshot.node(c_idx);
+        assert!(c.is_dir);
+        assert_eq!(c.size, 0);
+        assert!(c.children.is_empty());
+    }
+
+    #[test]
+    fn test_scan_mixed_empty_and_nonempty_subdirectories() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("empty")).unwrap();
+        fs::create_dir_all(dir.path().join("full/sub")).unwrap();
+        fs::write(dir.path().join("full/sub/file.txt"), "data").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+
+        let root = snapshot.node(ROOT_NODE);
+        assert_eq!(root.children.len(), 2);
+
+        let empty = child(&snapshot, ROOT_NODE, "empty");
+        assert!(empty.is_dir);
+        assert_eq!(empty.size, 0);
+        assert!(empty.children.is_empty());
+
+        let full_idx = child_idx(&snapshot, ROOT_NODE, "full");
+        let full = snapshot.node(full_idx);
+        assert!(full.is_dir);
+        assert_eq!(full.size, 4);
+
+        let sub = child(&snapshot, full_idx, "sub");
+        assert!(sub.is_dir);
+        assert_eq!(sub.size, 4);
+
+        let file = snapshot.node(sub.child_idx("file.txt").unwrap());
+        assert!(!file.is_dir);
+        assert_eq!(file.size, 4);
+
+        assert_eq!(root.size, 4);
     }
 
     #[test]
