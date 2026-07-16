@@ -728,12 +728,31 @@ impl App {
 
     /// Enter the selected directory (flat mode).
     /// Pushes current directory to stack, updates current_dir_path, and reloads children.
+    /// If the target subdirectory has a cached scan result, switches to that scan.
     pub fn enter_directory(&mut self) {
         let entry_path = self.selected_entry().map(|e| (e.is_dir, e.path.clone()));
         let Some((is_dir, path)) = entry_path else {
             return;
         };
         if !is_dir {
+            return;
+        }
+
+        // Build full filesystem path for the target subdirectory
+        let mut full_path = self.view_root_path.clone();
+        for comp in path.iter().skip(1) {
+            full_path.push(comp);
+        }
+
+        // If this subdirectory was previously scanned, switch to that scan
+        if self.scan_cache.contains_key(&full_path) {
+            self.view_root_path = full_path;
+            self.dir_stack.clear();
+            self.rebuild_tree();
+            self.set_info(
+                format!("switched to cached scan: {}", self.view_root_path.display()),
+                2,
+            );
             return;
         }
 
