@@ -4,19 +4,21 @@
 
 ### 1.1 基准扫描
 
-- 使用 `ignore` 库扫描指定目录，在内存中构建 `FileTree`。
-- 自动尊重 `.gitignore` 规则（基于 `ignore` 库）。
-- 支持扫描可中断：用户按下 Esc/Ctrl+C 时能立刻停止，释放内存。
+- 使用 `jwalk` 库进行并行目录遍历，在内存中构建 `FileNode` arena。
+- 自动尊重 `.gitignore` 规则。
+- 支持扫描可中断：通过 `AtomicBool` 标志，用户按下 Esc/Ctrl+C 时立刻停止。
 - 支持自定义忽略规则（参见 [04-configuration.md](04-configuration.md)）。
+- **disk_usage 跟踪**：扫描时同步计算 `disk_usage`（blocks × block_size），与逻辑 `size` 分开存储。
 - **符号链接**：默认不跟随（`follow_symlinks = false`），避免循环链接导致无限递归或重复统计。可选开启跟随。
 - **硬链接**：同一 inode 被多路径引用时，仅统计一次体积，避免重复计算。通过对比 `(device, inode)` 元组实现 dedup。
-- **特殊文件**：管道（FIFO）、socket、设备文件等计入 `is_dir = false`，`size = 0`，并标记 `file_type` 字段供筛选。
+- **特殊文件**：管道（FIFO）、socket、设备文件等计入 `is_dir = false`，`size = 0`，`disk_usage = 0`，并标记 `file_type` 字段供筛选。
 
 ### 1.2 扫描机制
 
-- 扫描结果纯内存驻留，不写入数据库。
-- 每次按 `s` 触发全量扫描，结果缓存在 `scan_cache` 中供当前会话使用。
-- 导航到新目录后，如需查看大小分布需重新扫描。
+- 扫描结果纯内存驻留，不写入数据库。使用 `Arc<Snapshot>` 共享，修改时 COW（`Arc::make_mut`）。
+- 每次按 `s` 触发当前浏览目录的全量扫描，结果缓存在 `scan_cache` 中供当前会话使用。
+- 扫描后可在 Snapshot 内自由导航（进入子目录、返回父级），无需重新扫描。
+- 如果子目录已有独立扫描结果，进入时自动切换到该扫描的 view_root。
 - 数据库（`~/.config/argus/argus.db`）仅用于未来 daemon 的 delta 数据存储。
 
 ### 1.3 体积变化追踪（Delta）

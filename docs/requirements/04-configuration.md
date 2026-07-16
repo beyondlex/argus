@@ -99,14 +99,9 @@ watch_dirs = [
 ]
 
 # include/exclude 的 glob 语法（基于 globset 库，默认不区分大小写）：
-#   *        任意字符（无 / 时跨目录，有 / 时单级）
-#   **       任意字符跨目录（必须独立使用，如 a/**/b 或 **）
-#   ?        单个字符
-#   [abc]    集合中的一个字符
-#   [!abc]   不在集合中的字符
-#   {a,b,c}  多选一
-#   \        转义
-# 参考: https://docs.rs/globset/latest/globset/#syntax
+# 每个 watch_dir 可设置 include/exclude 过滤规则，仅匹配的文件事件被记录。
+# 冲突规则：路径前缀最长的 watch_dir 的 filter 生效。
+# 语法参考: https://docs.rs/globset/latest/globset/#syntax
 
 # 事件去抖延迟（秒）
 debounce_seconds = 10
@@ -147,12 +142,9 @@ daily_limit = 0
 ```toml
 [browsing]
 # 启动时是否自动扫描当前工作目录
-# false: 仅展示 FS 文件树（普通目录 size 显示 "-"，结构占位节点显示 "..."），按 s 手动扫描
+# false: 启动后展示纯文件树，按 s 手动扫描
 # true:  启动后立即在后台扫描 cwd，完成后刷新 size overlay
 auto_scan_on_start = false
-# 扫描时跳过以下目录（仅记录直接子级的大小，不递归深入）
-# 匹配规则：目录名完全匹配即跳过
-skip_dirs = ["node_modules", "target", ".git", "__pycache__", ".venv"]
 ```
 
 ## 7. 配置管理需求
