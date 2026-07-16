@@ -284,13 +284,12 @@ fn cmd_clear() -> Result<i32> {
 }
 
 fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {
-    let node = snap.node(idx);
     let mut count = 0u64;
-    if !node.is_dir {
+    if !snap.node(idx).is_dir() {
         count += 1;
     }
-    for (_, child_idx) in node.children.iter() {
-        count += count_files(snap, *child_idx);
+    for &child_idx in snap.children(idx) {
+        count += count_files(snap, child_idx);
     }
     count
 }

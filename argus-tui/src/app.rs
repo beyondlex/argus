@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
+use argus_core::{Snapshot, ROOT_NODE};
 
 use crate::ipc_client::IpcClient;
 use crate::theme::ColorTheme;
@@ -570,10 +570,7 @@ impl App {
             && self.tree_root.as_ref().is_some_and(|tr| {
                 let TreeNode::Snapshot(snap, idx) = tr;
                 snap.find_node(*idx, &self.current_dir_path)
-                    .is_some_and(|fidx| {
-                        let n = snap.node(fidx);
-                        n.is_dir && n.children.is_empty()
-                    })
+                    .is_some_and(|fidx| snap.node(fidx).is_dir() && snap.children_is_empty(fidx))
             });
 
         if needs_listing {
@@ -590,17 +587,7 @@ impl App {
                     let target_idx = snap_mut
                         .find_node(ROOT_NODE, &self.current_dir_path)
                         .unwrap_or(ROOT_NODE);
-                    let child_nodes: Vec<(String, argus_core::FileNode)> = listed
-                        .node(ROOT_NODE)
-                        .children
-                        .iter()
-                        .map(|(name, idx)| (name.clone(), listed.node(*idx).clone()))
-                        .collect();
-                    for (name, node) in child_nodes {
-                        let new_idx = snap_mut.arena.len() as NodeIndex;
-                        snap_mut.arena.push(node);
-                        snap_mut.node_mut(target_idx).children.push((name, new_idx));
-                    }
+                    snap_mut.graft_children_from(target_idx, &listed);
                 }
             }
         }
@@ -614,7 +601,7 @@ impl App {
 
         // Initialize current_dir_path to root name if empty
         if self.current_dir_path.is_empty() {
-            let root_name = snap.node(*root_idx).name.clone();
+            let root_name = snap.name(*root_idx).to_string();
             self.current_dir_path = vec![root_name];
         }
 
@@ -634,24 +621,29 @@ impl App {
         };
 
         let dir_node = snap.node(dir_idx);
+        let dir_children_len = snap.children_len(dir_idx);
+        let dir_size = dir_node.size();
+        let dir_disk = dir_node.disk_usage();
 
         // (2) Resolve scan tree for has_scan_data lookups
         let root_scan_tree = tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
 
         // (3) Collect children
-        let mut children: Vec<DirEntry> = Vec::with_capacity(dir_node.children.len());
+        let mut children: Vec<DirEntry> = Vec::with_capacity(dir_children_len);
 
-        for (name, child_idx) in &dir_node.children {
+        for &child_idx in snap.children(dir_idx) {
+            let child_node = snap.node(child_idx);
+            let name = snap.name(child_idx);
+
             // Skip hidden files if show_hidden is false
             if !self.show_hidden && name.starts_with('.') {
                 continue;
             }
 
-            let child_node = snap.node(*child_idx);
             let mut child_path = self.current_dir_path.clone();
-            child_path.push(name.clone());
+            child_path.push(name.to_string());
 
-            let has_scan = if child_node.is_dir {
+            let has_scan = if child_node.is_dir() {
                 tree_ops::size_for_path(
                     &self.scan_cache,
                     &self.view_root_path,
@@ -665,12 +657,12 @@ impl App {
             };
 
             children.push(DirEntry {
-                node: TreeNode::Snapshot(snap_arc.clone(), *child_idx),
+                node: TreeNode::Snapshot(snap_arc.clone(), child_idx),
                 path: child_path,
                 has_scan_data: has_scan,
-                is_dir: child_node.is_dir,
-                size: child_node.size,
-                disk_usage: child_node.disk_usage,
+                is_dir: child_node.is_dir(),
+                size: child_node.size(),
+                disk_usage: child_node.disk_usage(),
             });
         }
 
@@ -679,16 +671,16 @@ impl App {
 
         // (5) Update totals
         self.current_children = children;
-        self.current_dir_total = dir_node.size;
-        self.current_dir_disk_usage = dir_node.disk_usage;
-        self.current_dir_items = dir_node.children.len() as u64;
+        self.current_dir_total = dir_size;
+        self.current_dir_disk_usage = dir_disk;
+        self.current_dir_items = dir_children_len as u64;
         self.parent_dir_total = if self.current_dir_path.len() <= 1 {
-            dir_node.size
+            dir_size
         } else {
             let parent_path = &self.current_dir_path[..self.current_dir_path.len() - 1];
             match snap.find_node(*root_idx, parent_path) {
-                Some(pidx) => snap.node(pidx).size,
-                None => dir_node.size,
+                Some(pidx) => snap.node(pidx).size(),
+                None => dir_size,
             }
         };
 
@@ -904,50 +896,26 @@ pub(crate) fn sort_children(
 mod tests {
     use super::*;
     use crate::config::TuiConfig;
-    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
-    use std::collections::HashMap;
+    use argus_core::{FileType, Snapshot, SnapshotBuilder, ROOT_NODE};
     use std::path::PathBuf;
     use tokio::sync::mpsc;
-
-    fn node(name: &str, is_dir: bool, size: u64, children: Vec<(&str, NodeIndex)>) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir,
-            file_type: if is_dir {
-                FileType::Directory
-            } else {
-                FileType::File
-            },
-            size,
-            disk_usage: size,
-            children: children
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
-    }
 
     #[test]
     fn test_unlisted_child_dir_keeps_dash() {
         let root_path = PathBuf::from("/tmp/test");
 
         // Live tree: test/target/{debug, build}  — "build" is NOT in the scan
-        let live_arena = vec![
-            node("test", true, 0, vec![("target", 1)]),
-            node("target", true, 0, vec![("debug", 2), ("build", 3)]),
-            node("debug", true, 0, vec![]),
-            node("build", true, 0, vec![]),
-        ];
-        let live_snap = Snapshot::new(root_path.clone(), live_arena, 0, 0);
+        let mut live = SnapshotBuilder::new("test");
+        let t = live.push_dir(ROOT_NODE, "target");
+        live.push_dir(t, "debug");
+        live.push_dir(t, "build");
+        let live_snap = live.finish(root_path.clone(), 0, 0);
 
         // Scan cache: test/target/debug only
-        let scan_arena = vec![
-            node("test", true, 0, vec![("target", 1)]),
-            node("target", true, 0, vec![("debug", 2)]),
-            node("debug", true, 0, vec![]),
-        ];
-        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 0, 0);
+        let mut scan = SnapshotBuilder::new("test");
+        let t = scan.push_dir(ROOT_NODE, "target");
+        scan.push_dir(t, "debug");
+        let scan_snap = scan.finish(root_path.clone(), 0, 0);
 
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
@@ -1453,27 +1421,9 @@ mod tests {
 
     #[test]
     fn test_tree_node_snapshot_basics() {
-        let arena = vec![
-            FileNode {
-                name: "root".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 0,
-                disk_usage: 0,
-                children: vec![("file.txt".into(), 1)],
-            },
-            FileNode {
-                name: "file.txt".into(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size: 1024,
-                disk_usage: 0,
-                children: Vec::new(),
-            },
-        ];
-        let snap = Arc::new(Snapshot::new(PathBuf::from("/tmp"), arena, 0, 0));
+        let mut b = SnapshotBuilder::new("root");
+        b.push_file(ROOT_NODE, "file.txt", FileType::File, 1024, 0);
+        let snap = Arc::new(b.finish(PathBuf::from("/tmp"), 0, 0));
         let root = TreeNode::Snapshot(snap.clone(), ROOT_NODE);
         assert!(root.is_dir());
         assert_eq!(root.name(), "root");
@@ -1510,50 +1460,17 @@ mod tests {
     // ── Flat mode tests ──────────────────────────────────────────────────
 
     fn make_flat_app() -> App {
-        use argus_core::{FileNode, FileType, Snapshot, ROOT_NODE};
-        let arena = vec![
-            FileNode {
-                name: "test".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 200,
-                disk_usage: 200,
-                children: vec![
-                    ("src".into(), 1),
-                    ("docs".into(), 2),
-                    ("readme.md".into(), 3),
-                ],
-            },
-            FileNode {
-                name: "src".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 100,
-                disk_usage: 100,
-                children: vec![],
-            },
-            FileNode {
-                name: "docs".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 50,
-                disk_usage: 50,
-                children: vec![],
-            },
-            FileNode {
-                name: "readme.md".into(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size: 50,
-                disk_usage: 50,
-                children: vec![],
-            },
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 200, 200);
+        let mut b = SnapshotBuilder::new("test");
+        let src = b.push_dir(ROOT_NODE, "src");
+        let docs = b.push_dir(ROOT_NODE, "docs");
+        b.push_file(ROOT_NODE, "readme.md", FileType::File, 50, 50);
+        b.nodes[src as usize].set_size(100);
+        b.nodes[src as usize].set_disk_usage(100);
+        b.nodes[docs as usize].set_size(50);
+        b.nodes[docs as usize].set_disk_usage(50);
+        b.nodes[0].set_size(200);
+        b.nodes[0].set_disk_usage(200);
+        let snap = b.finish(PathBuf::from("/tmp/test"), 200, 200);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -1738,37 +1655,11 @@ mod tests {
     #[test]
     #[allow(unused_mut)]
     fn test_hidden_files_toggle_in_load() {
-        use argus_core::{FileNode, FileType, Snapshot, ROOT_NODE};
-        let arena = vec![
-            FileNode {
-                name: "test".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 100,
-                disk_usage: 0,
-                children: vec![(".hidden".into(), 1), ("visible.txt".into(), 2)],
-            },
-            FileNode {
-                name: ".hidden".into(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size: 50,
-                disk_usage: 0,
-                children: vec![],
-            },
-            FileNode {
-                name: "visible.txt".into(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size: 50,
-                disk_usage: 0,
-                children: vec![],
-            },
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 100, 0);
+        let mut b = SnapshotBuilder::new("test");
+        b.push_file(ROOT_NODE, ".hidden", FileType::File, 50, 0);
+        b.push_file(ROOT_NODE, "visible.txt", FileType::File, 50, 0);
+        b.nodes[0].set_size(100);
+        let snap = b.finish(PathBuf::from("/tmp/test"), 100, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -1787,46 +1678,13 @@ mod tests {
 
     #[test]
     fn test_dir_stack_depth_multiple_entries() {
-        use argus_core::{FileNode, FileType, Snapshot, ROOT_NODE};
-        let arena = vec![
-            FileNode {
-                name: "root".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 300,
-                disk_usage: 0,
-                children: vec![("a".into(), 1), ("b".into(), 2)],
-            },
-            FileNode {
-                name: "a".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 200,
-                disk_usage: 0,
-                children: vec![("deep".into(), 3)],
-            },
-            FileNode {
-                name: "b".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 100,
-                disk_usage: 0,
-                children: vec![],
-            },
-            FileNode {
-                name: "deep".into(),
-                parent: None,
-                is_dir: true,
-                file_type: FileType::Directory,
-                size: 50,
-                disk_usage: 0,
-                children: vec![],
-            },
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/deep"), arena, 300, 0);
+        let mut b = SnapshotBuilder::new("root");
+        let a = b.push_dir(ROOT_NODE, "a");
+        b.push_dir(ROOT_NODE, "b");
+        b.push_dir(a, "deep");
+        b.nodes[0].set_size(300);
+        b.nodes[a as usize].set_size(200);
+        let snap = b.finish(PathBuf::from("/tmp/deep"), 300, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/deep");

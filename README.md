@@ -190,7 +190,7 @@ interval_minutes = 60
 
 ## Data Model
 
-- **Snapshots**: session-only, in-memory. Arena-based `FileNode` tree serialized as gzip JSON.
+- **Snapshots**: session-only, in-memory. Compact arena (`FileNode` + name blob + CSR children), serialized as bincode+gzip (v4).
 - **Delta events**: daemon-persisted in SQLite (`~/.config/argus/argus.db`). Events have path, delta_size, event_type (create/modify/delete/agg), and timestamp.
 - **IPC**: UDS with bincode-serialized `DaemonRequest`/`DaemonResponse` enums. Length-prefixed frames.
 - **Double-count prevention**: `is_agg` rows consolidate child events; SQL queries use `NOT EXISTS` to exclude descendants covered by aggregate rows.

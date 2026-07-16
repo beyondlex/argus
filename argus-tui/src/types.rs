@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use argus_core::{FileNode, FileType, NodeIndex, Snapshot};
+use argus_core::{FileType, NodeIndex, Snapshot};
 
 // ── Messages ─────────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ impl SortMode {
 // ── Data types ───────────────────────────────────────────────────────────────
 
 /// A single entry in the flat directory view (ncdu-like).
-/// Represents one direct child of the current directory.
+/// Holds only a snapshot index (+ cached display fields); name comes from the snapshot blob.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub node: TreeNode,
@@ -106,26 +106,40 @@ pub enum TreeNode {
 }
 
 impl TreeNode {
-    pub fn node(&self) -> &FileNode {
+    pub fn index(&self) -> NodeIndex {
         match self {
-            TreeNode::Snapshot(snap, idx) => snap.node(*idx),
+            TreeNode::Snapshot(_, idx) => *idx,
+        }
+    }
+
+    pub fn snapshot(&self) -> &Snapshot {
+        match self {
+            TreeNode::Snapshot(snap, _) => snap.as_ref(),
         }
     }
 
     pub fn name(&self) -> &str {
-        &self.node().name
+        match self {
+            TreeNode::Snapshot(snap, idx) => snap.name(*idx),
+        }
     }
 
     pub fn is_dir(&self) -> bool {
-        self.node().is_dir
+        match self {
+            TreeNode::Snapshot(snap, idx) => snap.node(*idx).is_dir(),
+        }
     }
 
     pub fn file_type(&self) -> FileType {
-        self.node().file_type
+        match self {
+            TreeNode::Snapshot(snap, idx) => snap.node(*idx).file_type(),
+        }
     }
 
     pub fn current_size(&self) -> u64 {
-        self.node().size
+        match self {
+            TreeNode::Snapshot(snap, idx) => snap.node(*idx).size(),
+        }
     }
 }
 

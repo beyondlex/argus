@@ -46,38 +46,6 @@ pub(crate) fn fuzzy_match(query: &str, target: &str) -> bool {
 mod tests {
     use super::*;
     use crate::app::TreeNode;
-    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use tokio::sync::mpsc;
-
-    fn file_node(name: &str, size: u64) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: false,
-            file_type: FileType::File,
-            size,
-            disk_usage: size,
-            children: Vec::new(),
-        }
-    }
-
-    fn dir_node(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            disk_usage: 0,
-            children: children
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
-    }
-
     #[test]
     fn test_fuzzy_match_indices_basic() {
         let result = fuzzy_match_indices("foo", "foobar");

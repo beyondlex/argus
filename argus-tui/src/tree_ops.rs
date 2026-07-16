@@ -20,16 +20,15 @@ fn node_size_in_snapshot(snapshot: &Snapshot, deleted_path: &Path) -> u64 {
     }
     let mut idx = ROOT_NODE;
     for (step, comp) in components.iter().enumerate() {
-        let node = snapshot.node(idx);
         if step + 1 == components.len() {
-            return node
-                .children
+            return snapshot
+                .children(idx)
                 .iter()
-                .find(|(n, _)| n == comp)
-                .map(|(_, child_idx)| snapshot.node(*child_idx).size)
+                .find(|&&child_idx| snapshot.name(child_idx) == *comp)
+                .map(|&child_idx| snapshot.node(child_idx).size())
                 .unwrap_or(0);
         }
-        match node.child_idx(comp) {
+        match snapshot.child_idx(idx, comp) {
             Some(child_idx) => idx = child_idx,
             None => return 0,
         }
@@ -49,21 +48,14 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
 
     for key in keys_to_remove {
         if key == app.view_root_path || deleted_path.starts_with(&key) {
-            // Prune in-place: remove the deleted path from this snapshot.
-            // This preserves parent/ancestor scans needed by resolve_scan_tree
-            // when the view root is a subdirectory (not the scanned root).
             if let Some(arc) = app.scan_cache.get_mut(&key) {
-                // COW: clone only if another Arc still shares this snapshot
                 let snapshot = Arc::make_mut(arc);
                 let freed = node_size_in_snapshot(snapshot, deleted_path);
                 remove_path_from_snapshot(snapshot, deleted_path);
                 total_freed = total_freed.saturating_add(freed);
             }
-        } else {
-            // key.starts_with(deleted_path) — descendant cache entry is being deleted
-            if let Some(snapshot) = app.scan_cache.remove(&key) {
-                total_freed = total_freed.saturating_add(snapshot.total_size);
-            }
+        } else if let Some(snapshot) = app.scan_cache.remove(&key) {
+            total_freed = total_freed.saturating_add(snapshot.total_size);
         }
     }
 
@@ -88,7 +80,7 @@ fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bo
     }
     let removed = prune_file_node(snapshot, ROOT_NODE, &components, 0);
     if removed {
-        snapshot.total_size = snapshot.node(ROOT_NODE).size;
+        snapshot.total_size = snapshot.node(ROOT_NODE).size();
     }
     removed
 }
@@ -118,13 +110,17 @@ fn prune_file_node(
     }
 
     let removed = if index + 1 == components.len() {
-        let node = snap.node_mut(current_idx);
-        let pos = node
-            .children
+        let pos = snap
+            .children(current_idx)
             .iter()
-            .position(|(n, _)| n == &components[index]);
-        pos.map(|p| node.children.swap_remove(p)).is_some()
-    } else if let Some(child_idx) = snap.node(current_idx).child_idx(&components[index]) {
+            .position(|&child_idx| snap.name(child_idx) == components[index]);
+        if let Some(p) = pos {
+            snap.swap_remove_child(current_idx, p);
+            true
+        } else {
+            false
+        }
+    } else if let Some(child_idx) = snap.child_idx(current_idx, &components[index]) {
         let removed = prune_file_node(snap, child_idx, components, index + 1);
         if removed {
             recompute_file_node_size(snap, current_idx);
@@ -141,21 +137,21 @@ fn prune_file_node(
 }
 
 fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
-    if snap.node(idx).children.is_empty() {
-        return snap.node(idx).size;
+    if snap.children_is_empty(idx) {
+        // Leaf or emptied dir: keep file size; dirs with no children become 0 if they were dirs
+        if snap.node(idx).is_dir() {
+            snap.node_mut(idx).set_size(0);
+            return 0;
+        }
+        return snap.node(idx).size();
     }
 
-    let children: Vec<NodeIndex> = snap
-        .node(idx)
-        .children
-        .iter()
-        .map(|(_, idx)| *idx)
-        .collect();
+    let children: Vec<NodeIndex> = snap.children_clone(idx);
     let mut total = 0u64;
     for child_idx in children {
         total = total.saturating_add(recompute_file_node_size(snap, child_idx));
     }
-    snap.node_mut(idx).size = total;
+    snap.node_mut(idx).set_size(total);
     total
 }
 
@@ -169,20 +165,15 @@ pub(crate) fn enrich_snapshot_sizes(
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path: &mut Vec<String>,
 ) {
-    let name = snap.node(idx).name.clone();
+    let name = snap.name(idx).to_string();
     path.push(name);
 
     if let Some(size) = size_for_path(scan_cache, view_root_path, root_scan_tree, path) {
-        snap.node_mut(idx).size = size;
+        snap.node_mut(idx).set_size(size);
     }
 
-    if snap.node(idx).is_dir {
-        let children: Vec<NodeIndex> = snap
-            .node(idx)
-            .children
-            .iter()
-            .map(|(_, idx)| *idx)
-            .collect();
+    if snap.node(idx).is_dir() {
+        let children: Vec<NodeIndex> = snap.children_clone(idx);
         for child_idx in children {
             enrich_snapshot_sizes(
                 snap,
@@ -214,20 +205,16 @@ pub(crate) fn size_for_path(
     }
 
     if let Some(snapshot) = scan_cache.get(&path) {
-        return Some(snapshot.node(ROOT_NODE).size);
+        return Some(snapshot.node(ROOT_NODE).size());
     }
 
     root_scan_tree.and_then(|(snap, idx)| {
         snap.find_node(idx, path_key)
-            .map(|found_idx| snap.node(found_idx).size)
+            .map(|found_idx| snap.node(found_idx).size())
     })
 }
 
 /// Find the best-available scan tree node for a view path.
-///
-/// First tries an exact match in scan_cache. If not found, walks up
-/// the path hierarchy to find a parent-level scan, then walks down
-/// the scan tree to find the subtree matching the view root.
 pub(crate) fn resolve_scan_tree<'a>(
     scan_cache: &'a HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
@@ -243,7 +230,7 @@ pub(crate) fn resolve_scan_tree<'a>(
             let mut idx = ROOT_NODE;
             for component in relative.components() {
                 let name = component.as_os_str().to_str()?;
-                idx = snapshot.node(idx).child_idx(name)?;
+                idx = snapshot.child_idx(idx, name)?;
             }
             return Some((snapshot.as_ref(), idx));
         }
@@ -254,39 +241,11 @@ pub(crate) fn resolve_scan_tree<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
+    use argus_core::{FileType, SnapshotBuilder, ROOT_NODE};
     use std::collections::HashMap;
-    use std::fs;
     use std::path::PathBuf;
-    use tempfile::TempDir;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
-
-    fn file_node(name: &str, size: u64) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: false,
-            file_type: FileType::File,
-            size,
-            disk_usage: size,
-            children: Vec::new(),
-        }
-    }
-
-    fn dir_node(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            disk_usage: 0,
-            children: children
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
-    }
 
     fn make_flat_app(snap: Snapshot, scan_snap: Snapshot) -> App {
         let (tx, rx) = mpsc::channel(1);
@@ -300,46 +259,33 @@ mod tests {
         app
     }
 
-    fn node(name: &str, is_dir: bool, size: u64, children: Vec<(&str, NodeIndex)>) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir,
-            file_type: if is_dir {
-                FileType::Directory
-            } else {
-                FileType::File
-            },
-            size,
-            disk_usage: size,
-            children: children
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
-    }
-
     #[test]
     fn test_enrich_snapshot_sizes_recurses_into_deep_children() {
         let root_path = PathBuf::from("/tmp/test");
 
-        let live_arena = vec![
-            node("test", true, 0, vec![("target", 1)]),
-            node("target", true, 0, vec![("debug", 2)]),
-            node("debug", true, 0, vec![("build", 3)]),
-            node("build", true, 0, vec![("build-script-build", 4)]),
-            node("build-script-build", false, 475_880, vec![]),
-        ];
-        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0, 0);
+        let mut live = SnapshotBuilder::new("test");
+        let t = live.push_dir(ROOT_NODE, "target");
+        let d = live.push_dir(t, "debug");
+        let b = live.push_dir(d, "build");
+        live.push_file(b, "build-script-build", FileType::File, 475_880, 475_880);
+        let mut live_snap = live.finish(root_path.clone(), 0, 0);
 
-        let scan_arena = vec![
-            node("test", true, 475_880, vec![("target", 1)]),
-            node("target", true, 475_880, vec![("debug", 2)]),
-            node("debug", true, 475_880, vec![("build", 3)]),
-            node("build", true, 475_880, vec![("build-script-build", 4)]),
-            node("build-script-build", false, 475_880, vec![]),
-        ];
-        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880, 0);
+        let mut scan = SnapshotBuilder::new("test");
+        let t = scan.push_dir(ROOT_NODE, "target");
+        let d = scan.push_dir(t, "debug");
+        let b = scan.push_dir(d, "build");
+        scan.push_file(b, "build-script-build", FileType::File, 475_880, 475_880);
+        // set rolled sizes on scan tree
+        for i in (1..scan.nodes.len()).rev() {
+            let size = scan.nodes[i].size();
+            if let Some(p) = scan.nodes[i].parent() {
+                let tot = scan.nodes[p as usize].size().saturating_add(size);
+                scan.nodes[p as usize].set_size(tot);
+            }
+        }
+        let total = scan.nodes[0].size();
+        let scan_snap = scan.finish(root_path.clone(), total, total);
+
         let mut scan_cache = HashMap::new();
         scan_cache.insert(root_path.clone(), Arc::new(scan_snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
@@ -353,7 +299,8 @@ mod tests {
             &mut Vec::new(),
         );
 
-        assert_eq!(live_snap.node(3).size, 475_880);
+        // build dir is index 3
+        assert_eq!(live_snap.node(3).size(), 475_880);
     }
 
     #[test]
@@ -361,15 +308,9 @@ mod tests {
         let root_path = PathBuf::from("/tmp/test");
         let sub_path = root_path.join("src");
         let mut scan_cache = HashMap::new();
-        scan_cache.insert(
-            sub_path.clone(),
-            Arc::new(Snapshot::new(
-                sub_path,
-                vec![node("src", true, 100, vec![])],
-                100,
-                0,
-            )),
-        );
+        let mut b = SnapshotBuilder::new("src");
+        b.nodes[0].set_size(100);
+        scan_cache.insert(sub_path.clone(), Arc::new(b.finish(sub_path, 100, 0)));
         let size = size_for_path(
             &scan_cache,
             &root_path,
@@ -383,15 +324,11 @@ mod tests {
     fn test_size_for_path_scan_tree_fallback() {
         let root_path = PathBuf::from("/tmp/test");
         let mut scan_cache = HashMap::new();
-        let snap = Snapshot::new(
-            root_path.clone(),
-            vec![
-                node("test", true, 200, vec![("src", 1)]),
-                node("src", true, 200, vec![]),
-            ],
-            200,
-            0,
-        );
+        let mut b = SnapshotBuilder::new("test");
+        let src = b.push_dir(ROOT_NODE, "src");
+        b.nodes[src as usize].set_size(200);
+        b.nodes[0].set_size(200);
+        let snap = b.finish(root_path.clone(), 200, 0);
         scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
         let size = size_for_path(
@@ -407,7 +344,7 @@ mod tests {
     fn test_size_for_path_no_match() {
         let root_path = PathBuf::from("/tmp/test");
         let mut scan_cache = HashMap::new();
-        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0, 0);
+        let snap = SnapshotBuilder::new("test").finish(root_path.clone(), 0, 0);
         scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
         let size = size_for_path(
@@ -421,27 +358,22 @@ mod tests {
 
     #[test]
     fn test_delete_updates_parent_sizes_and_scan_cache() {
-        fn sized_file(name: &str, size: u64) -> FileNode {
-            FileNode {
-                name: name.to_string(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size,
-                disk_usage: size,
-                children: Vec::new(),
+        let mut b = SnapshotBuilder::new("test");
+        let ignore = b.push_dir(ROOT_NODE, "ignore");
+        b.push_file(ignore, "keep.bin", FileType::File, 12, 12);
+        b.push_file(ignore, "delete.bin", FileType::File, 10, 10);
+        for i in (1..b.nodes.len()).rev() {
+            let size = b.nodes[i].size();
+            if let Some(p) = b.nodes[i].parent() {
+                let t = b.nodes[p as usize].size().saturating_add(size);
+                b.nodes[p as usize].set_size(t);
             }
         }
+        let total = b.nodes[0].size();
+        let arena_snap = b.finish(PathBuf::from("/tmp/test"), total, total);
+        let root_snapshot = arena_snap.clone();
+        let snap = arena_snap;
 
-        let arena = vec![
-            dir_node("test", vec![("ignore", 1)]),
-            dir_node("ignore", vec![("keep.bin", 2), ("delete.bin", 3)]),
-            sized_file("keep.bin", 12),
-            sized_file("delete.bin", 10),
-        ];
-        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 22, 0);
-
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 22, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -457,44 +389,34 @@ mod tests {
 
         let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
         let ignore = snap_arc.node(1);
-        assert_eq!(ignore.size, 12);
-        assert_eq!(snap_arc.node(ROOT_NODE).size, 12);
+        assert_eq!(ignore.size(), 12);
+        assert_eq!(snap_arc.node(ROOT_NODE).size(), 12);
 
         let cached = app.scan_cache.get(&PathBuf::from("/tmp/test")).unwrap();
-        assert_eq!(cached.node(ROOT_NODE).size, 12);
+        assert_eq!(cached.node(ROOT_NODE).size(), 12);
         let cached_ignore = cached.node(1);
-        assert_eq!(cached_ignore.size, 12);
-        assert!(!cached_ignore
-            .children
+        assert_eq!(cached_ignore.size(), 12);
+        assert!(!cached
+            .children(1)
             .iter()
-            .any(|(n, _)| n == "delete.bin"));
+            .any(|&idx| cached.name(idx) == "delete.bin"));
     }
 
     #[test]
     fn test_delete_file_under_root_keeps_scan_data_and_percentage() {
-        fn sized_file(name: &str, size: u64) -> FileNode {
-            FileNode {
-                name: name.to_string(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size,
-                disk_usage: size,
-                children: Vec::new(),
+        let mut b = SnapshotBuilder::new("test");
+        b.push_file(ROOT_NODE, "keep.txt", FileType::File, 80, 80);
+        b.push_file(ROOT_NODE, "delete.txt", FileType::File, 20, 20);
+        for i in (1..b.nodes.len()).rev() {
+            let size = b.nodes[i].size();
+            if let Some(p) = b.nodes[i].parent() {
+                let t = b.nodes[p as usize].size().saturating_add(size);
+                b.nodes[p as usize].set_size(t);
             }
         }
-
-        let arena = vec![
-            dir_node("test", vec![("keep.txt", 1), ("delete.txt", 2)]),
-            sized_file("keep.txt", 80),
-            sized_file("delete.txt", 20),
-        ];
-        // simulate scanner: compute_size sets root node's size
-        let mut root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 0, 0);
-        let mut snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0, 0);
-        // set root node size as scanner would (compute_size)
-        snap.node_mut(ROOT_NODE).size = 100;
-        root_snapshot.node_mut(ROOT_NODE).size = 100;
+        let total = b.nodes[0].size();
+        let snap = b.finish(PathBuf::from("/tmp/test"), total, total);
+        let root_snapshot = snap.clone();
 
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
@@ -505,7 +427,6 @@ mod tests {
         app.current_dir_path = vec!["test".into()];
         app.load_current_children();
 
-        // verify initial state
         let keep_before = app
             .current_children
             .iter()
@@ -513,105 +434,60 @@ mod tests {
             .unwrap();
         assert!(keep_before.has_scan_data);
         assert_eq!(keep_before.size, 80);
-        let root_total = match &app.tree_root {
-            Some(TreeNode::Snapshot(s, _)) => s.node(ROOT_NODE).size,
-            _ => 0,
-        };
-        assert_eq!(root_total, 100);
 
-        // delete a file directly under root
         apply_deletion_to_state(&mut app, Path::new("/tmp/test/delete.txt"));
         app.current_dir_path = vec!["test".into()];
         app.load_current_children();
 
-        // verify tree_root sizes
         let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
-        assert_eq!(snap_arc.node(ROOT_NODE).size, 80);
+        assert_eq!(snap_arc.node(ROOT_NODE).size(), 80);
 
-        // verify remaining flat entry still has scan data and correct size
         let keep = app
             .current_children
             .iter()
-            .find(|l| l.node.name() == "keep.txt");
-        assert!(
-            keep.is_some(),
-            "keep.txt should still be in current_children"
-        );
-        let keep = keep.unwrap();
-        assert!(
-            keep.has_scan_data,
-            "keep.txt should have has_scan_data=true after deletion"
-        );
-        assert_eq!(keep.size, 80, "keep.txt size should be 80 after deletion");
+            .find(|l| l.node.name() == "keep.txt")
+            .unwrap();
+        assert!(keep.has_scan_data);
+        assert_eq!(keep.size, 80);
 
-        // verify percentage would show correctly
-        let root_total = snap_arc.node(ROOT_NODE).size;
-        assert!(
-            root_total > 0,
-            "root_total_size should be > 0 after deletion"
-        );
+        let root_total = snap_arc.node(ROOT_NODE).size();
         let pct = (keep.size as f64 / root_total as f64) * 100.0;
-        assert!(
-            (pct - 100.0).abs() < 0.1,
-            "keep.txt should be 100% of remaining root"
-        );
+        assert!((pct - 100.0).abs() < 0.1);
 
-        // deleted file should not be in current_children
-        let deleted = app
+        assert!(app
             .current_children
             .iter()
-            .find(|l| l.node.name() == "delete.txt");
-        assert!(
-            deleted.is_none(),
-            "delete.txt should be removed from current_children"
-        );
+            .find(|l| l.node.name() == "delete.txt")
+            .is_none());
     }
 
     #[test]
     fn test_delete_in_subdirectory_preserves_parent_scan_cache() {
-        // Simulate: user scanned ~/code/github, navigated into argus/, then deleted a file.
-        // The parent scan cache entry (~/code/github) must be PRUNED, not removed,
-        // so resolve_scan_tree can still find sizes for remaining entries.
-        fn sized_file(name: &str, size: u64) -> FileNode {
-            FileNode {
-                name: name.to_string(),
-                parent: None,
-                is_dir: false,
-                file_type: FileType::File,
-                size,
-                disk_usage: size,
-                children: Vec::new(),
+        let mut parent_b = SnapshotBuilder::new("github");
+        let argus = parent_b.push_dir(ROOT_NODE, "argus");
+        parent_b.push_file(ROOT_NODE, "readme.md", FileType::File, 10, 10);
+        parent_b.push_file(argus, "keep.txt", FileType::File, 80, 80);
+        parent_b.push_file(argus, "delete.txt", FileType::File, 20, 20);
+        for i in (1..parent_b.nodes.len()).rev() {
+            let size = parent_b.nodes[i].size();
+            if let Some(p) = parent_b.nodes[i].parent() {
+                let t = parent_b.nodes[p as usize].size().saturating_add(size);
+                parent_b.nodes[p as usize].set_size(t);
             }
         }
+        let parent_total = parent_b.nodes[0].size();
+        let parent_scan = parent_b.finish(PathBuf::from("/tmp/github"), parent_total, parent_total);
 
-        // Parent scan: ~/code/github with argus/ and other files
-        let parent_arena = vec![
-            dir_node("github", vec![("argus", 1), ("readme.md", 2)]),
-            dir_node("argus", vec![("keep.txt", 3), ("delete.txt", 4)]),
-            sized_file("readme.md", 10),
-            sized_file("keep.txt", 80),
-            sized_file("delete.txt", 20),
-        ];
-        let mut parent_scan =
-            Snapshot::new(PathBuf::from("/tmp/github"), parent_arena.clone(), 0, 0);
-        parent_scan.node_mut(ROOT_NODE).size = 110; // scanner compute_size
-        parent_scan.node_mut(1).size = 100; // argus total
-
-        // Subdirectory view: argus/ (shallow, like list_dir result)
-        let sub_arena = vec![
-            dir_node("argus", vec![("keep.txt", 1), ("delete.txt", 2)]),
-            sized_file("keep.txt", 80),
-            sized_file("delete.txt", 20),
-        ];
-        let mut sub_snap = Snapshot::new(PathBuf::from("/tmp/github/argus"), sub_arena, 0, 0);
+        let mut sub_b = SnapshotBuilder::new("argus");
+        sub_b.push_file(ROOT_NODE, "keep.txt", FileType::File, 80, 80);
+        sub_b.push_file(ROOT_NODE, "delete.txt", FileType::File, 20, 20);
+        let mut sub_snap = sub_b.finish(PathBuf::from("/tmp/github/argus"), 0, 0);
 
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/github/argus");
-        // Store parent scan in cache (subdirectory is NOT in cache)
         app.scan_cache
             .insert(PathBuf::from("/tmp/github"), Arc::new(parent_scan));
-        // Enrich subdirectory snapshot (simulating build_current_tree)
         let root_scan_tree = resolve_scan_tree(&app.scan_cache, &app.view_root_path);
         enrich_snapshot_sizes(
             &mut sub_snap,
@@ -625,7 +501,6 @@ mod tests {
         app.current_dir_path = vec!["argus".into()];
         app.load_current_children();
 
-        // Verify initial state
         let keep = app
             .current_children
             .iter()
@@ -634,41 +509,31 @@ mod tests {
         assert!(keep.has_scan_data);
         assert_eq!(keep.size, 80);
 
-        // Delete a file inside the subdirectory
         apply_deletion_to_state(&mut app, Path::new("/tmp/github/argus/delete.txt"));
         app.current_dir_path = vec!["argus".into()];
         app.load_current_children();
 
-        // Verify parent scan still exists in cache
-        assert!(
-            app.scan_cache.contains_key(&PathBuf::from("/tmp/github")),
-            "parent scan cache entry should be preserved (pruned, not removed)"
-        );
+        assert!(app.scan_cache.contains_key(&PathBuf::from("/tmp/github")));
+        assert!(resolve_scan_tree(&app.scan_cache, &app.view_root_path).is_some());
 
-        // Verify resolve_scan_tree still works
-        let rst = resolve_scan_tree(&app.scan_cache, &app.view_root_path);
-        assert!(
-            rst.is_some(),
-            "resolve_scan_tree should still find parent scan"
-        );
-
-        // Verify remaining entry has scan data
         let keep = app
             .current_children
             .iter()
-            .find(|l| l.node.name() == "keep.txt");
-        assert!(
-            keep.is_some(),
-            "keep.txt should still be in current_children"
-        );
-        let keep = keep.unwrap();
-        assert!(
-            keep.has_scan_data,
-            "keep.txt should have has_scan_data=true after deletion in subdirectory view"
-        );
+            .find(|l| l.node.name() == "keep.txt")
+            .unwrap();
+        assert!(keep.has_scan_data);
 
-        // Verify tree_root root node size is recomputed
         let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
-        assert_eq!(snap_arc.node(ROOT_NODE).size, 80);
+        assert_eq!(snap_arc.node(ROOT_NODE).size(), 80);
+    }
+
+    #[test]
+    fn test_make_flat_app_smoke() {
+        let mut b = SnapshotBuilder::new("test");
+        b.push_file(ROOT_NODE, "a.txt", FileType::File, 1, 1);
+        let snap = b.finish(PathBuf::from("/tmp/test"), 1, 1);
+        let scan = snap.clone();
+        let app = make_flat_app(snap, scan);
+        assert!(!app.current_children.is_empty());
     }
 }

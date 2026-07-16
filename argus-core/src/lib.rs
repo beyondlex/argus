@@ -11,6 +11,7 @@ pub use db::{
 pub use ipc::{DaemonRequest, DaemonResponse, WatchDirInfo, DEFAULT_UDS_PATH};
 pub use model::{
     hash_root_path, parse_human_size, DeltaEntry, DeltaEvent, DeltaSummary, FileNode, FileType,
-    NodeIndex, ParseSizeError, ScanError, Snapshot, SnapshotError, ROOT_NODE, SNAPSHOT_VERSION,
+    NodeIndex, ParseSizeError, ScanError, Snapshot, SnapshotBuilder, SnapshotError,
+    INLINE_NAME_MAX, NO_PARENT, ROOT_NODE, SNAPSHOT_VERSION,
 };
 pub use scanner::{list_dir, scan_path};

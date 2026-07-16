@@ -37,7 +37,7 @@ mod tests {
     };
     use crate::handler::search::handle_search_keys;
     use crate::types::SearchMode;
-    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
+    use argus_core::{Snapshot, SnapshotBuilder, ROOT_NODE};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
     use std::path::PathBuf;
@@ -46,31 +46,8 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    fn file_node(name: &str, size: u64) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: false,
-            file_type: FileType::File,
-            size,
-            disk_usage: size,
-            children: Vec::new(),
-        }
-    }
-
-    fn dir_node(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
-        FileNode {
-            name: name.to_string(),
-            parent: None,
-            is_dir: true,
-            file_type: FileType::Directory,
-            size: 0,
-            disk_usage: 0,
-            children: children
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
+    fn empty_root_snap(name: &str, path: PathBuf) -> Snapshot {
+        SnapshotBuilder::new(name).finish(path, 0, 0)
     }
 
     fn make_app(snap: Snapshot, scan_snap: Snapshot) -> App {
@@ -156,9 +133,8 @@ mod tests {
         assert!(file_path.exists());
 
         let root_path = PathBuf::from("/tmp/test");
-        let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(root_path.clone(), arena, 0, 0);
-        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0, 0);
+        let snap = empty_root_snap("test", root_path.clone());
+        let scan_snap = empty_root_snap("test", root_path.clone());
         let mut app = make_app(snap, scan_snap);
         app.mode = AppMode::DeletePermanentPrompt;
         app.delete_target_path = Some(file_path.clone());
@@ -361,7 +337,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         // Set up tree_root so recompute_matches doesn't panic
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
+        let snap = empty_root_snap("tmp", PathBuf::from("/tmp"));
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -379,7 +355,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word = "fo".to_string();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
+        let snap = empty_root_snap("tmp", PathBuf::from("/tmp"));
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -397,7 +373,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word.clear();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
+        let snap = empty_root_snap("tmp", PathBuf::from("/tmp"));
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -415,7 +391,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word = "foo".to_string();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
+        let snap = empty_root_snap("tmp", PathBuf::from("/tmp"));
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -487,7 +463,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         // Set up a tree_root so execute_command doesn't error on missing root
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
+        let snap = empty_root_snap("tmp", PathBuf::from("/tmp"));
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         execute_command(&mut app, "xyzzy");
@@ -652,9 +628,8 @@ mod tests {
         assert!(file_path.exists());
 
         let root_path = PathBuf::from("/tmp/test");
-        let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(root_path.clone(), arena, 0, 0);
-        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0, 0);
+        let snap = empty_root_snap("test", root_path.clone());
+        let scan_snap = empty_root_snap("test", root_path.clone());
         let mut app = make_app(snap, scan_snap);
         app.mode = AppMode::DeletePrompt;
         app.delete_target_path = Some(file_path.clone());
