@@ -268,6 +268,7 @@ mod tests {
             is_dir: false,
             file_type: FileType::File,
             size,
+            disk_usage: size,
             children: Vec::new(),
         }
     }
@@ -279,6 +280,7 @@ mod tests {
             is_dir: true,
             file_type: FileType::Directory,
             size: 0,
+            disk_usage: 0,
             children: children
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -309,6 +311,7 @@ mod tests {
                 FileType::File
             },
             size,
+            disk_usage: size,
             children: children
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -327,7 +330,7 @@ mod tests {
             node("build", true, 0, vec![("build-script-build", 4)]),
             node("build-script-build", false, 475_880, vec![]),
         ];
-        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
+        let mut live_snap = Snapshot::new(root_path.clone(), live_arena, 0, 0);
 
         let scan_arena = vec![
             node("test", true, 475_880, vec![("target", 1)]),
@@ -336,7 +339,7 @@ mod tests {
             node("build", true, 475_880, vec![("build-script-build", 4)]),
             node("build-script-build", false, 475_880, vec![]),
         ];
-        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880);
+        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 475_880, 0);
         let mut scan_cache = HashMap::new();
         scan_cache.insert(root_path.clone(), Arc::new(scan_snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
@@ -364,6 +367,7 @@ mod tests {
                 sub_path,
                 vec![node("src", true, 100, vec![])],
                 100,
+                0,
             )),
         );
         let size = size_for_path(
@@ -386,6 +390,7 @@ mod tests {
                 node("src", true, 200, vec![]),
             ],
             200,
+            0,
         );
         scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
@@ -402,7 +407,7 @@ mod tests {
     fn test_size_for_path_no_match() {
         let root_path = PathBuf::from("/tmp/test");
         let mut scan_cache = HashMap::new();
-        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0);
+        let snap = Snapshot::new(root_path.clone(), vec![node("test", true, 0, vec![])], 0, 0);
         scan_cache.insert(root_path.clone(), Arc::new(snap));
         let root_scan_tree = resolve_scan_tree(&scan_cache, &root_path);
         let size = size_for_path(
@@ -423,6 +428,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size,
+                disk_usage: size,
                 children: Vec::new(),
             }
         }
@@ -433,9 +439,9 @@ mod tests {
             sized_file("keep.bin", 12),
             sized_file("delete.bin", 10),
         ];
-        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 22);
+        let root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 22, 0);
 
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 22);
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 22, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -473,6 +479,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size,
+                disk_usage: size,
                 children: Vec::new(),
             }
         }
@@ -483,8 +490,8 @@ mod tests {
             sized_file("delete.txt", 20),
         ];
         // simulate scanner: compute_size sets root node's size
-        let mut root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 0);
-        let mut snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
+        let mut root_snapshot = Snapshot::new(PathBuf::from("/tmp/test"), arena.clone(), 0, 0);
+        let mut snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0, 0);
         // set root node size as scanner would (compute_size)
         snap.node_mut(ROOT_NODE).size = 100;
         root_snapshot.node_mut(ROOT_NODE).size = 100;
@@ -572,6 +579,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size,
+                disk_usage: size,
                 children: Vec::new(),
             }
         }
@@ -584,7 +592,8 @@ mod tests {
             sized_file("keep.txt", 80),
             sized_file("delete.txt", 20),
         ];
-        let mut parent_scan = Snapshot::new(PathBuf::from("/tmp/github"), parent_arena.clone(), 0);
+        let mut parent_scan =
+            Snapshot::new(PathBuf::from("/tmp/github"), parent_arena.clone(), 0, 0);
         parent_scan.node_mut(ROOT_NODE).size = 110; // scanner compute_size
         parent_scan.node_mut(1).size = 100; // argus total
 
@@ -594,7 +603,7 @@ mod tests {
             sized_file("keep.txt", 80),
             sized_file("delete.txt", 20),
         ];
-        let mut sub_snap = Snapshot::new(PathBuf::from("/tmp/github/argus"), sub_arena, 0);
+        let mut sub_snap = Snapshot::new(PathBuf::from("/tmp/github/argus"), sub_arena, 0, 0);
 
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);

@@ -219,7 +219,7 @@ fn render_main_content(
             cursor_visible,
             focus: file_tree_focused,
             delta_cache,
-            current_dir_total: app.current_dir_total,
+            current_dir_disk_usage: app.current_dir_disk_usage,
             multi_select: app.multi_select,
             selected_paths: &app.selected_paths,
             theme: &app.theme,
@@ -234,7 +234,6 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         f,
         area,
         app.mode,
-        app.last_scan_summary.as_ref(),
         error_str,
         status_is_error,
         app.sort_mode,
@@ -246,6 +245,9 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         app.delta_filter_active,
         app.delta_filter_value,
         app.delta_filter_unit,
+        app.current_dir_disk_usage,
+        app.current_dir_total,
+        app.current_dir_items,
     );
 }
 
@@ -417,6 +419,39 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     ];
     header_spans.extend(key_hints(&[("?", "Help"), ("q", "Quit")], &app.theme));
 
+    // Middle: last scan summary (if available)
+    let mut summary_spans: Vec<Span> = Vec::new();
+    if let Some(summary) = &app.last_scan_summary {
+        summary_spans.push(Span::styled(
+            "Last scan: ",
+            Style::default().fg(app.theme.text_tertiary),
+        ));
+        summary_spans.push(Span::styled(
+            "Size:",
+            Style::default().fg(app.theme.text_secondary),
+        ));
+        summary_spans.push(Span::styled(
+            format!(" {}", format_size(summary.total_disk_usage)),
+            Style::default().fg(app.theme.text_highlight),
+        ));
+        summary_spans.push(Span::styled(
+            " Items:",
+            Style::default().fg(app.theme.text_secondary),
+        ));
+        summary_spans.push(Span::styled(
+            format!(" {}", format_count(summary.total_files)),
+            Style::default().fg(app.theme.text_highlight),
+        ));
+        summary_spans.push(Span::styled(
+            " Took:",
+            Style::default().fg(app.theme.text_secondary),
+        ));
+        summary_spans.push(Span::styled(
+            format!(" {}", format_duration(summary.duration)),
+            Style::default().fg(app.theme.text_highlight),
+        ));
+    }
+
     // Right side: daemon status
     let (daemon_text, daemon_color) = if app.server_connected {
         ("● Daemon", app.theme.success)
@@ -426,15 +461,21 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let daemon_span = Span::styled(daemon_text, Style::default().fg(daemon_color));
     let daemon_line = Line::from(vec![Span::raw(" "), daemon_span, Span::raw(" ")]);
 
-    // Split layout: left takes Fill, right is fixed-width daemon label
-    let daemon_width: u16 = daemon_text.len() as u16 + 2; // spaces
-    if daemon_width + 4 < area.width {
+    let summary_width: u16 = summary_spans.iter().map(|s| s.content.len() as u16).sum();
+    let daemon_width: u16 = daemon_text.len() as u16 + 2;
+    let right_total = summary_width + daemon_width;
+
+    if right_total + 4 < area.width {
         let [left_area, right_area] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(daemon_width)])
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_total)])
                 .flex(Flex::SpaceBetween)
                 .areas(area);
         f.render_widget(Paragraph::new(Line::from(header_spans)), left_area);
-        f.render_widget(Paragraph::new(daemon_line), right_area);
+
+        let mut right_spans = summary_spans;
+        right_spans.push(Span::raw("  "));
+        right_spans.extend(daemon_line.spans);
+        f.render_widget(Paragraph::new(Line::from(right_spans)), right_area);
     } else {
         f.render_widget(Paragraph::new(Line::from(header_spans)), area);
     }

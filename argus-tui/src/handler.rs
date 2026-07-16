@@ -53,6 +53,7 @@ mod tests {
             is_dir: false,
             file_type: FileType::File,
             size,
+            disk_usage: size,
             children: Vec::new(),
         }
     }
@@ -64,6 +65,7 @@ mod tests {
             is_dir: true,
             file_type: FileType::Directory,
             size: 0,
+            disk_usage: 0,
             children: children
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -155,8 +157,8 @@ mod tests {
 
         let root_path = PathBuf::from("/tmp/test");
         let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(root_path.clone(), arena, 0);
-        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0);
+        let snap = Snapshot::new(root_path.clone(), arena, 0, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0, 0);
         let mut app = make_app(snap, scan_snap);
         app.mode = AppMode::DeletePermanentPrompt;
         app.delete_target_path = Some(file_path.clone());
@@ -359,7 +361,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         // Set up tree_root so recompute_matches doesn't panic
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -377,7 +379,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word = "fo".to_string();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -395,7 +397,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word.clear();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -413,7 +415,7 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word = "foo".to_string();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed = handle_search_keys(
@@ -485,7 +487,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         // Set up a tree_root so execute_command doesn't error on missing root
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0, 0);
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         execute_command(&mut app, "xyzzy");
@@ -651,8 +653,8 @@ mod tests {
 
         let root_path = PathBuf::from("/tmp/test");
         let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(root_path.clone(), arena, 0);
-        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0);
+        let snap = Snapshot::new(root_path.clone(), arena, 0, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), vec![file_node("test", 0)], 0, 0);
         let mut app = make_app(snap, scan_snap);
         app.mode = AppMode::DeletePrompt;
         app.delete_target_path = Some(file_path.clone());

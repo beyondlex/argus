@@ -357,6 +357,7 @@ pub fn start_scan(app: &mut App) {
                     .try_send(AppMessage::ScanProgress {
                         file_count: update.file_count,
                         total_bytes: update.total_bytes,
+                        total_disk_bytes: update.total_disk_bytes,
                         current_path: update.current_path,
                     })
                     .is_err()

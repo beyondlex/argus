@@ -138,6 +138,12 @@ pub struct App {
     /// Total size of the current directory (for percentage calculation)
     pub current_dir_total: u64,
 
+    /// Total disk usage of the current directory
+    pub current_dir_disk_usage: u64,
+
+    /// Number of visible items in the current directory
+    pub current_dir_items: u64,
+
     /// Total size of the parent directory
     pub parent_dir_total: u64,
 }
@@ -219,6 +225,8 @@ impl App {
             current_dir_path: Vec::new(),
             dir_stack: Vec::new(),
             current_dir_total: 0,
+            current_dir_disk_usage: 0,
+            current_dir_items: 0,
             parent_dir_total: 0,
         }
     }
@@ -269,6 +277,7 @@ impl App {
             AppMessage::ScanProgress {
                 file_count,
                 total_bytes,
+                total_disk_bytes: _,
                 current_path,
             } => {
                 self.scan_progress = Some((file_count, total_bytes));
@@ -285,6 +294,7 @@ impl App {
                 self.last_scan_summary = Some(ScanSummary {
                     root_path: snapshot.root_path.clone(),
                     total_size: snapshot.total_size,
+                    total_disk_usage: snapshot.total_disk_usage,
                     total_files: snapshot.total_files,
                     duration,
                 });
@@ -660,6 +670,7 @@ impl App {
                 has_scan_data: has_scan,
                 is_dir: child_node.is_dir,
                 size: child_node.size,
+                disk_usage: child_node.disk_usage,
             });
         }
 
@@ -669,6 +680,8 @@ impl App {
         // (5) Update totals
         self.current_children = children;
         self.current_dir_total = dir_node.size;
+        self.current_dir_disk_usage = dir_node.disk_usage;
+        self.current_dir_items = dir_node.children.len() as u64;
         self.parent_dir_total = if self.current_dir_path.len() <= 1 {
             dir_node.size
         } else {
@@ -870,8 +883,8 @@ pub(crate) fn sort_children(
         }
         SortMode::Size => {
             children.sort_by(|a, b| {
-                b.size
-                    .cmp(&a.size)
+                b.disk_usage
+                    .cmp(&a.disk_usage)
                     .then_with(|| a.node.name().cmp(b.node.name()))
             });
         }
@@ -907,6 +920,7 @@ mod tests {
                 FileType::File
             },
             size,
+            disk_usage: size,
             children: children
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -925,7 +939,7 @@ mod tests {
             node("debug", true, 0, vec![]),
             node("build", true, 0, vec![]),
         ];
-        let live_snap = Snapshot::new(root_path.clone(), live_arena, 0);
+        let live_snap = Snapshot::new(root_path.clone(), live_arena, 0, 0);
 
         // Scan cache: test/target/debug only
         let scan_arena = vec![
@@ -933,7 +947,7 @@ mod tests {
             node("target", true, 0, vec![("debug", 2)]),
             node("debug", true, 0, vec![]),
         ];
-        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 0);
+        let scan_snap = Snapshot::new(root_path.clone(), scan_arena, 0, 0);
 
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
@@ -1446,6 +1460,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 0,
+                disk_usage: 0,
                 children: vec![("file.txt".into(), 1)],
             },
             FileNode {
@@ -1454,10 +1469,11 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 1024,
+                disk_usage: 0,
                 children: Vec::new(),
             },
         ];
-        let snap = Arc::new(Snapshot::new(PathBuf::from("/tmp"), arena, 0));
+        let snap = Arc::new(Snapshot::new(PathBuf::from("/tmp"), arena, 0, 0));
         let root = TreeNode::Snapshot(snap.clone(), ROOT_NODE);
         assert!(root.is_dir());
         assert_eq!(root.name(), "root");
@@ -1502,6 +1518,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 200,
+                disk_usage: 200,
                 children: vec![
                     ("src".into(), 1),
                     ("docs".into(), 2),
@@ -1514,6 +1531,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 100,
+                disk_usage: 100,
                 children: vec![],
             },
             FileNode {
@@ -1522,6 +1540,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 50,
+                disk_usage: 50,
                 children: vec![],
             },
             FileNode {
@@ -1530,10 +1549,11 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 50,
+                disk_usage: 50,
                 children: vec![],
             },
         ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 200);
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 200, 200);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -1726,6 +1746,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 100,
+                disk_usage: 0,
                 children: vec![(".hidden".into(), 1), ("visible.txt".into(), 2)],
             },
             FileNode {
@@ -1734,6 +1755,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 50,
+                disk_usage: 0,
                 children: vec![],
             },
             FileNode {
@@ -1742,10 +1764,11 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 50,
+                disk_usage: 0,
                 children: vec![],
             },
         ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 100);
+        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 100, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/test");
@@ -1772,6 +1795,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 300,
+                disk_usage: 0,
                 children: vec![("a".into(), 1), ("b".into(), 2)],
             },
             FileNode {
@@ -1780,6 +1804,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 200,
+                disk_usage: 0,
                 children: vec![("deep".into(), 3)],
             },
             FileNode {
@@ -1788,6 +1813,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 100,
+                disk_usage: 0,
                 children: vec![],
             },
             FileNode {
@@ -1796,10 +1822,11 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 50,
+                disk_usage: 0,
                 children: vec![],
             },
         ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/deep"), arena, 300);
+        let snap = Snapshot::new(PathBuf::from("/tmp/deep"), arena, 300, 0);
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, rx);
         app.view_root_path = PathBuf::from("/tmp/deep");

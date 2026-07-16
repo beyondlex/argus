@@ -15,14 +15,17 @@ use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, ROOT_NODE
 pub struct ProgressUpdate {
     pub file_count: u64,
     pub total_bytes: u64,
+    pub total_disk_bytes: u64,
     pub current_path: Option<String>,
 }
 
 struct ProgressTracker {
     file_count: u64,
     total_bytes: u64,
+    total_disk_bytes: u64,
     last_reported_file_count: u64,
     last_reported_total_bytes: u64,
+    last_reported_total_disk_bytes: u64,
     current_path: Option<String>,
     progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
 }
@@ -35,16 +38,19 @@ impl ProgressTracker {
         Self {
             file_count: 0,
             total_bytes: 0,
+            total_disk_bytes: 0,
             last_reported_file_count: 0,
             last_reported_total_bytes: 0,
+            last_reported_total_disk_bytes: 0,
             current_path: None,
             progress_tx,
         }
     }
 
-    fn record(&mut self, files: u64, bytes: u64, path: Option<String>) {
+    fn record(&mut self, files: u64, bytes: u64, disk_bytes: u64, path: Option<String>) {
         self.file_count = self.file_count.saturating_add(files);
         self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.total_disk_bytes = self.total_disk_bytes.saturating_add(disk_bytes);
         if path.is_some() {
             self.current_path = path;
         }
@@ -52,7 +58,7 @@ impl ProgressTracker {
     }
 
     fn record_files_only(&mut self, files: u64) {
-        self.record(files, 0, None);
+        self.record(files, 0, 0, None);
     }
 
     fn maybe_report(&mut self) {
@@ -62,13 +68,21 @@ impl ProgressTracker {
         let size_delta = self
             .total_bytes
             .saturating_sub(self.last_reported_total_bytes);
-        if file_delta >= PROGRESS_FILE_BATCH || size_delta >= PROGRESS_BYTES_BATCH {
+        let disk_delta = self
+            .total_disk_bytes
+            .saturating_sub(self.last_reported_total_disk_bytes);
+        if file_delta >= PROGRESS_FILE_BATCH
+            || size_delta >= PROGRESS_BYTES_BATCH
+            || disk_delta >= PROGRESS_BYTES_BATCH
+        {
             self.last_reported_file_count = self.file_count;
             self.last_reported_total_bytes = self.total_bytes;
+            self.last_reported_total_disk_bytes = self.total_disk_bytes;
             if let Some(ref tx) = self.progress_tx {
                 let _ = tx.send(ProgressUpdate {
                     file_count: self.file_count,
                     total_bytes: self.total_bytes,
+                    total_disk_bytes: self.total_disk_bytes,
                     current_path: self.current_path.clone(),
                 });
             }
@@ -84,6 +98,7 @@ impl ProgressTracker {
             let _ = tx.send(ProgressUpdate {
                 file_count: self.file_count,
                 total_bytes: self.total_bytes,
+                total_disk_bytes: self.total_disk_bytes,
                 current_path: None,
             });
         }
@@ -105,6 +120,7 @@ impl TreeBuilder {
             is_dir: true,
             file_type: FileType::Directory,
             size: 0,
+            disk_usage: 0,
             children: Vec::new(),
         });
         Self {
@@ -124,6 +140,7 @@ impl TreeBuilder {
             is_dir: true,
             file_type: FileType::Directory,
             size: 0,
+            disk_usage: 0,
             children: Vec::new(),
         });
         self.arena[parent as usize]
@@ -235,7 +252,8 @@ pub fn scan_path(
                 let current_path = progress
                     .is_active()
                     .then(|| entry_path.to_string_lossy().to_string());
-                progress.record(1, meta.len(), current_path);
+                let du = get_disk_usage(&meta);
+                progress.record(1, meta.len(), du, current_path);
             } else {
                 progress.record_files_only(1);
             }
@@ -246,8 +264,10 @@ pub fn scan_path(
     }
 
     compute_size(&mut tree.arena);
+    compute_disk_usage(&mut tree.arena);
     let total_size = tree.arena[ROOT_NODE as usize].size;
-    let snapshot = Snapshot::new(path.to_path_buf(), tree.arena, total_size);
+    let total_disk_usage = tree.arena[ROOT_NODE as usize].disk_usage;
+    let snapshot = Snapshot::new(path.to_path_buf(), tree.arena, total_size, total_disk_usage);
 
     progress.finish();
 
@@ -275,14 +295,32 @@ fn create_file_node(path: &Path, meta: &std::fs::Metadata) -> FileNode {
         meta.len()
     };
 
+    let disk_usage = if is_dir || meta.is_symlink() {
+        0
+    } else {
+        get_disk_usage(meta)
+    };
+
     FileNode {
         name,
         parent: None,
         is_dir,
         file_type,
         size,
+        disk_usage,
         children: Vec::new(),
     }
+}
+
+#[cfg(unix)]
+fn get_disk_usage(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.blocks() * 512
+}
+
+#[cfg(not(unix))]
+fn get_disk_usage(meta: &std::fs::Metadata) -> u64 {
+    meta.len()
 }
 
 fn detect_file_type(meta: &std::fs::Metadata) -> FileType {
@@ -364,6 +402,7 @@ pub fn list_dir(path: &Path) -> Result<Snapshot, ScanError> {
         is_dir: true,
         file_type: FileType::Directory,
         size: 0,
+        disk_usage: 0,
         children: Vec::new(),
     }];
 
@@ -389,8 +428,18 @@ pub fn list_dir(path: &Path) -> Result<Snapshot, ScanError> {
         .iter()
         .map(|(_, idx)| arena[*idx as usize].size)
         .sum();
+    let total_disk_usage = arena[ROOT_NODE as usize]
+        .children
+        .iter()
+        .map(|(_, idx)| arena[*idx as usize].disk_usage)
+        .sum();
 
-    Ok(Snapshot::new(path.to_path_buf(), arena, total_size))
+    Ok(Snapshot::new(
+        path.to_path_buf(),
+        arena,
+        total_size,
+        total_disk_usage,
+    ))
 }
 
 fn compute_size(arena: &mut [FileNode]) {
@@ -398,6 +447,16 @@ fn compute_size(arena: &mut [FileNode]) {
         let size = arena[i].size;
         if let Some(parent) = arena[i].parent {
             arena[parent as usize].size = arena[parent as usize].size.saturating_add(size);
+        }
+    }
+}
+
+fn compute_disk_usage(arena: &mut [FileNode]) {
+    for i in (1..arena.len()).rev() {
+        let du = arena[i].disk_usage;
+        if let Some(parent) = arena[i].parent {
+            arena[parent as usize].disk_usage =
+                arena[parent as usize].disk_usage.saturating_add(du);
         }
     }
 }
@@ -510,6 +569,7 @@ mod tests {
                 is_dir: true,
                 file_type: FileType::Directory,
                 size: 0,
+                disk_usage: 0,
                 children: Vec::new(),
             },
             FileNode {
@@ -518,6 +578,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 100,
+                disk_usage: 100,
                 children: Vec::new(),
             },
             FileNode {
@@ -526,6 +587,7 @@ mod tests {
                 is_dir: false,
                 file_type: FileType::File,
                 size: 200,
+                disk_usage: 200,
                 children: Vec::new(),
             },
         ];
@@ -785,6 +847,7 @@ mod tests {
         let final_update = rx.try_iter().last().unwrap();
         assert_eq!(final_update.total_bytes, snapshot.total_size);
         assert_eq!(final_update.total_bytes, 7 + 18 + 15);
+        assert_eq!(final_update.total_disk_bytes, snapshot.total_disk_usage);
         // file_count: readme.md + node_modules + pkg + src + index.js + lib.js
         assert_eq!(final_update.file_count, 6);
     }

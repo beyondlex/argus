@@ -32,6 +32,8 @@ pub struct FileNode {
     pub is_dir: bool,
     pub file_type: FileType,
     pub size: u64,
+    #[serde(default)]
+    pub disk_usage: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<(String, NodeIndex)>,
 }
@@ -59,12 +61,19 @@ pub struct Snapshot {
     pub root_path_hash: String,
     pub total_size: u64,
     #[serde(default)]
+    pub total_disk_usage: u64,
+    #[serde(default)]
     pub total_files: u64,
     pub arena: Vec<FileNode>,
 }
 
 impl Snapshot {
-    pub fn new(root_path: PathBuf, arena: Vec<FileNode>, total_size: u64) -> Self {
+    pub fn new(
+        root_path: PathBuf,
+        arena: Vec<FileNode>,
+        total_size: u64,
+        total_disk_usage: u64,
+    ) -> Self {
         let root_path_hash = hash_root_path(&root_path);
         let total_files = arena.iter().filter(|n| !n.is_dir).count() as u64;
         Self {
@@ -73,6 +82,7 @@ impl Snapshot {
             root_path,
             root_path_hash,
             total_size,
+            total_disk_usage,
             total_files,
             arena,
         }
@@ -318,9 +328,10 @@ mod tests {
             is_dir: true,
             file_type: FileType::Directory,
             size: 100,
+            disk_usage: 0,
             children: Vec::new(),
         }];
-        let snap = Snapshot::new(PathBuf::from("/tmp"), arena, 100);
+        let snap = Snapshot::new(PathBuf::from("/tmp"), arena, 100, 0);
         assert_eq!(snap.version, SNAPSHOT_VERSION);
         assert_eq!(snap.root_path_hash.len(), 8);
     }
@@ -333,6 +344,7 @@ mod tests {
             is_dir: false,
             file_type: FileType::File,
             size: 1024,
+            disk_usage: 1024,
             children: Vec::new(),
         };
         let json = serde_json::to_string(&node).unwrap();

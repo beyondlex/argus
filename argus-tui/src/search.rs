@@ -58,6 +58,7 @@ mod tests {
             is_dir: false,
             file_type: FileType::File,
             size,
+            disk_usage: size,
             children: Vec::new(),
         }
     }
@@ -69,6 +70,7 @@ mod tests {
             is_dir: true,
             file_type: FileType::Directory,
             size: 0,
+            disk_usage: 0,
             children: children
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))

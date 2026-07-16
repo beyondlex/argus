@@ -1,4 +1,4 @@
-use crate::app::{App, AppMode, ScanSummary, SortMode};
+use crate::app::{App, AppMode, SortMode};
 use crate::theme::ColorTheme;
 use crate::types::DELTA_UNIT_LABELS;
 use crate::util;
@@ -15,7 +15,6 @@ pub fn render(
     f: &mut Frame,
     area: Rect,
     mode: AppMode,
-    scan_summary: Option<&ScanSummary>,
     has_error: Option<&str>,
     status_is_error: bool,
     sort_mode: SortMode,
@@ -27,6 +26,9 @@ pub fn render(
     delta_filter_active: bool,
     delta_filter_value: u64,
     delta_filter_unit: usize,
+    current_dir_disk_usage: u64,
+    current_dir_apparent_size: u64,
+    current_dir_items: u64,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
@@ -55,46 +57,32 @@ pub fn render(
         ));
     }
 
-    // Daemon status indicator removed — moved to header (top-right)
-
-    if let Some(summary) = scan_summary {
-        left_spans.push(Span::raw("   "));
-        left_spans.push(Span::styled(
-            util::display_path(&summary.root_path),
-            Style::default().fg(theme.text_secondary),
-        ));
-        left_spans.push(Span::raw("  "));
-        left_spans.push(Span::styled(
-            "Size:".to_string(),
-            Style::default().fg(theme.text_secondary),
-        ));
-        left_spans.push(Span::styled(
-            format!(" {}", util::format_size(summary.total_size)),
-            Style::default().fg(theme.text_highlight),
-        ));
-        left_spans.push(Span::styled(
-            " Items:".to_string(),
-            Style::default().fg(theme.text_secondary),
-        ));
-        left_spans.push(Span::styled(
-            format!(" {}", util::format_count(summary.total_files)),
-            Style::default().fg(theme.text_highlight),
-        ));
-        left_spans.push(Span::styled(
-            " Took:".to_string(),
-            Style::default().fg(theme.text_secondary),
-        ));
-        left_spans.push(Span::styled(
-            format!(" {}", util::format_duration(summary.duration)),
-            Style::default().fg(theme.text_highlight),
-        ));
-    } else {
-        left_spans.push(Span::raw("   "));
-        left_spans.push(Span::styled(
-            "Press 's' to scan",
-            Style::default().fg(theme.text_tertiary),
-        ));
-    }
+    // Current directory stats (after scan)
+    left_spans.push(Span::raw("   "));
+    left_spans.push(Span::styled(
+        "Disk:",
+        Style::default().fg(theme.text_secondary),
+    ));
+    left_spans.push(Span::styled(
+        format!(" {}", util::format_size(current_dir_disk_usage)),
+        Style::default().fg(theme.text_highlight),
+    ));
+    left_spans.push(Span::styled(
+        " Apparent:",
+        Style::default().fg(theme.text_secondary),
+    ));
+    left_spans.push(Span::styled(
+        format!(" {}", util::format_size(current_dir_apparent_size)),
+        Style::default().fg(theme.text_highlight),
+    ));
+    left_spans.push(Span::styled(
+        " Items:",
+        Style::default().fg(theme.text_secondary),
+    ));
+    left_spans.push(Span::styled(
+        format!(" {}", util::format_count(current_dir_items)),
+        Style::default().fg(theme.text_highlight),
+    ));
 
     if let Some(msg) = has_error {
         left_spans.push(Span::raw("   "));

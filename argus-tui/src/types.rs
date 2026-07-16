@@ -13,6 +13,7 @@ pub enum AppMessage {
     ScanProgress {
         file_count: u64,
         total_bytes: u64,
+        total_disk_bytes: u64,
         current_path: Option<String>,
     },
     ScanComplete(Snapshot),
@@ -95,6 +96,7 @@ pub struct DirEntry {
     pub has_scan_data: bool,
     pub is_dir: bool,
     pub size: u64,
+    pub disk_usage: u64,
 }
 
 /// Unified tree node for rendering (currently only Snapshot variant, Diff reserved for future daemon mode)
@@ -131,6 +133,7 @@ impl TreeNode {
 pub struct ScanSummary {
     pub root_path: PathBuf,
     pub total_size: u64,
+    pub total_disk_usage: u64,
     pub total_files: u64,
     pub duration: Duration,
 }

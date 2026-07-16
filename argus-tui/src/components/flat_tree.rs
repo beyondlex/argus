@@ -33,7 +33,7 @@ pub struct FlatRenderCtx<'a> {
     pub cursor_visible: bool,
     pub focus: bool,
     pub delta_cache: Option<&'a HashMap<Vec<String>, i64>>,
-    pub current_dir_total: u64,
+    pub current_dir_disk_usage: u64,
     pub multi_select: bool,
     pub selected_paths: &'a HashSet<Vec<String>>,
     pub theme: &'a ColorTheme,
@@ -167,7 +167,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
             has_delta,
             delta,
             row_bg,
-            ctx.current_dir_total,
+            ctx.current_dir_disk_usage,
             ctx.multi_select,
             is_selected_item,
             ctx.theme,
@@ -265,7 +265,7 @@ fn render_flat_entry(
     has_delta: bool,
     delta: Option<i64>,
     row_bg: Color,
-    current_dir_total: u64,
+    current_dir_disk_usage: u64,
     multi_select: bool,
     is_selected_item: bool,
     theme: &ColorTheme,
@@ -290,7 +290,7 @@ fn render_flat_entry(
         entry.node.name().to_string()
     };
 
-    let size_str = util::display_size_label(entry.is_dir, entry.has_scan_data, entry.size);
+    let size_str = util::display_size_label(entry.is_dir, entry.has_scan_data, entry.disk_usage);
 
     let mut info = Vec::new();
 
@@ -314,8 +314,8 @@ fn render_flat_entry(
     }
 
     // Percent column
-    if current_dir_total > 0 && entry.has_scan_data {
-        let pct = (entry.size as f64 / current_dir_total as f64) * 100.0;
+    if current_dir_disk_usage > 0 && entry.has_scan_data {
+        let pct = (entry.disk_usage as f64 / current_dir_disk_usage as f64) * 100.0;
         info.push(Span::styled(format!("{:>6.1}%", pct), row.percent()));
         info.push(Span::raw(" "));
     } else {

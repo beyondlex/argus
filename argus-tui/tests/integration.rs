@@ -10,6 +10,7 @@ fn make_file(name: &str, size: u64) -> FileNode {
         is_dir: false,
         file_type: FileType::File,
         size,
+        disk_usage: size,
         children: Vec::new(),
     }
 }
@@ -21,6 +22,7 @@ fn make_dir(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
         is_dir: true,
         file_type: FileType::Directory,
         size: 0,
+        disk_usage: 0,
         children: children
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
@@ -30,7 +32,7 @@ fn make_dir(name: &str, children: Vec<(&str, NodeIndex)>) -> FileNode {
 
 fn make_snapshot(path: &str, arena: Vec<FileNode>) -> Snapshot {
     let size = arena[ROOT_NODE as usize].size;
-    Snapshot::new(PathBuf::from(path), arena, size)
+    Snapshot::new(PathBuf::from(path), arena, size, 0)
 }
 
 // ── State logic tests ───────────────────────────────────────────────────────
