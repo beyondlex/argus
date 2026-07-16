@@ -402,12 +402,13 @@ pub fn alloc_name_into(names: &mut Vec<u8>, name: &str) -> (u32, u16, u16, [u8; 
     (off, len, 0, inline)
 }
 
-/// Incremental builder used by scanner and tests. Children held as temp `Vec`s, packed to CSR on finish.
+/// Incremental builder used by scanner and tests.
+/// Children stored as flat `(parent, child)` pairs, converted to CSR on finish.
+/// Avoids `Vec<Vec<NodeIndex>>` overhead (2.4M empty Vecs × 24B = ~57 MB peak saved).
 pub struct SnapshotBuilder {
     pub nodes: Vec<FileNode>,
     pub names: Vec<u8>,
-    /// Temporary per-node child lists (packed into CSR on finish).
-    children: Vec<Vec<NodeIndex>>,
+    child_pairs: Vec<(u32, u32)>,
 }
 
 impl SnapshotBuilder {
@@ -427,7 +428,7 @@ impl SnapshotBuilder {
         Self {
             nodes: vec![root],
             names,
-            children: vec![Vec::new()],
+            child_pairs: Vec::new(),
         }
     }
 
@@ -487,8 +488,7 @@ impl SnapshotBuilder {
             flags,
             inline_name: inline,
         });
-        self.children.push(Vec::new());
-        self.children[parent as usize].push(idx);
+        self.child_pairs.push((parent, idx));
         idx
     }
 
@@ -499,14 +499,28 @@ impl SnapshotBuilder {
         total_disk_usage: u64,
     ) -> Snapshot {
         let n = self.nodes.len();
-        let mut child_index = Vec::new();
-        let mut child_start = Vec::with_capacity(n);
-        let mut child_count = Vec::with_capacity(n);
-        for kids in &mut self.children {
-            child_start.push(child_index.len() as u32);
-            child_count.push(kids.len() as u32);
-            child_index.append(kids);
+
+        let mut child_count = vec![0u32; n];
+        for &(parent, _) in &self.child_pairs {
+            child_count[parent as usize] += 1;
         }
+
+        let mut child_start = Vec::with_capacity(n);
+        let mut total_children = 0u32;
+        for &count in &child_count {
+            child_start.push(total_children);
+            total_children += count;
+        }
+
+        let mut child_index = vec![0u32; total_children as usize];
+        let mut write_pos = child_start.clone();
+        for &(parent, child) in &self.child_pairs {
+            let p = parent as usize;
+            child_index[write_pos[p] as usize] = child;
+            write_pos[p] += 1;
+        }
+
+        drop(self.child_pairs);
         self.nodes.shrink_to_fit();
         self.names.shrink_to_fit();
         child_index.shrink_to_fit();
