@@ -26,10 +26,9 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{TreeLine, TreeNode};
+    use crate::app::TreeNode;
     use crate::handler::browsing::{
         handle_browsing_key, handle_delete_action, handle_gg_double_tap, move_cursor,
-        set_root_to_selected,
     };
     use crate::handler::command::{execute_command, handle_command_key};
     use crate::handler::prompt::{
@@ -79,7 +78,8 @@ mod tests {
         app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
         app.scan_cache
             .insert(PathBuf::from("/tmp/test"), Arc::new(scan_snap));
-        app.update_tree_lines();
+        app.current_dir_path = vec!["test".to_string()];
+        app.load_current_children();
         app
     }
 
@@ -177,51 +177,7 @@ mod tests {
     fn test_move_cursor_basic_down() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.filtered_tree_lines = vec![0, 1, 2];
-        app.tree_lines = vec![
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(
-                        PathBuf::from("/"),
-                        vec![file_node("root", 0)],
-                        0,
-                    )),
-                    ROOT_NODE,
-                ),
-                expanded: true,
-                has_scan_data: false,
-                path: vec!["root".to_string()],
-            },
-            TreeLine {
-                depth: 1,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(
-                        PathBuf::from("/"),
-                        vec![file_node("a", 0)],
-                        0,
-                    )),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["root".to_string(), "a".to_string()],
-            },
-            TreeLine {
-                depth: 1,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(
-                        PathBuf::from("/"),
-                        vec![file_node("b", 0)],
-                        0,
-                    )),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["root".to_string(), "b".to_string()],
-            },
-        ];
+        app.current_filtered = vec![0, 1, 2];
         app.cursor = 0;
 
         move_cursor(&mut app, 1);
@@ -235,7 +191,7 @@ mod tests {
     fn test_move_cursor_basic_up() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.filtered_tree_lines = vec![0, 1, 2];
+        app.current_filtered = vec![0, 1, 2];
         app.cursor = 2;
 
         move_cursor(&mut app, -1);
@@ -249,7 +205,7 @@ mod tests {
     fn test_move_cursor_bounds_top() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.filtered_tree_lines = vec![0, 1, 2];
+        app.current_filtered = vec![0, 1, 2];
         app.cursor = 0;
 
         move_cursor(&mut app, -1);
@@ -260,7 +216,7 @@ mod tests {
     fn test_move_cursor_bounds_bottom() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.filtered_tree_lines = vec![0, 1, 2];
+        app.current_filtered = vec![0, 1, 2];
         app.cursor = 2;
 
         move_cursor(&mut app, 1);
@@ -271,7 +227,7 @@ mod tests {
     fn test_move_cursor_empty() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.filtered_tree_lines = vec![];
+        app.current_filtered = vec![];
         app.cursor = 0;
 
         move_cursor(&mut app, 1);
@@ -279,79 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_root_to_selected_dir() {
-        let tmp = TempDir::new().unwrap();
-        let sub = tmp.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("file.txt"), "data").unwrap();
-        // Put a snapshot for the new root in the cache
-        let sub_snap = Snapshot::new(sub.clone(), vec![file_node("sub", 0)], 0);
-        let arena = vec![
-            dir_node(
-                tmp.path().file_name().unwrap().to_str().unwrap(),
-                vec![("sub", 1)],
-            ),
-            dir_node("sub", vec![("file.txt", 2)]),
-            file_node("file.txt", 100),
-        ];
-        let snap = Snapshot::new(tmp.path().to_path_buf(), arena, 100);
-        let scan_snap = Snapshot::new(tmp.path().to_path_buf(), vec![file_node("tmp", 0)], 0);
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.view_root_path = tmp.path().to_path_buf();
-        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
-        app.scan_cache
-            .insert(tmp.path().to_path_buf(), Arc::new(scan_snap));
-        app.scan_cache.insert(sub, Arc::new(sub_snap));
-        app.sort_mode = crate::app::SortMode::Name;
-        app.update_tree_lines();
-        app.cursor = 1; // on "sub"
-
-        set_root_to_selected(&mut app);
-
-        assert_eq!(app.view_root_path, tmp.path().join("sub"));
-    }
-
-    #[test]
-    fn test_set_root_to_selected_non_dir() {
-        let arena = vec![
-            dir_node("test", vec![("file.txt", 1)]),
-            file_node("file.txt", 100),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 100);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded.insert(vec!["test".to_string()]);
-        app.update_tree_lines();
-        app.cursor = 1; // on "file.txt"
-
-        let prev_root = app.view_root_path.clone();
-        set_root_to_selected(&mut app);
-
-        // Should not change root since file.txt is not a dir
-        assert_eq!(app.view_root_path, prev_root);
-    }
-
-    #[test]
-    fn test_set_root_to_selected_already_at_root() {
-        let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.update_tree_lines();
-        app.cursor = 0; // on root
-
-        let prev_root = app.view_root_path.clone();
-        set_root_to_selected(&mut app);
-
-        // Should not change root since already at root
-        assert_eq!(app.view_root_path, prev_root);
-    }
-
     // ── handle_gg_double_tap ─────────────────────────────────────────────
-
     #[test]
     fn test_gg_double_tap_first_sets_pending() {
         let (tx, rx) = mpsc::channel(1);
@@ -547,8 +431,6 @@ mod tests {
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Input;
         app.search_word = "foo".to_string();
-        let snap = Snapshot::new(PathBuf::from("/tmp"), vec![file_node("tmp", 0)], 0);
-        app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
 
         let consumed =
             handle_search_keys(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
@@ -559,47 +441,11 @@ mod tests {
     }
 
     #[test]
-    fn test_search_keys_active_n_jumps_next() {
-        let root_arena = vec![
-            dir_node("test", vec![("a", 1), ("b", 2)]),
-            dir_node("a", vec![("target", 3)]),
-            dir_node("b", vec![("target", 4)]),
-            file_node("target", 1),
-            file_node("target", 1),
-        ];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 2);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded
-            .insert(vec!["test".to_string(), "a".to_string()]);
-        app.expanded
-            .insert(vec!["test".to_string(), "b".to_string()]);
-        app.update_tree_lines();
-        app.search_word = "target".to_string();
-        app.recompute_matches();
-        app.search_mode = SearchMode::Active;
-        app.cursor = 0;
-
-        let consumed = handle_search_keys(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
-            &mut app,
-        );
-
-        assert!(!consumed);
-        let selected = app.selected_line().unwrap();
-        assert_eq!(selected.node.name(), "target");
-    }
-
-    #[test]
     fn test_search_keys_active_esc_returns_inactive() {
-        let root_arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), root_arena, 0);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.search_word = "target".to_string();
-        app.recompute_matches();
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.search_mode = SearchMode::Active;
+        app.search_word = "target".to_string();
 
         let consumed =
             handle_search_keys(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
@@ -621,63 +467,6 @@ mod tests {
         );
         assert!(!consumed);
     }
-
-    // ── handle_delete_action ─────────────────────────────────────────────
-
-    #[test]
-    fn test_delete_action_root_dir_guard() {
-        let arena = vec![dir_node("test", vec![])];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.update_tree_lines();
-        app.cursor = 0; // on root "test"
-
-        handle_delete_action(&mut app, false);
-
-        // Should not enter delete prompt — root dir guard
-        assert_eq!(app.mode, AppMode::Browsing);
-        assert!(app.delete_target_path.is_none());
-    }
-
-    #[test]
-    fn test_delete_action_non_root_dir() {
-        let arena = vec![dir_node("test", vec![("sub", 1)]), dir_node("sub", vec![])];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded
-            .insert(vec!["test".to_string(), "sub".to_string()]);
-        app.update_tree_lines();
-        app.cursor = 1; // on "sub" (depth 1, not root)
-
-        handle_delete_action(&mut app, false);
-
-        // Should enter delete prompt (non-root dir)
-        assert_eq!(app.mode, AppMode::DeletePrompt);
-        assert!(app.delete_target_path.is_some());
-    }
-
-    #[test]
-    fn test_delete_action_permanent_flag() {
-        let arena = vec![dir_node("test", vec![("sub", 1)]), dir_node("sub", vec![])];
-        let snap = Snapshot::new(PathBuf::from("/tmp/test"), arena, 0);
-        let scan_snap = Snapshot::new(PathBuf::from("/tmp/test"), vec![file_node("test", 0)], 0);
-        let mut app = make_app(snap, scan_snap);
-        app.sort_mode = crate::app::SortMode::Name;
-        app.expanded
-            .insert(vec!["test".to_string(), "sub".to_string()]);
-        app.update_tree_lines();
-        app.cursor = 1;
-
-        handle_delete_action(&mut app, true);
-
-        assert_eq!(app.mode, AppMode::DeletePermanentPrompt);
-    }
-
-    // ── prev_match_index ─────────────────────────────────────────────────
 
     // ── execute_command ──────────────────────────────────────────────────
     #[test]

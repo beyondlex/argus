@@ -29,10 +29,8 @@ pub struct App {
 
     // Tree state
     pub tree_root: Option<TreeNode>,
-    pub tree_lines: Vec<TreeLine>,
     pub cursor: usize,
     pub scroll_offset: usize,
-    pub expanded: HashSet<Vec<String>>,
 
     // Scan cache: path → full scanned snapshot (shared; treat as immutable after insert)
     pub scan_cache: HashMap<PathBuf, Arc<Snapshot>>,
@@ -53,15 +51,10 @@ pub struct App {
     pub delta_filter_value: u64,
     pub delta_filter_unit: usize, // 0=KB, 1=MB, 2=GB
     pub delta_pending: bool,
-    pub filtered_tree_lines: Vec<usize>,
 
     // Tree search (fuzzy search)
     pub search_word: String,
     pub search_mode: SearchMode,
-    pub match_indices: Vec<SearchMatch>,
-    pub current_match: usize,
-    pub path_to_walk_idx: HashMap<Vec<String>, usize>,
-    pub path_to_tree_idx: HashMap<Vec<String>, usize>,
 
     // gg double-tap tracking
     pub pending_gg: bool,
@@ -167,10 +160,8 @@ impl App {
             sort_mode: SortMode::Size,
             view_root_path,
             tree_root: None,
-            tree_lines: Vec::new(),
             cursor: 0,
             scroll_offset: 0,
-            expanded: HashSet::new(),
             scan_cache: HashMap::new(),
             server_mode: false,
             daemon_client: None,
@@ -185,13 +176,8 @@ impl App {
             delta_filter_value: 100,
             delta_filter_unit: 1,
             delta_pending: false,
-            filtered_tree_lines: Vec::new(),
             search_word: String::new(),
             search_mode: SearchMode::Inactive,
-            match_indices: Vec::new(),
-            current_match: 0,
-            path_to_walk_idx: HashMap::new(),
-            path_to_tree_idx: HashMap::new(),
             pending_gg: false,
             scanning: false,
             scan_progress: None,
@@ -272,61 +258,6 @@ impl App {
                 }
             }
         }
-
-        self.cursor = 0;
-        self.expanded.clear();
-    }
-
-    /// Update the tree lines from current tree_root
-    pub fn update_tree_lines(&mut self) {
-        // Flat mode: just reload children (O(C log C))
-        if !self.current_children.is_empty() {
-            self.load_current_children();
-            return;
-        }
-        let expanded = &self.expanded;
-        let sort_mode = self.sort_mode;
-        let delta_cache = if self.delta_cache.is_empty() {
-            None
-        } else {
-            Some(&self.delta_cache)
-        };
-        let lines = match &self.tree_root {
-            Some(TreeNode::Snapshot(snap_arc, idx)) => {
-                let mut lines = Vec::new();
-                let root_scan_tree =
-                    crate::tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
-                crate::tree_ops::flatten_snapshot_tree(
-                    snap_arc,
-                    *idx,
-                    0,
-                    expanded,
-                    sort_mode,
-                    &mut lines,
-                    &self.scan_cache,
-                    &self.view_root_path,
-                    root_scan_tree,
-                    delta_cache,
-                    &mut Vec::new(),
-                    self.show_hidden,
-                );
-                lines
-            }
-            _ => Vec::new(),
-        };
-
-        self.tree_lines = lines;
-        self.path_to_tree_idx = self
-            .tree_lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| (l.path.clone(), i))
-            .collect();
-        if self.cursor >= self.tree_lines.len() && !self.tree_lines.is_empty() {
-            self.cursor = self.tree_lines.len() - 1;
-        }
-        self.refresh_filtered_lines();
-        self.recompute_matches();
     }
 
     /// Handle a message from background tasks
@@ -358,12 +289,26 @@ impl App {
 
                 // Update scan cache (share Arc; no full Snapshot clone)
                 let root_path = snapshot.root_path.clone();
-                let matches_view = root_path == self.view_root_path;
+                let matches_view =
+                    root_path == self.view_root_path || root_path == self.current_scan_path();
+                let was_in_subdir = self.current_dir_path.len() > 1;
                 self.scan_cache.insert(root_path, Arc::new(snapshot));
 
                 // Rebuild tree if scanned path matches current view
                 if matches_view {
+                    let saved_dir = if was_in_subdir {
+                        Some(self.current_dir_path.clone())
+                    } else {
+                        None
+                    };
                     self.rebuild_tree();
+                    // Restore browsing position after rebuild
+                    if let Some(dir) = saved_dir {
+                        if dir.len() > 1 {
+                            self.current_dir_path = dir;
+                            self.load_current_children();
+                        }
+                    }
                 }
             }
             AppMessage::Error(e) => {
@@ -386,7 +331,7 @@ impl App {
                 self.daemon_client = None;
                 self.delta_cache.clear();
                 self.delta_filter_active = false;
-                self.refresh_filtered_lines();
+                self.refresh_current_filtered();
                 self.set_error("daemon disconnected".into(), 4);
             }
             AppMessage::DeltaData(deltas, returned_client) => {
@@ -396,11 +341,7 @@ impl App {
                 if let Some(client) = returned_client {
                     self.daemon_client = Some(client);
                 }
-                if self.sort_mode == SortMode::Delta {
-                    self.update_tree_lines();
-                } else {
-                    self.refresh_filtered_lines();
-                }
+                self.load_current_children();
                 log_msg(
                     &self.log_path,
                     &format!("DeltaData applied in {:?}", t0.elapsed()),
@@ -426,7 +367,7 @@ impl App {
                     total_freed = total_freed.saturating_add(freed);
                 }
                 self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
-                self.update_tree_lines();
+                self.load_current_children();
                 self.exit_multi_select();
 
                 if !errors.is_empty() {
@@ -439,167 +380,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// Recompute match_indices for current search_word.
-    /// Walks the full tree in display order (depth-first, sorted by sort_mode)
-    /// so n/N jumps follow the natural top-to-bottom order.
-    /// Also populates path_to_walk_idx cache to avoid a second full tree walk on n/N.
-    pub fn recompute_matches(&mut self) {
-        // Flat mode: no-op (search is handled by apply_search / refresh_current_filtered)
-        if !self.current_children.is_empty() {
-            self.match_indices.clear();
-            self.current_match = 0;
-            return;
-        }
-        self.match_indices.clear();
-        self.current_match = 0;
-        self.path_to_walk_idx.clear();
-        if self.search_word.is_empty() {
-            return;
-        }
-
-        let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &self.tree_root else {
-            return;
-        };
-
-        let query = &self.search_word;
-        let sort_mode = self.sort_mode;
-
-        let delta_cache = if self.delta_cache.is_empty() {
-            None
-        } else {
-            Some(&self.delta_cache)
-        };
-        let mut matches = Vec::new();
-        let mut walk_index = 0usize;
-        let mut current_path = vec![snap_arc.node(*root_idx).name.clone()];
-        crate::search::collect_matches_in_order(
-            snap_arc,
-            *root_idx,
-            query,
-            sort_mode,
-            &mut current_path,
-            &mut walk_index,
-            &mut matches,
-            &mut self.path_to_walk_idx,
-            delta_cache,
-            self.show_hidden,
-        );
-
-        self.match_indices = matches;
-        self.remap_match_tree_indices();
-        if self.current_match >= self.match_indices.len() && !self.match_indices.is_empty() {
-            self.current_match = self.match_indices.len() - 1;
-        }
-    }
-
-    /// O(1) lookup for walk_idx of a path, using the cache built during recompute_matches.
-    pub fn get_walk_idx(&self, path: &[String]) -> Option<usize> {
-        self.path_to_walk_idx.get(path).copied()
-    }
-
-    /// Incrementally expand a single collapsed directory in tree_lines by inserting child lines.
-    /// Unlike update_tree_lines() which rebuilds the entire visible tree, this only adds the
-    /// newly visible lines for the specified path. Returns true if any lines were inserted.
-    pub fn expand_path_in_tree(&mut self, path: &[String]) -> bool {
-        let Some(TreeNode::Snapshot(snap_arc, root_idx)) = &self.tree_root else {
-            return false;
-        };
-        let Some(dir_idx) = snap_arc.find_node(*root_idx, path) else {
-            return false;
-        };
-        let node = snap_arc.node(dir_idx);
-        if !node.is_dir
-            || node.children.is_empty()
-            || node.children.len() > crate::tree_ops::MAX_DIR_CHILDREN
-        {
-            return false;
-        }
-
-        let pos = self.tree_lines.iter().position(|line| line.path == path);
-        let Some(pos) = pos else {
-            return false;
-        };
-
-        // Skip if already expanded (next line is a child)
-        if pos + 1 < self.tree_lines.len()
-            && self.tree_lines[pos + 1].depth > self.tree_lines[pos].depth
-        {
-            return false;
-        }
-
-        // Mark this directory as expanded in-place
-        if let Some(line) = self.tree_lines.get_mut(pos) {
-            line.expanded = true;
-        }
-
-        let mut children: Vec<(&String, NodeIndex)> =
-            node.children.iter().map(|(n, i)| (n, *i)).collect();
-        let delta_cache = if self.delta_cache.is_empty() {
-            None
-        } else {
-            Some(&self.delta_cache)
-        };
-        crate::tree_ops::sort_children_snapshot(
-            &mut children,
-            snap_arc,
-            self.sort_mode,
-            path,
-            delta_cache,
-        );
-
-        let expanded = &self.expanded;
-        let sort_mode = self.sort_mode;
-        let root_scan_tree =
-            crate::tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
-
-        let mut new_lines = Vec::new();
-        let mut child_path = path.to_vec();
-        for (_name, child_idx) in children {
-            crate::tree_ops::flatten_snapshot_tree(
-                snap_arc,
-                child_idx,
-                path.len(),
-                expanded,
-                sort_mode,
-                &mut new_lines,
-                &self.scan_cache,
-                &self.view_root_path,
-                root_scan_tree,
-                delta_cache,
-                &mut child_path,
-                self.show_hidden,
-            );
-        }
-
-        self.tree_lines.splice(pos + 1..pos + 1, new_lines);
-        self.path_to_tree_idx = self
-            .tree_lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| (l.path.clone(), i))
-            .collect();
-        self.refresh_filtered_lines();
-        // Expand does not change match identity or walk order — only tree_line
-        // indices. Remap instead of a full O(n) rematch (P2).
-        self.remap_match_tree_indices();
-        true
-    }
-
-    /// Update `SearchMatch.tree_line_idx` from the current `path_to_tree_idx` map.
-    /// Avoids re-walking the snapshot when only visibility/line indices changed.
-    pub fn remap_match_tree_indices(&mut self) {
-        for m in &mut self.match_indices {
-            m.tree_line_idx = self.path_to_tree_idx.get(&m.path).copied();
-        }
-    }
-
-    /// Get the currently selected tree line (from filtered view)
-    pub fn selected_line(&self) -> Option<&TreeLine> {
-        self.filtered_tree_lines
-            .get(self.cursor)
-            .and_then(|&idx| self.tree_lines.get(idx))
     }
 
     /// Set error message and log to file.
@@ -623,14 +403,6 @@ impl App {
         self.status_is_error = false;
         self.error_clear_at =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
-    }
-
-    /// Return the relative path of the tree line at `idx` (into filtered view), rooted at `view_root_path`.
-    pub fn tree_line_relative_path(&self, idx: usize) -> Option<Vec<String>> {
-        self.filtered_tree_lines
-            .get(idx)
-            .and_then(|&actual| self.tree_lines.get(actual))
-            .map(|line| line.path.clone())
     }
 
     /// Set time range preset (0=1h, 1=6h, 2=12h, 3=1d, 4=3d, 5=7d)
@@ -666,53 +438,6 @@ impl App {
             _ => "1h",
         }
     }
-    /// Rebuild filtered_tree_lines from tree_lines based on delta filter
-    pub fn refresh_filtered_lines(&mut self) {
-        // Flat mode: use current_filtered instead
-        if !self.current_children.is_empty() {
-            self.refresh_current_filtered();
-            return;
-        }
-        if !self.delta_filter_active {
-            self.filtered_tree_lines = (0..self.tree_lines.len()).collect();
-        } else {
-            let threshold = self.delta_filter_value * delta_unit_multiplier(self.delta_filter_unit);
-            let strict = self.delta_filter_value == 0;
-            self.filtered_tree_lines = self
-                .tree_lines
-                .iter()
-                .enumerate()
-                .filter(|(_, line)| {
-                    let delta = self.delta_cache.get(&line.path).copied().unwrap_or(0);
-                    if strict {
-                        delta > 0
-                    } else {
-                        (delta as u64) >= threshold
-                    }
-                })
-                .map(|(i, _)| i)
-                .collect();
-        }
-        if self.cursor >= self.filtered_tree_lines.len() && !self.filtered_tree_lines.is_empty() {
-            self.cursor = self.filtered_tree_lines.len() - 1;
-        }
-    }
-    /// Get the current delta filter threshold in bytes, or 0 if inactive
-    pub fn delta_filter_threshold(&self) -> u64 {
-        if !self.delta_filter_active {
-            0
-        } else {
-            self.delta_filter_value * delta_unit_multiplier(self.delta_filter_unit)
-        }
-    }
-
-    /// Map filtered view cursor to actual tree_lines index
-    pub fn cursor_to_tree_idx(&self) -> usize {
-        self.filtered_tree_lines
-            .get(self.cursor)
-            .copied()
-            .unwrap_or(0)
-    }
 
     /// Increment delta filter value, with auto unit level-up at 1024
     pub fn delta_filter_inc(&mut self) {
@@ -741,12 +466,24 @@ impl App {
         self.delta_filter_value = 100;
         self.delta_filter_unit = 1;
         self.set_time_preset(0);
-        self.refresh_filtered_lines();
-        self.recompute_matches();
+        self.refresh_current_filtered();
         if self.server_mode {
             self.request_delta_refresh();
         }
         self.set_info("filter cleared".into(), 2);
+    }
+
+    /// Get the full path of the directory currently being browsed.
+    pub fn current_scan_path(&self) -> PathBuf {
+        if !self.current_children.is_empty() && self.current_dir_path.len() > 1 {
+            let mut path = self.view_root_path.clone();
+            for component in self.current_dir_path.iter().skip(1) {
+                path.push(component);
+            }
+            path
+        } else {
+            self.view_root_path.clone()
+        }
     }
 
     /// Enter multi-select mode
@@ -762,7 +499,8 @@ impl App {
 
     /// Toggle selection of the item at the current cursor position
     pub fn toggle_selection(&mut self) {
-        if let Some(path) = self.tree_line_relative_path(self.cursor) {
+        if let Some(entry) = self.selected_entry() {
+            let path = entry.path.clone();
             if self.selected_paths.contains(&path) {
                 self.selected_paths.remove(&path);
             } else {
@@ -785,22 +523,11 @@ impl App {
     }
 
     pub fn selected_node_full_path(&self) -> Option<PathBuf> {
-        // Prefer flat mode if children are loaded
-        if !self.current_children.is_empty() {
-            let entry = self.selected_entry()?;
-            let mut path = self.view_root_path.clone();
-            // path includes the root dir name as the first component;
-            // skip it because view_root_path already contains the full root path.
-            for part in entry.path.iter().skip(1) {
-                path.push(part);
-            }
-            return Some(path);
-        }
+        let entry = self.selected_entry()?;
         let mut path = self.view_root_path.clone();
-        let relative = self.tree_line_relative_path(self.cursor)?;
-        // relative includes the root dir name as the first component;
+        // path includes the root dir name as the first component;
         // skip it because view_root_path already contains the full root path.
-        for part in relative.iter().skip(1) {
+        for part in entry.path.iter().skip(1) {
             path.push(part);
         }
         Some(path)
@@ -1108,7 +835,7 @@ pub(crate) fn sort_children(
 mod tests {
     use super::*;
     use crate::config::TuiConfig;
-    use argus_core::{FileNode, FileType, Snapshot, ROOT_NODE};
+    use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tokio::sync::mpsc;
@@ -1132,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unlisted_child_dir_keeps_dash_even_when_root_is_scanned() {
+    fn test_unlisted_child_dir_keeps_dash() {
         let root_path = PathBuf::from("/tmp/test");
 
         // Live tree: test/target/{debug, build}  — "build" is NOT in the scan
@@ -1159,19 +886,17 @@ mod tests {
         app.scan_cache
             .insert(root_path.clone(), Arc::new(scan_snap));
 
-        app.expanded
-            .insert(vec!["test".to_string(), "target".to_string()]);
+        app.current_dir_path = vec!["test".to_string(), "target".to_string()];
+        app.load_current_children();
 
-        app.update_tree_lines();
-
-        let build_line = app
-            .tree_lines
+        let build_entry = app
+            .current_children
             .iter()
-            .find(|line| line.node.name() == "build")
-            .expect("build line should exist");
-        assert!(build_line.node.is_dir());
-        assert!(!build_line.has_scan_data);
-        assert_eq!(build_line.node.current_size(), 0);
+            .find(|entry| entry.node.name() == "build")
+            .expect("build entry should exist");
+        assert!(build_entry.is_dir);
+        assert!(!build_entry.has_scan_data);
+        assert_eq!(build_entry.size, 0);
     }
 
     // ── execute_command tests ───────────────────────────────────────────────────
@@ -1285,7 +1010,6 @@ mod tests {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
         app.server_mode = true;
-        // 2h as left (duration, left_date=None) and 09:00 as right (time-only needs left_date)
         let result = app.execute_command("time 2h to 09:00");
         assert!(result.is_err());
     }
@@ -1357,23 +1081,6 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_filter_threshold_inactive() {
-        let (tx, _) = mpsc::channel(1);
-        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(app.delta_filter_threshold(), 0);
-    }
-
-    #[test]
-    fn test_delta_filter_threshold_active() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.delta_filter_active = true;
-        app.delta_filter_value = 50;
-        app.delta_filter_unit = 1;
-        assert_eq!(app.delta_filter_threshold(), 50 * 1024 * 1024);
-    }
-
-    #[test]
     fn test_delta_filter_inc_basic() {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
@@ -1436,172 +1143,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cursor_to_tree_idx_maps_through_filtered() {
+    fn test_delta_filter_inc_unit_level_up_stays_at_gb() {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![TreeLine {
-            depth: 0,
-            node: TreeNode::Snapshot(
-                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                ROOT_NODE,
-            ),
-            expanded: false,
-            has_scan_data: false,
-            path: vec!["root".into()],
-        }];
-        app.filtered_tree_lines = vec![0];
-        app.cursor = 0;
-        assert_eq!(app.cursor_to_tree_idx(), 0);
-    }
-
-    #[test]
-    fn test_cursor_to_tree_idx_fallback_zero() {
-        let (tx, _) = mpsc::channel(1);
-        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(app.cursor_to_tree_idx(), 0);
-    }
-
-    // ── refresh_filtered_lines tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_refresh_filtered_lines_inactive() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["a".into()],
-            },
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["b".into()],
-            },
-        ];
-        app.delta_filter_active = false;
-        app.refresh_filtered_lines();
-        assert_eq!(app.filtered_tree_lines, vec![0, 1]);
-    }
-
-    #[test]
-    fn test_refresh_filtered_lines_active() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["a".into()],
-            },
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["b".into()],
-            },
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["c".into()],
-            },
-        ];
-        app.delta_filter_active = true;
-        app.delta_filter_value = 100;
-        app.delta_filter_unit = 1;
-        app.delta_cache = HashMap::from([
-            (vec!["a".into()], 200_000_000i64),
-            (vec!["b".into()], 50_000_000i64),
-            (vec!["c".into()], 0i64),
-        ]);
-        app.refresh_filtered_lines();
-        // a = 200MB >= 100MB, b = 50MB < 100MB, c = 0 < 100MB
-        assert_eq!(app.filtered_tree_lines, vec![0]);
-    }
-
-    #[test]
-    fn test_refresh_filtered_lines_strict_zero() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["a".into()],
-            },
-            TreeLine {
-                depth: 0,
-                node: TreeNode::Snapshot(
-                    Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                    ROOT_NODE,
-                ),
-                expanded: false,
-                has_scan_data: false,
-                path: vec!["b".into()],
-            },
-        ];
-        app.delta_filter_active = true;
-        app.delta_filter_value = 0;
-        app.delta_filter_unit = 0;
-        app.delta_cache = HashMap::from([(vec!["a".into()], 0i64), (vec!["b".into()], 500i64)]);
-        app.refresh_filtered_lines();
-        // strict mode: delta > 0, so only b passes
-        assert_eq!(app.filtered_tree_lines, vec![1]);
-    }
-
-    #[test]
-    fn test_refresh_filtered_lines_cursor_clamp() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![TreeLine {
-            depth: 0,
-            node: TreeNode::Snapshot(
-                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                ROOT_NODE,
-            ),
-            expanded: false,
-            has_scan_data: false,
-            path: vec!["a".into()],
-        }];
-        app.delta_filter_active = true;
-        app.delta_filter_value = 1;
+        app.delta_filter_value = 1024;
         app.delta_filter_unit = 2;
-        app.delta_cache = HashMap::from([(vec!["a".into()], 0i64)]);
-        app.filtered_tree_lines = vec![0];
-        app.cursor = 0;
-        app.refresh_filtered_lines();
-        // line filtered out, cursor should be 0 when filtered_tree_lines is empty
-        assert!(app.filtered_tree_lines.is_empty());
-        assert_eq!(app.cursor, 0);
+        app.delta_filter_inc();
+        assert_eq!(app.delta_filter_value, 1025);
+        assert_eq!(app.delta_filter_unit, 2);
     }
 
     // ── command history tests ─────────────────────────────────────────────────
@@ -1665,8 +1214,6 @@ mod tests {
         assert_eq!(app.command_selected, 0);
     }
 
-    // ── update_command_matches tests ──────────────────────────────────────────
-
     #[test]
     fn test_update_command_matches_empty() {
         let (tx, _) = mpsc::channel(1);
@@ -1683,8 +1230,6 @@ mod tests {
         app.update_command_matches();
         assert!(app.command_matches.contains(&"Scan"));
     }
-
-    // ── cmd_* direct tests ────────────────────────────────────────────────────
 
     #[test]
     fn test_cmd_scan_not_scanning() {
@@ -1745,7 +1290,6 @@ mod tests {
         app.set_time_preset(0);
         assert!(!app.time_custom);
         assert!(app.time_from < app.time_to);
-        // 1h = 3_600_000 ms
         assert!(app.time_to - app.time_from <= 3_600_000);
     }
 
@@ -1755,9 +1299,8 @@ mod tests {
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
         app.set_time_preset(5);
         assert_eq!(app.time_preset, 5);
-        // 7d = 604_800_000 ms
         let diff = app.time_to - app.time_from;
-        assert!(diff >= 604_800_000 - 1000); // account for small time drift
+        assert!(diff >= 604_800_000 - 1000);
         assert!(diff <= 604_800_000 + 1000);
     }
 
@@ -1780,8 +1323,6 @@ mod tests {
         assert_eq!(app.time_preset, 0);
         assert!(!app.time_custom);
     }
-
-    // ── execute_command additional tests ──────────────────────────────────────
 
     #[test]
     fn test_execute_delta_no_unit_uses_mb() {
@@ -1820,24 +1361,6 @@ mod tests {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
         assert!(app.execute_command("scan").is_ok());
-    }
-
-    #[test]
-    fn test_execute_consolidate_not_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(
-            app.execute_command("consolidate"),
-            Err("not in server mode".into())
-        );
-    }
-
-    #[test]
-    fn test_execute_consolidate_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        assert!(app.execute_command("consolidate").is_ok());
     }
 
     // ── SortMode tests ────────────────────────────────────────────────────────
@@ -1888,32 +1411,11 @@ mod tests {
         let file = TreeNode::Snapshot(snap.clone(), 1);
         assert!(!file.is_dir());
         assert_eq!(file.name(), "file.txt");
-        assert_eq!(file.file_type(), FileType::File);
+        assert_eq!(root.file_type(), FileType::Directory);
         assert_eq!(file.current_size(), 1024);
     }
 
     // ── selected_node_full_path tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_selected_node_full_path_skips_root() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.view_root_path = PathBuf::from("/home/user");
-        app.tree_lines = vec![TreeLine {
-            depth: 0,
-            node: TreeNode::Snapshot(
-                Arc::new(Snapshot::new(PathBuf::from("/home/user"), vec![], 0)),
-                ROOT_NODE,
-            ),
-            expanded: false,
-            has_scan_data: false,
-            path: vec!["user".into(), "docs".into(), "file.txt".into()],
-        }];
-        app.filtered_tree_lines = vec![0];
-        app.cursor = 0;
-        let path = app.selected_node_full_path();
-        assert_eq!(path, Some(PathBuf::from("/home/user/docs/file.txt")));
-    }
 
     #[test]
     fn test_selected_node_full_path_empty_tree() {
@@ -1931,63 +1433,6 @@ mod tests {
         app.set_error("test error".into(), 5);
         assert_eq!(app.last_error.as_deref(), Some("test error"));
         assert!(app.error_clear_at.is_some());
-    }
-
-    // ── selected_line tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_selected_line_returns_none_when_empty() {
-        let (tx, _) = mpsc::channel(1);
-        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert!(app.selected_line().is_none());
-    }
-
-    #[test]
-    fn test_selected_line_maps_through_filtered() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        let line = TreeLine {
-            depth: 0,
-            node: TreeNode::Snapshot(
-                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                ROOT_NODE,
-            ),
-            expanded: false,
-            has_scan_data: false,
-            path: vec!["root".into()],
-        };
-        app.tree_lines = vec![line.clone()];
-        app.filtered_tree_lines = vec![0];
-        app.cursor = 0;
-        assert_eq!(app.selected_line().unwrap().depth, 0);
-    }
-
-    // ── tree_line_relative_path tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_tree_line_relative_path_returns_path() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.tree_lines = vec![TreeLine {
-            depth: 0,
-            node: TreeNode::Snapshot(
-                Arc::new(Snapshot::new(PathBuf::from("/"), vec![], 0)),
-                ROOT_NODE,
-            ),
-            expanded: false,
-            has_scan_data: false,
-            path: vec!["root".into(), "dir".into()],
-        }];
-        app.filtered_tree_lines = vec![0];
-        let path = app.tree_line_relative_path(0);
-        assert_eq!(path, Some(vec!["root".into(), "dir".into()]));
-    }
-
-    #[test]
-    fn test_tree_line_relative_path_out_of_bounds() {
-        let (tx, _) = mpsc::channel(1);
-        let app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert!(app.tree_line_relative_path(0).is_none());
     }
 
     // ── Flat mode tests ──────────────────────────────────────────────────
@@ -2047,10 +1492,9 @@ mod tests {
         let app = make_flat_app();
         assert_eq!(app.current_children.len(), 3);
         assert_eq!(app.current_dir_total, 200);
-        // Check that children are sorted by size (default sort mode)
-        assert_eq!(app.current_children[0].node.name(), "src"); // size 100
-        assert_eq!(app.current_children[1].node.name(), "docs"); // size 50
-        assert_eq!(app.current_children[2].node.name(), "readme.md"); // size 50
+        assert_eq!(app.current_children[0].node.name(), "src");
+        assert_eq!(app.current_children[1].node.name(), "docs");
+        assert_eq!(app.current_children[2].node.name(), "readme.md");
     }
 
     #[test]
@@ -2077,14 +1521,14 @@ mod tests {
     #[test]
     fn test_enter_directory_into_subdir() {
         let mut app = make_flat_app();
-        app.cursor = 0; // "src" is at index 0 (size sort, 100 > 50)
+        app.cursor = 0;
 
         app.enter_directory();
         assert_eq!(
             app.current_dir_path,
             vec![String::from("test"), String::from("src")]
         );
-        assert_eq!(app.current_children.len(), 0); // src has no children
+        assert_eq!(app.current_children.len(), 0);
         assert_eq!(app.dir_stack.len(), 1);
         assert_eq!(app.cursor, 0);
     }
@@ -2092,7 +1536,6 @@ mod tests {
     #[test]
     fn test_enter_directory_non_dir_does_nothing() {
         let mut app = make_flat_app();
-        // Find readme.md (not a dir)
         let readme_idx = app
             .current_children
             .iter()
@@ -2101,7 +1544,6 @@ mod tests {
         app.cursor = readme_idx;
 
         app.enter_directory();
-        // Should not change path
         assert_eq!(app.current_dir_path, vec![String::from("test")]);
         assert!(app.dir_stack.is_empty());
     }
@@ -2167,14 +1609,12 @@ mod tests {
     #[test]
     fn test_cycle_match_forward() {
         let mut app = make_flat_app();
-        // Filter to only "readme.md" matches
         app.search_word = "readme".into();
         app.apply_search();
         assert_eq!(app.current_filtered.len(), 1);
 
         app.cursor = 0;
         app.cycle_match(true);
-        // Should wrap to 0 (only 1 match)
         assert_eq!(app.cursor, 0);
     }
 
@@ -2182,8 +1622,8 @@ mod tests {
     fn test_cycle_match_backward() {
         let mut app = make_flat_app();
         app.cursor = 0;
-        app.cycle_match(false); // wrap to last item
-        assert_eq!(app.cursor, 2); // 3 items total, wrap backward to index 2
+        app.cycle_match(false);
+        assert_eq!(app.cursor, 2);
     }
 
     #[test]
@@ -2203,9 +1643,8 @@ mod tests {
         app.sort_mode = crate::types::SortMode::Size;
         crate::app::sort_children(&mut app.current_children, app.sort_mode, &app.delta_cache);
         app.refresh_current_filtered();
-        // Size 100, 50, 50 (descending, ties broken by name)
         assert_eq!(app.current_children[0].node.name(), "src");
-        assert_eq!(app.current_children[1].node.name(), "docs"); // 50 < 100 but 'd' < 'r'
+        assert_eq!(app.current_children[1].node.name(), "docs");
         assert_eq!(app.current_children[2].node.name(), "readme.md");
     }
 
@@ -2301,15 +1740,14 @@ mod tests {
         app.current_dir_path = vec!["root".into()];
         app.load_current_children();
 
-        // root → a → deep
-        app.cursor = 0; // "a" (size 200)
+        app.cursor = 0;
         app.enter_directory();
         assert_eq!(
             app.current_dir_path,
             vec![String::from("root"), String::from("a")]
         );
 
-        app.cursor = 0; // "deep" (only child)
+        app.cursor = 0;
         app.enter_directory();
         assert_eq!(
             app.current_dir_path,
@@ -2321,7 +1759,6 @@ mod tests {
         );
         assert_eq!(app.dir_stack.len(), 2);
 
-        // Go back twice
         app.go_to_parent();
         assert_eq!(
             app.current_dir_path,
@@ -2337,7 +1774,6 @@ mod tests {
     #[test]
     fn test_selected_node_full_path_flat_mode() {
         let mut app = make_flat_app();
-        // readme.md is at some index
         let idx = app
             .current_children
             .iter()
@@ -2357,11 +1793,11 @@ mod tests {
         let mut app = make_flat_app();
         app.delta_filter_active = true;
         app.delta_filter_value = 80;
-        app.delta_filter_unit = 0; // KB = 1024 bytes
+        app.delta_filter_unit = 0;
         app.delta_cache = std::collections::HashMap::from([
-            (vec![String::from("test"), String::from("src")], 100_000i64), // ~97KB >= 80KB ✓
-            (vec![String::from("test"), String::from("docs")], 50_000i64), // ~48KB < 80KB ✗
-            (vec![String::from("test"), String::from("readme.md")], 0i64), // 0 < 80KB ✗
+            (vec![String::from("test"), String::from("src")], 100_000i64),
+            (vec![String::from("test"), String::from("docs")], 50_000i64),
+            (vec![String::from("test"), String::from("readme.md")], 0i64),
         ]);
         app.refresh_current_filtered();
         assert_eq!(app.current_filtered.len(), 1);

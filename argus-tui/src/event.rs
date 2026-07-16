@@ -1,13 +1,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, TreeNode};
+use crate::app::{App, AppMode};
 use crate::components::{
-    command_bar, file_tree, flat_tree, help_popup, metadata, popup, status_bar, time_help,
+    command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
 };
 use crate::handler;
 use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
-use argus_core::ROOT_NODE;
 use crossterm::event::{self, Event};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
@@ -205,56 +204,27 @@ fn render_main_content(
         None
     };
 
-    // Use flat render when flat-mode data is populated
-    if !app.current_children.is_empty() {
-        flat_tree::render(
-            f,
-            main_chunks[0],
-            flat_tree::FlatRenderCtx {
-                children: &app.current_children,
-                filtered_indices: &app.current_filtered,
-                cursor: app.cursor,
-                scroll_offset: app.scroll_offset,
-                view_root_path: &app.view_root_path,
-                current_dir_path: &app.current_dir_path,
-                search_word: &app.search_word,
-                search_mode: app.search_mode,
-                cursor_visible,
-                focus: file_tree_focused,
-                delta_cache,
-                current_dir_total: app.current_dir_total,
-                multi_select: app.multi_select,
-                selected_paths: &app.selected_paths,
-                theme: &app.theme,
-            },
-        );
-    } else {
-        let root_total_size = app.tree_root.as_ref().map_or(0, |tr| match tr {
-            TreeNode::Snapshot(snap, _) => snap.node(ROOT_NODE).size,
-        });
-        file_tree::render(
-            f,
-            main_chunks[0],
-            file_tree::TreeRenderCtx {
-                tree_lines: &app.tree_lines,
-                filtered_indices: &app.filtered_tree_lines,
-                cursor: app.cursor,
-                scroll_offset: app.scroll_offset,
-                view_root_path: &app.view_root_path,
-                search_word: &app.search_word,
-                search_mode: app.search_mode,
-                match_indices: &app.match_indices,
-                current_match: app.current_match,
-                cursor_visible,
-                focus: file_tree_focused,
-                delta_cache,
-                root_total_size,
-                multi_select: app.multi_select,
-                selected_paths: &app.selected_paths,
-                theme: &app.theme,
-            },
-        );
-    }
+    flat_tree::render(
+        f,
+        main_chunks[0],
+        flat_tree::FlatRenderCtx {
+            children: &app.current_children,
+            filtered_indices: &app.current_filtered,
+            cursor: app.cursor,
+            scroll_offset: app.scroll_offset,
+            view_root_path: &app.view_root_path,
+            current_dir_path: &app.current_dir_path,
+            search_word: &app.search_word,
+            search_mode: app.search_mode,
+            cursor_visible,
+            focus: file_tree_focused,
+            delta_cache,
+            current_dir_total: app.current_dir_total,
+            multi_select: app.multi_select,
+            selected_paths: &app.selected_paths,
+            theme: &app.theme,
+        },
+    );
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -297,7 +267,7 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
         height,
     };
 
-    let root_display = display_path(&app.view_root_path);
+    let root_display = display_path(&app.current_scan_path());
     let title = format!(" Scanning {} ", root_display);
     let block = popup::popup_block(title, popup::PopupStyle::Normal, &app.theme)
         .title_bottom(Line::from(key_hints(&[("Esc", "Cancel")], &app.theme)).right_aligned());

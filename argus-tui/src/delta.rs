@@ -372,29 +372,23 @@ mod tests {
             std::sync::Arc::new(snapshot),
             ROOT_NODE,
         ));
-        app.expanded
-            .insert(vec![root_name.clone(), "target".into()]);
-        app.expanded
-            .insert(vec![root_name.clone(), "target".into(), "debug".into()]);
-        app.expanded.insert(build_path.clone());
         app.delta_cache = delta_cache;
-        app.update_tree_lines();
+        app.current_dir_path = vec![root_name.clone(), "target".into(), "debug".into()];
+        app.load_current_children();
 
-        let debug_line = app
-            .tree_lines
+        let debug_entry = app
+            .current_children
             .iter()
-            .find(|line| line.path == debug_path)
-            .expect("debug line");
-        let build_line = app
-            .tree_lines
+            .find(|entry| entry.node.name() == "deps")
+            .expect("deps entry");
+        let build_entry = app
+            .current_children
             .iter()
-            .find(|line| line.path == build_path)
-            .expect("build line");
+            .find(|entry| entry.node.name() == "build")
+            .expect("build entry");
 
-        assert!(debug_line.node.is_dir());
-        assert!(build_line.node.is_dir());
-        assert_eq!(debug_line.path, debug_path);
-        assert_eq!(build_line.path, build_path);
+        assert!(debug_entry.is_dir);
+        assert!(build_entry.is_dir);
     }
 
     #[test]

@@ -22,7 +22,7 @@ impl App {
             let lower = self.command_input.to_lowercase();
             self.command_matches = Self::COMMANDS
                 .iter()
-                .filter(|c| crate::search::fuzzy_match(&lower, &c.to_lowercase()))
+                .filter(|&c| crate::search::fuzzy_match(&lower, &c.to_lowercase()))
                 .copied()
                 .collect();
         }
@@ -42,7 +42,7 @@ impl App {
         if cmd.is_empty() {
             return;
         }
-        if self.command_history.last().map(|s| s.as_str()) == Some(cmd.as_str()) {
+        if self.command_history.last().map(|s: &String| s.as_str()) == Some(cmd.as_str()) {
             return;
         }
         self.command_history.push(cmd);
@@ -105,7 +105,7 @@ impl App {
         self.delta_filter_active = true;
         self.delta_filter_value = value;
         self.delta_filter_unit = unit;
-        self.refresh_filtered_lines();
+        self.refresh_current_filtered();
         Ok(format!(
             "delta filter set to {}{}",
             value,
@@ -184,13 +184,13 @@ impl App {
             "" => self.sort_mode = self.sort_mode.toggle(),
             _ => return Err(format!("unknown sort mode: {sub}")),
         }
-        self.update_tree_lines();
+        self.load_current_children();
         Ok(format!("Sort: {}", self.sort_mode.label()))
     }
 
     pub(crate) fn cmd_sort_quick(&mut self, mode: SortMode, label: &str) -> Result<String, String> {
         self.sort_mode = mode;
-        self.update_tree_lines();
+        self.load_current_children();
         Ok(format!("Sort: {label}"))
     }
 

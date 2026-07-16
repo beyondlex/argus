@@ -86,15 +86,6 @@ impl SortMode {
 
 // ── Data types ───────────────────────────────────────────────────────────────
 
-/// A match found by the tree search — `path` is the full relative path from the view root.
-#[derive(Debug, Clone)]
-pub struct SearchMatch {
-    pub path: Vec<String>,
-    /// Index into `tree_lines` when the match is currently visible; `None` if collapsed.
-    pub tree_line_idx: Option<usize>,
-    pub walk_idx: usize,
-}
-
 /// A single entry in the flat directory view (ncdu-like).
 /// Represents one direct child of the current directory.
 #[derive(Debug, Clone)]
@@ -134,16 +125,6 @@ impl TreeNode {
     pub fn current_size(&self) -> u64 {
         self.node().size
     }
-}
-
-/// A single line in the flattened tree view
-#[derive(Debug, Clone)]
-pub struct TreeLine {
-    pub depth: usize,
-    pub node: TreeNode,
-    pub expanded: bool,
-    pub has_scan_data: bool,
-    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -76,7 +76,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
     } else {
         // Enter multi-select mode on Tab
         if key.code == KeyCode::Tab {
-            if app.filtered_tree_lines.is_empty() {
+            if app.current_filtered.is_empty() {
                 app.pending_gg = false;
                 return;
             }
@@ -93,45 +93,15 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('k') | KeyCode::Up => move_cursor(app, -1),
         KeyCode::Char('g') => handle_gg_double_tap(app),
         KeyCode::Char('G') => {
-            let len = if !app.current_children.is_empty() {
-                app.current_filtered.len()
-            } else {
-                app.filtered_tree_lines.len()
-            };
+            let len = app.current_filtered.len();
             if len > 0 {
                 app.cursor = len - 1;
             }
             app.pending_gg = false;
         }
-        KeyCode::Char('l') | KeyCode::Right => {
-            if !app.current_children.is_empty() {
-                app.enter_directory();
-            } else {
-                crate::tree_ops::expand_node(app);
-            }
-        }
-        KeyCode::Char('h') | KeyCode::Left => {
-            if !app.current_children.is_empty() {
-                app.go_to_parent();
-            } else {
-                crate::tree_ops::collapse_or_navigate_up(app);
-            }
-        }
-        KeyCode::Char('H') => {
-            if !app.current_children.is_empty() {
-                app.go_to_root();
-            } else {
-                crate::tree_ops::collapse_all_children(app);
-            }
-        }
-        KeyCode::Char('u') => {
-            if !app.current_children.is_empty() {
-                app.go_to_root();
-            } else {
-                crate::tree_ops::navigate_up_root(app);
-            }
-        }
-        KeyCode::Enter if !app.search_word.is_empty() => app.search_mode = SearchMode::Input,
+        KeyCode::Char('l') | KeyCode::Right => app.enter_directory(),
+        KeyCode::Char('h') | KeyCode::Left => app.go_to_parent(),
+        KeyCode::Char('H') => app.go_to_root(),
         KeyCode::Char('s') => {
             if app.multi_select {
                 app.exit_multi_select();
@@ -148,23 +118,14 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 },
                 2,
             );
-            app.update_tree_lines();
-        }
-        KeyCode::Char('w') => {
-            if app.current_children.is_empty() {
-                set_root_to_selected(app);
-            }
+            app.load_current_children();
         }
         KeyCode::Char('o') => {
             if app.multi_select {
                 app.exit_multi_select();
             }
             app.sort_mode = app.sort_mode.toggle();
-            if !app.current_children.is_empty() {
-                crate::handler::browsing::sort_children_flat(app);
-            } else {
-                app.update_tree_lines();
-            }
+            crate::handler::browsing::sort_children_flat(app);
         }
         KeyCode::Char('d') => handle_delete_action(app, false),
         KeyCode::Char('D') => handle_delete_action(app, true),
@@ -327,22 +288,12 @@ pub(crate) fn handle_delete_action(app: &mut App, permanent: bool) {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    if !app.current_children.is_empty() {
-        let Some(entry) = app.selected_entry() else {
-            return;
-        };
-        if entry.is_dir && entry.node.name() == root_name {
-            app.set_error("cannot delete root directory".into(), 3);
-            return;
-        }
-    } else {
-        let Some(line) = app.selected_line() else {
-            return;
-        };
-        if line.node.is_dir() && line.node.name() == root_name {
-            app.set_error("cannot delete root directory".into(), 3);
-            return;
-        }
+    let Some(entry) = app.selected_entry() else {
+        return;
+    };
+    if entry.is_dir && entry.node.name() == root_name {
+        app.set_error("cannot delete root directory".into(), 3);
+        return;
     }
 
     let Some(full_path) = app.selected_node_full_path() else {
@@ -361,11 +312,7 @@ pub(crate) fn handle_delete_action(app: &mut App, permanent: bool) {
 }
 
 pub(crate) fn move_cursor(app: &mut App, delta: isize) {
-    let len = if !app.current_children.is_empty() {
-        app.current_filtered.len()
-    } else {
-        app.filtered_tree_lines.len()
-    };
+    let len = app.current_filtered.len();
     if len == 0 {
         return;
     }
@@ -376,38 +323,6 @@ pub(crate) fn move_cursor(app: &mut App, delta: isize) {
         app.cursor = len - 1;
     } else {
         app.cursor = new_cursor as usize;
-    }
-}
-
-pub(crate) fn set_root_to_selected(app: &mut App) {
-    if !app.current_children.is_empty() {
-        let Some(entry) = app.selected_entry().cloned() else {
-            return;
-        };
-        if !entry.is_dir {
-            return;
-        }
-        if let Some(full_path) = app.selected_node_full_path() {
-            if full_path == app.view_root_path {
-                return;
-            }
-            app.view_root_path = full_path;
-            app.rebuild_tree();
-        }
-        return;
-    }
-    let Some(line) = app.selected_line().cloned() else {
-        return;
-    };
-    if !line.node.is_dir() {
-        return;
-    }
-    if let Some(full_path) = app.selected_node_full_path() {
-        if full_path == app.view_root_path {
-            return;
-        }
-        app.view_root_path = full_path;
-        app.rebuild_tree();
     }
 }
 
@@ -429,7 +344,7 @@ pub fn start_scan(app: &mut App) {
     app.cancel_scan = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let cancel = app.cancel_scan.clone();
     let tx = app.tx.clone();
-    let path = app.view_root_path.clone();
+    let path = app.current_scan_path();
     tokio::task::spawn_blocking(move || {
         let (progress_tx, progress_rx) =
             std::sync::mpsc::channel::<argus_core::scanner::ProgressUpdate>();
@@ -444,9 +359,7 @@ pub fn start_scan(app: &mut App) {
                         current_path: update.current_path,
                     })
                     .is_err()
-                {
-                    // Channel full — drop this update; next one will carry the latest state
-                }
+                {}
             }
         });
 

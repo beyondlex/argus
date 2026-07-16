@@ -74,7 +74,7 @@ where
                             app.set_error(msg, 3);
                             let freed = crate::tree_ops::apply_deletion_to_state(app, &path);
                             app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
-                            app.update_tree_lines();
+                            app.load_current_children();
                         }
                         Err(e) => {
                             app.set_error(format!("delete failed: {}", e), 5);

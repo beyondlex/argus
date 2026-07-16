@@ -1,7 +1,24 @@
 use crossterm::event::KeyEvent;
 use ratatui_finder::FinderAction;
+use std::path::PathBuf;
 
 use crate::app::{App, AppMode};
+
+/// Expand `~` to `$HOME` in a path string, since ratatui_finder does not
+/// expand it in the confirmed path (only internally for FS operations).
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        if path == "~" {
+            return PathBuf::from(home);
+        }
+        if let Some(rest) = path.strip_prefix("~/") {
+            let mut p = PathBuf::from(home);
+            p.push(rest);
+            return p;
+        }
+    }
+    PathBuf::from(path)
+}
 
 pub(crate) fn handle_finder_key(key: KeyEvent, app: &mut App) {
     let Some(finder) = &mut app.finder_state else {
@@ -11,12 +28,10 @@ pub(crate) fn handle_finder_key(key: KeyEvent, app: &mut App) {
     let action = finder.handle_key(key);
     match action {
         FinderAction::Confirm(path) => {
-            // Normalize trailing separator: Path::join handles trailing slashes,
-            // but comparisons (==) and display are cleaner without them.
-            let p: std::path::PathBuf = path.into();
+            let p = expand_tilde(&path);
+            // Normalize trailing separator
             let parent = p.parent();
             let normalized = if p.to_string_lossy().ends_with('/') && p.file_name().is_none() {
-                // e.g. "/Users/code/" → parent is "/Users/code" (unless root "/")
                 parent.map(|pp| pp.to_path_buf()).unwrap_or(p)
             } else {
                 p
