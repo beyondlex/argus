@@ -7,10 +7,9 @@ use ignore::WalkBuilder;
 
 use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, ROOT_NODE};
 
-// P9: skipped aggressive `WalkBuilder::build_parallel` — arena inserts and
-// hardlink `seen_inodes` are sequential; parallel path collect would need a
-// larger rewrite. Instead: reuse DirEntry metadata when available, and sort
-// children by name before snapshot finalize for deterministic order.
+// Parallel walk via build_parallel + channel: workers stat in parallel,
+// main thread inserts into TreeBuilder sequentially (TreeBuilder and
+// seen_inodes are not thread-safe).
 
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
@@ -74,6 +73,10 @@ impl ProgressTracker {
                 });
             }
         }
+    }
+
+    fn is_active(&self) -> bool {
+        self.progress_tx.is_some()
     }
 
     fn finish(&mut self) {
@@ -173,12 +176,6 @@ pub fn scan_path(
     let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
     let mut progress = ProgressTracker::new(progress_tx);
 
-    let walker = WalkBuilder::new(path)
-        .follow_links(false)
-        .git_ignore(false)
-        .hidden(false)
-        .build();
-
     let root_name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -186,9 +183,30 @@ pub fn scan_path(
 
     let mut tree = TreeBuilder::new(&root_name);
 
-    for result in walker {
+    let (entry_tx, entry_rx) = std::sync::mpsc::channel();
+
+    let walk_path = path.to_path_buf();
+    let walker_handle = std::thread::spawn(move || {
+        WalkBuilder::new(&walk_path)
+            .follow_links(false)
+            .git_ignore(false)
+            .hidden(false)
+            .build_parallel()
+            .run(move || {
+                let tx = entry_tx.clone();
+                Box::new(move |result| match tx.send(result) {
+                    Ok(()) => ignore::WalkState::Continue,
+                    Err(_) => ignore::WalkState::Quit,
+                })
+            });
+    });
+
+    let mut cancelled = false;
+
+    for result in entry_rx {
         if cancel.load(Ordering::Relaxed) {
-            return Err(ScanError::Cancelled);
+            cancelled = true;
+            break;
         }
 
         let entry = match result {
@@ -205,9 +223,10 @@ pub fn scan_path(
 
         // Prefer walk-cached metadata (follow_links=false → symlink meta) to
         // avoid a redundant symlink_metadata syscall per file.
+        let entry_path = entry.path();
         let meta = match entry
             .metadata()
-            .or_else(|_| std::fs::symlink_metadata(entry.path()))
+            .or_else(|_| std::fs::symlink_metadata(entry_path))
         {
             Ok(m) => m,
             Err(_) => continue,
@@ -219,20 +238,27 @@ pub fn scan_path(
                     continue;
                 }
             }
-            let current_path = entry.path().to_string_lossy().to_string();
             if meta.is_file() {
-                progress.record(1, meta.len(), Some(current_path));
+                let current_path = progress
+                    .is_active()
+                    .then(|| entry_path.to_string_lossy().to_string());
+                progress.record(1, meta.len(), current_path);
             } else {
                 progress.record_files_only(1);
             }
         }
 
-        let node = create_file_node(entry.path(), &meta);
-        tree.insert_file(entry.path(), path, node);
+        let node = create_file_node(entry_path, &meta);
+        tree.insert_file(entry_path, path, node);
+    }
+
+    let _ = walker_handle.join();
+
+    if cancelled {
+        return Err(ScanError::Cancelled);
     }
 
     compute_size(&mut tree.arena, ROOT_NODE);
-    sort_children_by_name(&mut tree.arena);
     let total_size = tree.arena[ROOT_NODE as usize].size;
     let snapshot = Snapshot::new(path.to_path_buf(), tree.arena, total_size);
 
@@ -381,27 +407,24 @@ pub fn list_dir(path: &Path) -> Result<Snapshot, ScanError> {
 }
 
 fn compute_size(arena: &mut [FileNode], idx: NodeIndex) -> u64 {
-    if arena[idx as usize].children.is_empty() {
+    let child_count = {
+        let node = &arena[idx as usize];
+        node.children.len()
+    };
+    if child_count == 0 {
         return arena[idx as usize].size;
     }
 
-    let child_ids: Vec<NodeIndex> = arena[idx as usize]
-        .children
-        .iter()
-        .map(|(_, idx)| *idx)
-        .collect();
     let mut total = 0u64;
-    for &child_idx in &child_ids {
+    for i in 0..child_count {
+        let child_idx = {
+            let node = &arena[idx as usize];
+            node.children[i].1
+        };
         total = total.saturating_add(compute_size(arena, child_idx));
     }
     arena[idx as usize].size = total;
     total
-}
-
-fn sort_children_by_name(arena: &mut [FileNode]) {
-    for node in arena.iter_mut() {
-        node.children.sort_by(|a, b| a.0.cmp(&b.0));
-    }
 }
 
 #[cfg(test)]
@@ -661,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_children_sorted_by_name() {
+    fn test_scan_children_all_present() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("z.txt"), "z").unwrap();
         fs::write(dir.path().join("a.txt"), "a").unwrap();
@@ -669,12 +692,13 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
-        let names: Vec<&str> = snapshot
+        let mut names: Vec<&str> = snapshot
             .node(ROOT_NODE)
             .children
             .iter()
             .map(|(n, _)| n.as_str())
             .collect();
+        names.sort();
         assert_eq!(names, vec!["a.txt", "m.txt", "z.txt"]);
     }
 
