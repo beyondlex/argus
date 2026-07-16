@@ -790,9 +790,14 @@ impl App {
         self.load_current_children();
     }
 
-    /// Go up one directory level in the filesystem, changing view_root_path
-    /// to the parent directory. Repeatable until reaching `/`.
+    /// Go up one directory level. If inside a subdirectory of the current tree,
+    /// pops up within the tree. At tree root, changes view_root_path to the
+    /// filesystem parent directory. Repeatable until reaching `/`.
     pub fn go_up_fs(&mut self) {
+        if self.current_dir_path.len() > 1 {
+            self.go_to_parent();
+            return;
+        }
         let parent = self.view_root_path.parent().map(|p| p.to_path_buf());
         if let Some(parent) = parent {
             self.view_root_path = parent;
