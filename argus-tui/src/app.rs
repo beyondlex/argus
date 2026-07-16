@@ -55,6 +55,8 @@ pub struct App {
     // Tree search (fuzzy search)
     pub search_word: String,
     pub search_mode: SearchMode,
+    /// Indices of current_children that match the search word, for n/N navigation.
+    pub search_match_indices: Vec<usize>,
 
     // gg double-tap tracking
     pub pending_gg: bool,
@@ -178,6 +180,7 @@ impl App {
             delta_pending: false,
             search_word: String::new(),
             search_mode: SearchMode::Inactive,
+            search_match_indices: Vec::new(),
             pending_gg: false,
             scanning: false,
             scan_progress: None,
@@ -549,6 +552,9 @@ impl App {
     /// Replaces (does not append). Also updates `current_filtered`, `current_dir_total`,
     /// and `parent_dir_total`.
     pub fn load_current_children(&mut self) {
+        // Search matches are stale after children reload
+        self.search_match_indices.clear();
+
         // Check if listing is needed before taking any borrow on tree_root
         let needs_listing = self.current_dir_path.len() > 1
             && self.tree_root.as_ref().is_some_and(|tr| {
@@ -709,14 +715,7 @@ impl App {
             });
         }
 
-        // Apply search filter if active
-        if self.search_mode != SearchMode::Inactive && !self.search_word.is_empty() {
-            let query = &self.search_word;
-            self.current_filtered.retain(|&i| {
-                crate::search::fuzzy_match_indices(query, self.current_children[i].node.name())
-                    .is_some()
-            });
-        }
+        // (No search filter — non-matching items stay visible, highlighted in render)
 
         // Clamp cursor
         if self.cursor >= self.current_filtered.len() && !self.current_filtered.is_empty() {
@@ -809,15 +808,16 @@ impl App {
         }
     }
 
-    /// Apply search filter to current_children (flat mode only).
-    /// Filters current_filtered to only entries matching the current search_word.
+    /// Compute search match indices for n/N navigation.
+    /// Does not filter current_filtered — non-matching items remain visible.
     pub fn apply_search(&mut self) {
         if self.search_word.is_empty() {
+            self.search_match_indices.clear();
             self.refresh_current_filtered();
             return;
         }
         let query = &self.search_word;
-        self.current_filtered = self
+        self.search_match_indices = self
             .current_children
             .iter()
             .enumerate()
@@ -827,25 +827,33 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        // Clamp cursor
-        if self.cursor >= self.current_filtered.len() && !self.current_filtered.is_empty() {
-            self.cursor = self.current_filtered.len() - 1;
-        } else if self.current_filtered.is_empty() {
-            self.cursor = 0;
+        self.refresh_current_filtered();
+
+        // Jump cursor to first match if any
+        if let Some(&first) = self.search_match_indices.first() {
+            self.cursor = first;
         }
     }
 
-    /// Cycle through matches in current_filtered (flat mode, n/N behavior).
+    /// Cycle through search matches (n/N behavior).
     pub fn cycle_match(&mut self, forward: bool) {
-        if self.current_filtered.is_empty() {
+        if self.search_match_indices.is_empty() {
             return;
         }
-        let len = self.current_filtered.len();
-        if forward {
-            self.cursor = (self.cursor + 1) % len;
-        } else {
-            self.cursor = (self.cursor + len - 1) % len;
-        }
+        // Find current cursor position in search_match_indices
+        let pos = self
+            .search_match_indices
+            .iter()
+            .position(|&i| i == self.cursor);
+        let next = match (pos, forward) {
+            (Some(p), true) => (p + 1) % self.search_match_indices.len(),
+            (Some(p), false) => {
+                (p + self.search_match_indices.len() - 1) % self.search_match_indices.len()
+            }
+            (None, true) => 0,
+            (None, false) => self.search_match_indices.len() - 1,
+        };
+        self.cursor = self.search_match_indices[next];
     }
 }
 
@@ -1637,9 +1645,12 @@ mod tests {
         let mut app = make_flat_app();
         app.search_word = "src".into();
         app.apply_search();
-        assert_eq!(app.current_filtered.len(), 1);
-        let idx = app.current_filtered[0];
-        assert_eq!(app.current_children[idx].node.name(), "src");
+        // current_filtered is NOT filtered by search — all items remain visible
+        assert_eq!(app.current_filtered.len(), 3);
+        // search_match_indices contains the matching index
+        assert_eq!(app.search_match_indices.len(), 1);
+        assert_eq!(app.search_match_indices[0], 0);
+        assert_eq!(app.current_children[0].node.name(), "src");
     }
 
     #[test]
@@ -1647,11 +1658,15 @@ mod tests {
         let mut app = make_flat_app();
         app.search_word = "nonexistent".into();
         app.apply_search();
-        assert!(app.current_filtered.is_empty());
+        // current_filtered still has all items (not filtered by search)
+        assert_eq!(app.current_filtered.len(), 3);
+        // search_match_indices is empty for no matches
+        assert!(app.search_match_indices.is_empty());
 
         app.search_word = "".into();
         app.apply_search();
         assert_eq!(app.current_filtered.len(), 3);
+        assert!(app.search_match_indices.is_empty());
     }
 
     #[test]
@@ -1659,19 +1674,23 @@ mod tests {
         let mut app = make_flat_app();
         app.search_word = "readme".into();
         app.apply_search();
-        assert_eq!(app.current_filtered.len(), 1);
+        assert_eq!(app.search_match_indices.len(), 1);
 
         app.cursor = 0;
         app.cycle_match(true);
-        assert_eq!(app.cursor, 0);
+        assert_eq!(app.cursor, 2); // cycles to readme.md index
     }
 
     #[test]
     fn test_cycle_match_backward() {
         let mut app = make_flat_app();
+        app.search_word = "readme".into();
+        app.apply_search();
+        assert_eq!(app.search_match_indices.len(), 1);
+
         app.cursor = 0;
         app.cycle_match(false);
-        assert_eq!(app.cursor, 2);
+        assert_eq!(app.cursor, 2); // cycles backward to readme.md index
     }
 
     #[test]
