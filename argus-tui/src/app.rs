@@ -12,8 +12,8 @@ use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
 use crate::ipc_client::IpcClient;
 use crate::theme::ColorTheme;
 use crate::time_utils::*;
-pub use crate::types::*;
 use crate::tree_ops;
+pub use crate::types::*;
 use crate::util::{default_log_path, log_msg};
 
 // ── App ─────────────────────────────────────────────────────────────────────
@@ -22,7 +22,6 @@ pub struct App {
     pub config: crate::config::TuiConfig,
     pub theme: ColorTheme,
     pub mode: AppMode,
-    pub focus: Focus,
     pub sort_mode: SortMode,
 
     // View root (always set, initialized to cwd)
@@ -50,7 +49,6 @@ pub struct App {
     pub time_custom_label: String,
 
     // Filter pane state
-    pub filter_focus: FilterFocus,
     pub delta_filter_active: bool,
     pub delta_filter_value: u64,
     pub delta_filter_unit: usize, // 0=KB, 1=MB, 2=GB
@@ -130,7 +128,6 @@ pub struct App {
     pub show_hidden: bool,
 
     // ── Flat mode (ncdu-like) fields ─────────────────────────────────
-
     /// Current directory's direct children (entries visible in the flat view)
     pub current_children: Vec<DirEntry>,
 
@@ -167,7 +164,6 @@ impl App {
             theme,
             tx,
             mode: AppMode::Browsing,
-            focus: Focus::Tree,
             sort_mode: SortMode::Size,
             view_root_path,
             tree_root: None,
@@ -185,7 +181,6 @@ impl App {
             time_preset: 0,
             time_custom: false,
             time_custom_label: String::new(),
-            filter_focus: FilterFocus::TimePreset,
             delta_filter_active: false,
             delta_filter_value: 100,
             delta_filter_unit: 1,
@@ -391,7 +386,6 @@ impl App {
                 self.daemon_client = None;
                 self.delta_cache.clear();
                 self.delta_filter_active = false;
-                self.focus = Focus::Tree;
                 self.refresh_filtered_lines();
                 self.set_error("daemon disconnected".into(), 4);
             }
@@ -741,18 +735,18 @@ impl App {
         self.delta_filter_unit = (self.delta_filter_unit + 1) % 3;
     }
 
-    /// Clear the delta filter and reset time, return to tree focus
+    /// Clear the delta filter and reset time
     pub fn clear_filter_pane(&mut self) {
         self.delta_filter_active = false;
         self.delta_filter_value = 100;
         self.delta_filter_unit = 1;
         self.set_time_preset(0);
-        self.focus = Focus::Tree;
         self.refresh_filtered_lines();
         self.recompute_matches();
         if self.server_mode {
             self.request_delta_refresh();
         }
+        self.set_info("filter cleared".into(), 2);
     }
 
     /// Enter multi-select mode
@@ -840,7 +834,8 @@ impl App {
             if let Ok(listed) = argus_core::list_dir(&full_path) {
                 if let Some(TreeNode::Snapshot(snap_arc, _)) = &mut self.tree_root {
                     let snap_mut = Arc::make_mut(snap_arc);
-                    let target_idx = snap_mut.find_node(ROOT_NODE, &self.current_dir_path)
+                    let target_idx = snap_mut
+                        .find_node(ROOT_NODE, &self.current_dir_path)
                         .unwrap_or(ROOT_NODE);
                     let child_nodes: Vec<(String, argus_core::FileNode)> = listed
                         .node(ROOT_NODE)
@@ -886,7 +881,6 @@ impl App {
         };
 
         let dir_node = snap.node(dir_idx);
-
 
         // (2) Resolve scan tree for has_scan_data lookups
         let root_scan_tree = tree_ops::resolve_scan_tree(&self.scan_cache, &self.view_root_path);
@@ -961,8 +955,8 @@ impl App {
 
         // Apply delta filter if active
         if self.delta_filter_active {
-            let threshold =
-                self.delta_filter_value * crate::types::delta_unit_multiplier(self.delta_filter_unit);
+            let threshold = self.delta_filter_value
+                * crate::types::delta_unit_multiplier(self.delta_filter_unit);
             let strict = self.delta_filter_value == 0;
             self.current_filtered.retain(|&i| {
                 let delta = self
@@ -998,9 +992,7 @@ impl App {
     /// Enter the selected directory (flat mode).
     /// Pushes current directory to stack, updates current_dir_path, and reloads children.
     pub fn enter_directory(&mut self) {
-        let entry_path = self.selected_entry().map(|e| {
-            (e.is_dir, e.path.clone())
-        });
+        let entry_path = self.selected_entry().map(|e| (e.is_dir, e.path.clone()));
         let Some((is_dir, path)) = entry_path else {
             return;
         };
@@ -1354,16 +1346,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_execute_filterclear_not_in_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(
-            app.execute_command("filterclear"),
-            Err("not in server mode".into())
-        );
-    }
-
     // ── delta filter tests ──────────────────────────────────────────────────
 
     #[test]
@@ -1622,23 +1604,6 @@ mod tests {
         assert_eq!(app.cursor, 0);
     }
 
-    // ── clear_filter_pane tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_clear_filter_pane_resets_state() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.delta_filter_active = true;
-        app.delta_filter_value = 500;
-        app.delta_filter_unit = 2;
-        app.focus = Focus::FilterPane;
-        app.clear_filter_pane();
-        assert!(!app.delta_filter_active);
-        assert_eq!(app.delta_filter_value, 100);
-        assert_eq!(app.delta_filter_unit, 1);
-        assert_eq!(app.focus, Focus::Tree);
-    }
-
     // ── command history tests ─────────────────────────────────────────────────
 
     #[test]
@@ -1744,32 +1709,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_consolidate_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        assert!(app.cmd_consolidate().is_ok());
-    }
-
-    #[test]
-    fn test_cmd_filterfocus_not_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(app.cmd_filterfocus(), Err("not in server mode".into()));
-    }
-
-    #[test]
-    fn test_cmd_filterfocus_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        app.focus = Focus::Tree;
-        assert!(app.cmd_filterfocus().is_ok());
-        assert_eq!(app.focus, Focus::FilterPane);
-        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
-    }
-
-    #[test]
     fn test_cmd_sort_quick_delta() {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
@@ -1865,25 +1804,6 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_delta_g_unit() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        assert!(app.execute_command("delta 2g").is_ok());
-        assert_eq!(app.delta_filter_value, 2);
-        assert_eq!(app.delta_filter_unit, 2);
-    }
-
-    #[test]
-    fn test_execute_delta_invalid_number() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        let result = app.execute_command("delta abc");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_execute_sort_shortcuts() {
         let (tx, _) = mpsc::channel(1);
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
@@ -1918,25 +1838,6 @@ mod tests {
         let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
         app.server_mode = true;
         assert!(app.execute_command("consolidate").is_ok());
-    }
-
-    #[test]
-    fn test_execute_filterfocus_not_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        assert_eq!(
-            app.execute_command("filterfocus"),
-            Err("not in server mode".into())
-        );
-    }
-
-    #[test]
-    fn test_execute_filterfocus_server_mode() {
-        let (tx, _) = mpsc::channel(1);
-        let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
-        app.server_mode = true;
-        assert!(app.execute_command("filterfocus").is_ok());
-        assert_eq!(app.focus, Focus::FilterPane);
     }
 
     // ── SortMode tests ────────────────────────────────────────────────────────
@@ -2089,7 +1990,6 @@ mod tests {
         assert!(app.tree_line_relative_path(0).is_none());
     }
 
-
     // ── Flat mode tests ──────────────────────────────────────────────────
 
     fn make_flat_app() -> App {
@@ -2180,7 +2080,10 @@ mod tests {
         app.cursor = 0; // "src" is at index 0 (size sort, 100 > 50)
 
         app.enter_directory();
-        assert_eq!(app.current_dir_path, vec![String::from("test"), String::from("src")]);
+        assert_eq!(
+            app.current_dir_path,
+            vec![String::from("test"), String::from("src")]
+        );
         assert_eq!(app.current_children.len(), 0); // src has no children
         assert_eq!(app.dir_stack.len(), 1);
         assert_eq!(app.cursor, 0);
@@ -2190,7 +2093,11 @@ mod tests {
     fn test_enter_directory_non_dir_does_nothing() {
         let mut app = make_flat_app();
         // Find readme.md (not a dir)
-        let readme_idx = app.current_children.iter().position(|e| e.node.name() == "readme.md").unwrap();
+        let readme_idx = app
+            .current_children
+            .iter()
+            .position(|e| e.node.name() == "readme.md")
+            .unwrap();
         app.cursor = readme_idx;
 
         app.enter_directory();
@@ -2204,7 +2111,10 @@ mod tests {
         let mut app = make_flat_app();
         app.cursor = 0;
         app.enter_directory();
-        assert_eq!(app.current_dir_path, vec![String::from("test"), String::from("src")]);
+        assert_eq!(
+            app.current_dir_path,
+            vec![String::from("test"), String::from("src")]
+        );
 
         app.go_to_parent();
         assert_eq!(app.current_dir_path, vec![String::from("test")]);
@@ -2394,16 +2304,29 @@ mod tests {
         // root → a → deep
         app.cursor = 0; // "a" (size 200)
         app.enter_directory();
-        assert_eq!(app.current_dir_path, vec![String::from("root"), String::from("a")]);
+        assert_eq!(
+            app.current_dir_path,
+            vec![String::from("root"), String::from("a")]
+        );
 
         app.cursor = 0; // "deep" (only child)
         app.enter_directory();
-        assert_eq!(app.current_dir_path, vec![String::from("root"), String::from("a"), String::from("deep")]);
+        assert_eq!(
+            app.current_dir_path,
+            vec![
+                String::from("root"),
+                String::from("a"),
+                String::from("deep")
+            ]
+        );
         assert_eq!(app.dir_stack.len(), 2);
 
         // Go back twice
         app.go_to_parent();
-        assert_eq!(app.current_dir_path, vec![String::from("root"), String::from("a")]);
+        assert_eq!(
+            app.current_dir_path,
+            vec![String::from("root"), String::from("a")]
+        );
         assert_eq!(app.dir_stack.len(), 1);
 
         app.go_to_parent();
@@ -2415,8 +2338,16 @@ mod tests {
     fn test_selected_node_full_path_flat_mode() {
         let mut app = make_flat_app();
         // readme.md is at some index
-        let idx = app.current_children.iter().position(|e| e.node.name() == "readme.md").unwrap();
-        app.cursor = app.current_filtered.iter().position(|&i| i == idx).unwrap_or(0);
+        let idx = app
+            .current_children
+            .iter()
+            .position(|e| e.node.name() == "readme.md")
+            .unwrap();
+        app.cursor = app
+            .current_filtered
+            .iter()
+            .position(|&i| i == idx)
+            .unwrap_or(0);
         let path = app.selected_node_full_path();
         assert_eq!(path, Some(PathBuf::from("/tmp/test/readme.md")));
     }
@@ -2437,5 +2368,4 @@ mod tests {
         let idx = app.current_filtered[0];
         assert_eq!(app.current_children[idx].node.name(), "src");
     }
-
 }

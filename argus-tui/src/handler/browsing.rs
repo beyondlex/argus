@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crate::app::{App, AppMessage, AppMode, FilterFocus, Focus, SearchMode};
+use crate::app::{App, AppMessage, AppMode, SearchMode};
 use crate::ipc_client::IpcClient;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -35,15 +35,6 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
         }
-        return;
-    }
-
-    if app.focus == Focus::FilterPane {
-        // Exit multi-select when focusing filter pane
-        if app.multi_select {
-            app.exit_multi_select();
-        }
-        crate::handler::filter::handle_filter_pane_key(key, app);
         return;
     }
 
@@ -201,13 +192,6 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
         }
         KeyCode::Char('y') => handle_copy_path(app),
-        KeyCode::Char('f') if app.server_mode => {
-            if app.multi_select {
-                app.exit_multi_select();
-            }
-            app.focus = Focus::FilterPane;
-            app.filter_focus = FilterFocus::TimePreset;
-        }
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
         KeyCode::Char('c') => {
             if app.multi_select {

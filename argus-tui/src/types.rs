@@ -50,21 +50,6 @@ pub enum AppMode {
     Finder, // Finder mode (Go to Path)
 }
 
-/// Which panel has focus
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Focus {
-    Tree,
-    FilterPane,
-}
-
-/// Which field in the filter pane has focus
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FilterFocus {
-    TimePreset,
-    DeltaValue,
-    DeltaUnit,
-}
-
 /// Tree search mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SearchMode {

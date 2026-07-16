@@ -127,7 +127,7 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
 
     match app.execute_command(cmd) {
         Ok(msg) => {
-            app.set_error(msg, 3);
+            app.set_info(msg, 3);
         }
         Err(e) => {
             app.set_error(e, 4);

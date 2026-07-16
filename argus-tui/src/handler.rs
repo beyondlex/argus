@@ -1,6 +1,5 @@
 mod browsing;
 mod command;
-mod filter;
 mod finder;
 mod prompt;
 mod search;
@@ -33,13 +32,12 @@ mod tests {
         set_root_to_selected,
     };
     use crate::handler::command::{execute_command, handle_command_key};
-    use crate::handler::filter::{adjust_filter_focus, handle_filter_pane_key};
     use crate::handler::prompt::{
         handle_delete_common, handle_delete_permanent_prompt_key, handle_delete_prompt_key,
         handle_help_key, handle_time_help_key,
     };
     use crate::handler::search::handle_search_keys;
-    use crate::types::{FilterFocus, Focus, SearchMode};
+    use crate::types::SearchMode;
     use argus_core::{FileNode, FileType, NodeIndex, Snapshot, ROOT_NODE};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
@@ -83,151 +81,6 @@ mod tests {
             .insert(PathBuf::from("/tmp/test"), Arc::new(scan_snap));
         app.update_tree_lines();
         app
-    }
-
-    // ── filter pane key handlers ─────────────────────────────────────────────
-
-    #[test]
-    fn test_filter_tab_cycles_forward() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-
-        app.filter_focus = FilterFocus::TimePreset;
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
-
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
-
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
-    }
-
-    #[test]
-    fn test_filter_backtab_cycles_reverse() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-
-        app.filter_focus = FilterFocus::TimePreset;
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.filter_focus, FilterFocus::TimePreset);
-    }
-
-    #[test]
-    fn test_filter_tab_skips_time_when_custom() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.time_custom = true;
-
-        app.filter_focus = FilterFocus::TimePreset;
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
-
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::DeltaUnit);
-
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.filter_focus, FilterFocus::DeltaValue);
-    }
-
-    #[test]
-    fn test_filter_esc_returns_to_tree() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-
-        handle_filter_pane_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
-        assert_eq!(app.focus, Focus::Tree);
-    }
-
-    #[test]
-    fn test_filter_enter_confirms_to_tree() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.focus, Focus::Tree);
-    }
-
-    #[test]
-    fn test_filter_digit_input_sets_value() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::DeltaValue;
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Char('4'), KeyModifiers::empty()),
-            &mut app,
-        );
-        assert!(app.delta_filter_active);
-        assert_eq!(app.delta_filter_value, 4);
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.delta_filter_value, 42);
-    }
-
-    #[test]
-    fn test_filter_backspace_removes_digit() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::DeltaValue;
-        app.delta_filter_active = true;
-        app.delta_filter_value = 42;
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert_eq!(app.delta_filter_value, 4);
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
-            &mut app,
-        );
-        assert!(!app.delta_filter_active);
-    }
-
-    #[test]
-    fn test_filter_clear_resets_state() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.delta_filter_active = true;
-        app.delta_filter_value = 500;
-
-        handle_filter_pane_key(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()),
-            &mut app,
-        );
-        assert!(!app.delta_filter_active);
-        assert_eq!(app.focus, Focus::Tree);
     }
 
     // ── delete prompt handlers ────────────────────────────────────────────────
@@ -822,65 +675,6 @@ mod tests {
         handle_delete_action(&mut app, true);
 
         assert_eq!(app.mode, AppMode::DeletePermanentPrompt);
-    }
-
-    // ── adjust_filter_focus ──────────────────────────────────────────────
-
-    #[test]
-    fn test_adjust_filter_focus_time_preset_forward() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        // Use non-existent path so request_delta_refresh returns early
-        app.view_root_path = PathBuf::from("/nonexistent_path_xyz");
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::TimePreset;
-        app.time_preset = 0;
-
-        adjust_filter_focus(&mut app, true);
-
-        assert_eq!(app.time_preset, 1);
-    }
-
-    #[test]
-    fn test_adjust_filter_focus_time_preset_backward() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.view_root_path = PathBuf::from("/nonexistent_path_xyz");
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::TimePreset;
-        app.time_preset = 1;
-
-        adjust_filter_focus(&mut app, false);
-
-        assert_eq!(app.time_preset, 0);
-    }
-
-    #[test]
-    fn test_adjust_filter_focus_delta_value_forward() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::DeltaValue;
-        app.delta_filter_active = false;
-        app.delta_filter_value = 0;
-
-        adjust_filter_focus(&mut app, true);
-
-        assert!(app.delta_filter_active);
-    }
-
-    #[test]
-    fn test_adjust_filter_focus_delta_unit_forward() {
-        let (tx, rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
-        app.focus = Focus::FilterPane;
-        app.filter_focus = FilterFocus::DeltaUnit;
-        app.delta_filter_active = false;
-        app.delta_filter_unit = 0;
-
-        adjust_filter_focus(&mut app, true);
-
-        assert!(app.delta_filter_active);
     }
 
     // ── prev_match_index ─────────────────────────────────────────────────

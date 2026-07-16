@@ -27,7 +27,8 @@ pub fn render(
     let popup_area = crate::components::popup::centered_rect(60, 40, area);
 
     let block = popup_block(" File Info ", PopupStyle::Normal, theme)
-        .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme))).title_alignment(ratatui::layout::Alignment::Right);
+        .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme)))
+        .title_alignment(ratatui::layout::Alignment::Right);
 
     let type_str = if metadata.is_dir() {
         "Directory"

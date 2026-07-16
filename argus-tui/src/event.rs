@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, AppMode, FilterFocus, Focus, TreeNode, DELTA_UNIT_LABELS};
+use crate::app::{App, AppMode, TreeNode};
 use crate::components::{
     command_bar, file_tree, flat_tree, help_popup, metadata, popup, status_bar, time_help,
 };
@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph},
+    widgets::{Clear, Gauge, Paragraph},
     Frame,
 };
 
@@ -172,7 +172,6 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Header
-            Constraint::Length(2), // Filter pane (border + content)
             Constraint::Min(1),    // Main content
             Constraint::Length(1), // Status bar
         ])
@@ -184,9 +183,8 @@ fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
 
 fn render_chrome(f: &mut Frame, app: &App, chunks: &[ratatui::layout::Rect], cursor_visible: bool) {
     render_header(f, chunks[0], app);
-    render_filter_pane(f, chunks[1], app);
-    render_main_content(f, app, chunks[2], cursor_visible);
-    render_status_bar(f, app, chunks[3]);
+    render_main_content(f, app, chunks[1], cursor_visible);
+    render_status_bar(f, app, chunks[2]);
 }
 
 fn render_main_content(
@@ -200,7 +198,7 @@ fn render_main_content(
         .constraints([Constraint::Percentage(100)])
         .split(area);
 
-    let file_tree_focused = app.focus == Focus::Tree && app.mode == AppMode::Browsing;
+    let file_tree_focused = app.mode == AppMode::Browsing;
     let delta_cache = if app.server_connected {
         Some(&app.delta_cache)
     } else {
@@ -272,6 +270,12 @@ fn render_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         app.sort_mode,
         app.multi_select,
         &app.theme,
+        app.time_custom,
+        app.time_preset,
+        &app.time_custom_label,
+        app.delta_filter_active,
+        app.delta_filter_value,
+        app.delta_filter_unit,
     );
 }
 
@@ -279,11 +283,19 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
     const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
     // Fixed-size popup: 7 rows (1 spacer + path + 1 spacer + stats + 1 spacer + 2 borders)
-    let width = ((area.width * 70 / 100) as u16).max(40).min(area.width).min(120);
+    let width = ((area.width * 70 / 100) as u16)
+        .max(40)
+        .min(area.width)
+        .min(120);
     let height: u16 = 7.min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup_area = Rect { x, y, width, height };
+    let popup_area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     let root_display = display_path(&app.view_root_path);
     let title = format!(" Scanning {} ", root_display);
@@ -293,10 +305,7 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(popup_area);
 
     // Current file path being scanned
-    let current_path = app
-        .scan_current_path
-        .as_deref()
-        .unwrap_or("");
+    let current_path = app.scan_current_path.as_deref().unwrap_or("");
 
     let mut path_lines: Vec<Line> = Vec::new();
 
@@ -450,147 +459,17 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     // Split layout: left takes Fill, right is fixed-width daemon label
     let daemon_width: u16 = daemon_text.len() as u16 + 2; // spaces
     if daemon_width + 4 < area.width {
-        let [left_area, right_area] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(daemon_width),
-        ])
-        .flex(Flex::SpaceBetween)
-        .areas(area);
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(daemon_width)])
+                .flex(Flex::SpaceBetween)
+                .areas(area);
         f.render_widget(Paragraph::new(Line::from(header_spans)), left_area);
         f.render_widget(Paragraph::new(daemon_line), right_area);
     } else {
-        f.render_widget(
-            Paragraph::new(Line::from(header_spans)),
-            area,
-        );
+        f.render_widget(Paragraph::new(Line::from(header_spans)), area);
     }
 }
 
-fn focus_highlight_style(active: bool, theme: &crate::theme::ColorTheme) -> Style {
-    if active {
-        Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
-    } else {
-        Style::default().fg(theme.text).bg(theme.bg)
-    }
-}
-
-/// Render the filter pane (time range + delta filter)
-fn render_filter_pane(f: &mut Frame, area: Rect, app: &App) {
-    let is_focused = app.focus == Focus::FilterPane;
-
-    let border_style = Style::default().fg(if is_focused {
-        app.theme.accent
-    } else {
-        app.theme.border_unfocused
-    });
-
-    let hint: Vec<Span> = if is_focused {
-        key_hints(
-            &[("Tab", "cycle"), ("Esc", "Files"), ("c", "Clear")],
-            &app.theme,
-        )
-    } else {
-        key_hints(&[("f", "Focus"), ("c", "Clear")], &app.theme)
-    };
-
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(border_style)
-        .title(Line::from(hint))
-        .title_alignment(Alignment::Right);
-    let inner = block.inner(area);
-
-    if !app.server_connected {
-        let line = Line::from(vec![
-            Span::styled(" ", Style::default().bg(app.theme.bg)),
-            Span::styled(
-                "Press R to connect to daemon",
-                Style::default()
-                    .fg(app.theme.text_tertiary)
-                    .bg(app.theme.bg),
-            ),
-        ]);
-        f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(app.theme.bg)),
-            inner,
-        );
-        f.render_widget(block, area);
-        return;
-    }
-
-    let time_label = if app.time_custom {
-        format!(" Time: {} ", app.time_custom_label)
-    } else {
-        format!(" Time: in {} ", App::time_preset_label(app.time_preset))
-    };
-    let time_style = focus_highlight_style(
-        is_focused && app.filter_focus == FilterFocus::TimePreset && !app.time_custom,
-        &app.theme,
-    );
-
-    let delta_value_style = focus_highlight_style(
-        is_focused && app.filter_focus == FilterFocus::DeltaValue,
-        &app.theme,
-    );
-
-    let delta_unit_style = focus_highlight_style(
-        is_focused && app.filter_focus == FilterFocus::DeltaUnit,
-        &app.theme,
-    );
-
-    let delta_prefix_style = Style::default()
-        .fg(app.theme.text_tertiary)
-        .bg(app.theme.bg);
-
-    let mut left: Vec<Span> = vec![
-        Span::styled(time_label, time_style),
-        Span::raw("  "),
-        Span::styled("+Size: >=", delta_prefix_style),
-        Span::styled(
-            if app.delta_filter_active {
-                app.delta_filter_value.to_string()
-            } else {
-                "-".to_string()
-            },
-            delta_value_style,
-        ),
-        Span::raw(" "),
-        Span::styled(
-            if app.delta_filter_active {
-                DELTA_UNIT_LABELS
-                    .get(app.delta_filter_unit)
-                    .copied()
-                    .unwrap_or("--")
-                    .to_string()
-            } else {
-                "-".to_string()
-            },
-            delta_unit_style,
-        ),
-    ];
-
-    // Right-aligned deleted-space counter (only if > 0)
-    if app.deleted_bytes > 0 {
-        let right_text = format!(" Deleted: {} ", format_size(app.deleted_bytes));
-        let left_width: usize = left.iter().map(|s| s.content.len()).sum();
-        let padding = inner
-            .width
-            .saturating_sub((left_width + right_text.len()) as u16);
-        if padding > 0 {
-            left.push(Span::raw(" ".repeat(padding as usize)));
-        }
-        left.push(Span::styled(
-            right_text,
-            Style::default().fg(app.theme.success),
-        ));
-    }
-
-    f.render_widget(
-        Paragraph::new(Line::from(left)).style(Style::default().bg(app.theme.bg)),
-        inner,
-    );
-    f.render_widget(block, area);
-}
 fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
     let height_fixed: u16 = 11;
     let popup_area = popup::centered_rect(50, 70, area);
@@ -770,72 +649,6 @@ mod tests {
         let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
         assert!(content.contains('?'), "header should have help hint");
         assert!(content.contains('q'), "header should have quit hint");
-    }
-
-    #[test]
-    fn test_render_filter_pane_not_connected_shows_hint() {
-        let mut app = make_app();
-        app.server_connected = false;
-
-        let backend = TestBackend::new(80, 2);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
-                render_filter_pane(f, area, &app);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
-        assert!(
-            content.contains("Press R to connect"),
-            "disconnected hint not found in: {content:?}"
-        );
-    }
-
-    #[test]
-    fn test_render_filter_pane_connected_shows_time() {
-        let mut app = make_app();
-        app.server_connected = true;
-
-        let backend = TestBackend::new(80, 2);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
-                render_filter_pane(f, area, &app);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
-        assert!(
-            content.contains("Time:"),
-            "time label not found in: {content:?}"
-        );
-    }
-
-    #[test]
-    fn test_render_filter_pane_shows_size_filter() {
-        let mut app = make_app();
-        app.server_connected = true;
-        app.delta_filter_active = true;
-        app.delta_filter_value = 500;
-        app.delta_filter_unit = 0;
-
-        let backend = TestBackend::new(80, 2);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                let area = ratatui::layout::Rect::new(0, 0, 80, 2);
-                render_filter_pane(f, area, &app);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
-        assert!(
-            content.contains("500"),
-            "delta filter value not found in: {content:?}"
-        );
     }
 
     #[test]

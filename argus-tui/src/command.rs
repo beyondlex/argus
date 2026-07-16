@@ -8,8 +8,6 @@ impl App {
     pub const COMMANDS: &'static [&'static str] = &[
         "Consolidate",
         "Delta",
-        "FilterClear",
-        "FilterFocus",
         "Finder",
         "Help",
         "Scan",
@@ -65,8 +63,6 @@ impl App {
         let name_lower = name.to_lowercase();
 
         match name_lower.as_str() {
-            "filterclear" => self.cmd_filterclear(),
-            "filterfocus" => self.cmd_filterfocus(),
             "help" => self.cmd_help(),
             "delta" => self.cmd_delta(&parts),
             "time" => self.cmd_time(&parts),
@@ -78,25 +74,6 @@ impl App {
             "scan" => self.cmd_scan(),
             "consolidate" => self.cmd_consolidate(),
             _ => Err(format!("unknown command: {name}")),
-        }
-    }
-
-    pub(crate) fn cmd_filterclear(&mut self) -> Result<String, String> {
-        if self.server_mode {
-            self.clear_filter_pane();
-            Ok("filter cleared".into())
-        } else {
-            Err("not in server mode".into())
-        }
-    }
-
-    pub(crate) fn cmd_filterfocus(&mut self) -> Result<String, String> {
-        if self.server_mode {
-            self.focus = Focus::FilterPane;
-            self.filter_focus = FilterFocus::TimePreset;
-            Ok("filter pane focused".into())
-        } else {
-            Err("not in server mode".into())
         }
     }
 
@@ -144,7 +121,7 @@ impl App {
             Some(a) => *a,
             None => {
                 self.mode = AppMode::TimeHelp;
-                return Ok("time help opened".into());
+                return Ok("".into());
             }
         };
         let rest: String = parts[1..].join(" ");

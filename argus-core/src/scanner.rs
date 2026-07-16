@@ -161,8 +161,7 @@ impl TreeBuilder {
             .or_default()
             .insert(name.to_string(), new_idx);
     }
-
-    }
+}
 
 pub fn scan_path(
     path: &Path,

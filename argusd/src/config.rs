@@ -214,11 +214,8 @@ impl TryFrom<RawDaemonConfig> for DaemonConfig {
     type Error = String;
 
     fn try_from(raw: RawDaemonConfig) -> Result<Self, Self::Error> {
-        let watch_dirs: Result<Vec<WatchDir>, _> = raw
-            .watch_dirs
-            .into_iter()
-            .map(WatchDir::try_from)
-            .collect();
+        let watch_dirs: Result<Vec<WatchDir>, _> =
+            raw.watch_dirs.into_iter().map(WatchDir::try_from).collect();
         Ok(DaemonConfig {
             watch_dirs: watch_dirs?,
             debounce_seconds: raw.debounce_seconds,
@@ -331,7 +328,10 @@ watch_dirs = ["/home/user/downloads"]
         let raw_daemon = raw.daemon.unwrap();
         let config = DaemonConfig::try_from(raw_daemon).unwrap();
         assert_eq!(config.watch_dirs.len(), 1);
-        assert_eq!(config.watch_dirs[0].path, PathBuf::from("/home/user/downloads"));
+        assert_eq!(
+            config.watch_dirs[0].path,
+            PathBuf::from("/home/user/downloads")
+        );
         assert!(config.watch_dirs[0].include.is_none());
         assert!(config.watch_dirs[0].exclude.is_none());
     }
@@ -366,7 +366,10 @@ watch_dirs = [
         let raw_daemon = raw.daemon.unwrap();
         let config = DaemonConfig::try_from(raw_daemon).unwrap();
         assert_eq!(config.watch_dirs.len(), 2);
-        assert_eq!(config.watch_dirs[1].path, PathBuf::from("/home/user/downloads"));
+        assert_eq!(
+            config.watch_dirs[1].path,
+            PathBuf::from("/home/user/downloads")
+        );
         assert!(config.watch_dirs[1].include.is_some());
     }
 

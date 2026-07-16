@@ -13,8 +13,8 @@ use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
-use argus_core::DeltaEvent;
 use crate::config::WatchDir;
+use argus_core::DeltaEvent;
 
 /// Cap for `size_cache` / `hardlink_cache`. Past this, drop roughly half so
 /// long-lived daemons do not grow unbounded. Hardlink dedup still works for
@@ -318,7 +318,10 @@ mod tests {
         ];
 
         // Under /home/user/downloads -> second watch dir (longer prefix)
-        let matched = match_watch_dir(PathBuf::from("/home/user/downloads/report.pdf").as_path(), &dirs);
+        let matched = match_watch_dir(
+            PathBuf::from("/home/user/downloads/report.pdf").as_path(),
+            &dirs,
+        );
         assert!(matched.is_some());
         assert_eq!(matched.unwrap().path, PathBuf::from("/home/user/downloads"));
         assert!(matched.unwrap().include.is_some());

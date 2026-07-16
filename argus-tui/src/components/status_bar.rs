@@ -1,5 +1,6 @@
-use crate::app::{AppMode, ScanSummary, SortMode};
+use crate::app::{App, AppMode, ScanSummary, SortMode};
 use crate::theme::ColorTheme;
+use crate::types::DELTA_UNIT_LABELS;
 use crate::util;
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
@@ -20,6 +21,12 @@ pub fn render(
     sort_mode: SortMode,
     multi_select: bool,
     theme: &ColorTheme,
+    time_custom: bool,
+    time_preset: usize,
+    time_custom_label: &str,
+    delta_filter_active: bool,
+    delta_filter_value: u64,
+    delta_filter_unit: usize,
 ) {
     let mut left_spans: Vec<Span> = Vec::new();
 
@@ -99,17 +106,94 @@ pub fn render(
         left_spans.push(Span::styled(msg, Style::default().fg(fg).bg(theme.bg)));
     }
 
-    // Right side: sort mode indicator
-    let right_spans = vec![
-        Span::raw(" Sort: "),
-        Span::styled(
-            sort_mode.label(),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ];
+    let filter_spans = filter_indicator(
+        theme,
+        time_custom,
+        time_preset,
+        time_custom_label,
+        delta_filter_active,
+        delta_filter_value,
+        delta_filter_unit,
+    );
+
+    fn filter_indicator(
+        theme: &ColorTheme,
+        time_custom: bool,
+        time_preset: usize,
+        time_custom_label: &str,
+        delta_active: bool,
+        delta_value: u64,
+        delta_unit: usize,
+    ) -> Vec<Span<'static>> {
+        let data_style = Style::default().fg(theme.accent);
+        let normal_style = Style::default().fg(theme.text);
+
+        let val_span = |s: &str| Span::styled(s.to_string(), data_style);
+        let lbl_span = |s: &str| Span::styled(s.to_string(), normal_style);
+
+        let mut spans: Vec<Span> = Vec::new();
+        let mut has_time = false;
+        let mut has_delta = false;
+
+        // Time part
+        if time_custom && !time_custom_label.is_empty() {
+            has_time = true;
+            if time_custom_label.contains('~') {
+                // Range: time [07-12 ~ 07-13)
+                spans.push(lbl_span("time"));
+                spans.push(lbl_span(" ["));
+                spans.push(val_span(time_custom_label));
+                spans.push(lbl_span(")"));
+            } else {
+                // Single duration: time in 2h
+                spans.push(lbl_span("time"));
+                spans.push(lbl_span(" in "));
+                spans.push(val_span(time_custom_label));
+            }
+        } else if !time_custom {
+            has_time = true;
+            spans.push(lbl_span("time"));
+            spans.push(lbl_span(" in "));
+            spans.push(val_span(App::time_preset_label(time_preset)));
+        }
+
+        // Delta part
+        let unit_label = DELTA_UNIT_LABELS.get(delta_unit).copied().unwrap_or("--");
+
+        if delta_active {
+            has_delta = true;
+            if has_time {
+                spans.push(lbl_span(","));
+                spans.push(lbl_span(" "));
+            }
+            spans.push(lbl_span("delta"));
+            spans.push(lbl_span(" "));
+            spans.push(lbl_span(">="));
+            spans.push(lbl_span(" "));
+            spans.push(val_span(&delta_value.to_string()));
+            spans.push(lbl_span(" "));
+            spans.push(val_span(unit_label));
+        }
+
+        if !has_time && !has_delta {
+            return Vec::new();
+        }
+
+        spans
+    }
+    let mut right_spans: Vec<Span> = Vec::new();
+    if !filter_spans.is_empty() {
+        right_spans.extend(filter_spans);
+        right_spans.push(Span::raw("   "));
+    }
+    right_spans.push(Span::raw("Sort: "));
+    right_spans.push(Span::styled(
+        sort_mode.label(),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+    right_spans.push(Span::raw(" "));
     let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
     let right_line = Line::from(right_spans);
 

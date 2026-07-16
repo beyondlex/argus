@@ -25,7 +25,10 @@ pub(crate) fn handle_finder_key(key: KeyEvent, app: &mut App) {
             app.finder_state = None;
             app.mode = AppMode::Browsing;
             app.rebuild_tree();
-            app.set_info(format!("changed root to {}", app.view_root_path.display()), 3);
+            app.set_info(
+                format!("changed root to {}", app.view_root_path.display()),
+                3,
+            );
         }
         FinderAction::Cancel => {
             app.finder_state = None;

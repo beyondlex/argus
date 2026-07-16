@@ -139,7 +139,11 @@ fn format_timestamp(ts_ms: u64) -> String {
     let secs = (ts_ms / 1000) as i64;
     let nanos = ((ts_ms % 1000) * 1_000_000) as u32;
     chrono::DateTime::from_timestamp(secs, nanos)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 

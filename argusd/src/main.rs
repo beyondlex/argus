@@ -111,7 +111,14 @@ async fn run(args: Args) {
         config.uds_path = uds_path.clone();
     }
 
-    tracing::info!("argusd starting, watching {:?}", config.watch_dirs.iter().map(|w| &w.path).collect::<Vec<_>>());
+    tracing::info!(
+        "argusd starting, watching {:?}",
+        config
+            .watch_dirs
+            .iter()
+            .map(|w| &w.path)
+            .collect::<Vec<_>>()
+    );
 
     let db_path = argus_core::default_db_path();
     let conn = open_db(&db_path).expect("failed to open database");

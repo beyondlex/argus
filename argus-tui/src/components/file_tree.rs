@@ -194,11 +194,9 @@ pub fn render(f: &mut Frame, area: Rect, ctx: TreeRenderCtx) {
         let info_width: u16 = info_spans.iter().map(|s| s.content.len() as u16).sum();
         let name_max_width = row_area.width.saturating_sub(info_width);
         truncate_name_spans(&mut name_spans, name_max_width as usize);
-        let [info_area, name_area] = Layout::horizontal([
-            Constraint::Length(info_width),
-            Constraint::Fill(1),
-        ])
-        .areas(row_area);
+        let [info_area, name_area] =
+            Layout::horizontal([Constraint::Length(info_width), Constraint::Fill(1)])
+                .areas(row_area);
 
         f.render_widget(Paragraph::new(Line::from(info_spans)), info_area);
         f.render_widget(Paragraph::new(Line::from(name_spans)), name_area);
