@@ -102,6 +102,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('l') | KeyCode::Right => app.enter_directory(),
         KeyCode::Char('h') | KeyCode::Left => app.go_to_parent(),
         KeyCode::Char('H') => app.go_to_root(),
+        KeyCode::Char('u') => app.go_up_fs(),
         KeyCode::Char('s') => {
             if app.multi_select {
                 app.exit_multi_select();
