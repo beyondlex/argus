@@ -4,7 +4,7 @@
 
 各客户端（CLI/TUI/GUI/Daemon）启动时自动加载。
 
-> **Phase 1 范围**：仅加载 `[ignore]` 组规则（参见 `10-phase1-guide.md` §2.4）。AI/快捷键/主题/守护进程等配置组留待对应 Phase 实现。配置文件不存在时不报错，使用全默认值。
+> **Phase 1 范围**：仅加载 `[ignore]` 组规则（参见 archived `10-phase1-guide.md` §2.4）。AI/快捷键/主题/守护进程等配置组留待对应 Phase 实现。配置文件不存在时不报错，使用全默认值。
 
 ## 1. AI 配置组 `[ai]`
 

@@ -4,7 +4,7 @@
 
 ## Features
 
-- **High-performance scanning** — recursive filesystem scan with hardlink dedup, skip-dir support, and progress reporting
+- **High-performance scanning** — recursive filesystem scan with hardlink dedup and progress reporting
 - **Vim-style TUI browser** — navigate, sort, search, filter, and delete files/directories
 - **Dual mode** — standalone (scan in-memory) or connect to `argusd` daemon for delta overlay
 - **Daemon delta monitoring** — `argusd` watches directories via `notify`, debounces events, stores in SQLite, serves delta queries over UDS
@@ -173,9 +173,6 @@ colors.text_primary = "#FFFFFF"
 
 [browsing]
 auto_scan_on_start = false
-skip_dirs = ["node_modules", "target", ".git", "__pycache__",
-             ".venv", "vendor", "dist", "build", ".cache",
-             ".next", ".nuxt"]
 
 [daemon]
 uds_path = "/tmp/argusd.sock"
@@ -204,8 +201,9 @@ argus/
 ├── argus-tui/        TUI client (ratatui + crossterm)
 │   ├── src/
 │   │   ├── app.rs          Central state + message handling
-│   │   ├── types.rs        TreeNode, TreeLine, AppMode, Focus
-│   │   ├── handler/        Keyboard event dispatch modules
+│   │   ├── event.rs        Event polling (keyboard, resize, messages)
+│   │   ├── types.rs        App types (AppMode, SortMode, DirEntry, TreeNode)
+│   │   ├── handler/        Keyboard event dispatch (browsing, command, search, prompt, finder)
 │   │   ├── components/     UI widget rendering
 │   │   ├── tree_ops.rs     Tree expand/collapse/sort/delete
 │   │   ├── delta.rs        Delta cache construction
@@ -219,8 +217,12 @@ argus/
 │       ├── retention.rs    Periodic purge + consolidation
 │       ├── ipc_server.rs   UDS query handler
 │       └── daemonize.rs    Fork + PID file management
-└── docs/
-    └── requirements/  Full specifications (Chinese)
+├── docs/
+│   ├── requirements/  Current specifications (Chinese)
+│   ├── plans/         Active design documents
+│   ├── notes/         Living behavior notes
+│   └── archive/       Superseded / outdated documents
+└── AGENTS.md          Agent development conventions
 ```
 
 ## Development

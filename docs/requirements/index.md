@@ -12,7 +12,7 @@
 ## 文档目录
 
 | # | 文档 | 内容简介 |
-|---|------|---------|
+|   |------|---------|
 | 01 | [项目概述与定位](01-overview.md) | 背景、定位、目标用户、核心价值、设计原则 |
 | 02 | [系统架构设计](02-architecture.md) | 三层架构、Cargo Workspace、双模驱动、技术栈选型 |
 | 03 | [核心功能需求](03-core-features.md) | daemon 增量监控、安全删除、高性能扫描 |
@@ -22,11 +22,9 @@
 | 07 | [安全设计](07-safety.md) | 系统黑名单、风险分级、废纸篓机制、审计日志 |
 | 08 | [数据模型与算法](08-data-model.md) | FileNode 结构、SQLite 存储模型、IPC 协议 |
 | 09 | [迭代路线图](09-roadmap.md) | Phase 1-5 完整演进规划 |
-| 10 | [Phase 1 实施指南](10-phase1-guide.md) | MVP 阶段具体开发指导与验收标准 |
 | 11 | [日志系统设计](11-logging.md) | 等级规范、JSON 结构、Span 定义、AI Agent 调试 |
-| 12 | [Phase 2 实施指南](12-phase2-guide.md) | TUI 极客版具体开发指导与验收标准 |
-| P1 | [Standalone FS 导航重构计划](../plans/standalone-fs-navigation-refactor.md) | 文件树为一级导航的重构方案 |
-| P3 | [Phase 3 Daemon 设计](../plans/phase3-daemon-design.md) | 守护进程、delta 存储、IPC 协议、TUI 服务模式 |
+| — | [Phase 3 Daemon 设计](../plans/phase3-daemon-design.md) | 守护进程、delta 存储、IPC 协议、TUI 服务模式 |
+| — | [文件树 size 语义](../plans/file-tree-size-design.md) | size 占位符与 scan_data 语义 |
 
 ---
 
@@ -48,6 +46,10 @@ MVP+CLI   →    TUI极客版  →  Daemon自动化 → AI完全体   → GUI桌
 ## 需求来源
 
 当前以本目录下的 `01`-`11` 文档作为实现需求源。历史讨论稿不随仓库维护，AI Agent 实施时不应依赖仓库外部需求文件。
+
+## 归档文档
+
+已实施的 Phase 1/Phase 2 实施指南、已实现的性能优化计划、以及引用旧数据模型（enum FileNode、per-node children HashMap）的 SQLite 设计方案已移入 [`docs/archive/`](../archive/)。如需查阅，参见 [`docs/archive/README.md`](../archive/README.md)。
 
 ## 进度入口
 
