@@ -103,11 +103,12 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
         let is_cursor = i == state.cursor;
         let is_marked = state.mark_for_delete.contains(&i);
 
-        let bg = if is_cursor {
-            theme.selected_bg
+        let (bg, fg) = if is_cursor {
+            (theme.focus_bg, theme.focus_fg)
         } else {
-            theme.popup_bg
+            (theme.popup_bg, theme.text)
         };
+        let cursor_arrow = if is_cursor { "▸" } else { " " };
         let prefix = if is_marked { "●" } else { "○" };
 
         let risk_color = match result.risk_level {
@@ -121,7 +122,7 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
 
         let spans = vec![
             Span::styled(
-                format!(" {} ", prefix),
+                format!("{} {} ", cursor_arrow, prefix),
                 Style::default()
                     .fg(if is_marked {
                         theme.success
@@ -133,7 +134,11 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
             Span::styled(
                 format!(" {} ", result.label),
                 Style::default()
-                    .fg(theme.text_highlight)
+                    .fg(if is_cursor {
+                        fg
+                    } else {
+                        theme.text_highlight
+                    })
                     .add_modifier(Modifier::BOLD)
                     .bg(bg),
             ),
@@ -143,7 +148,9 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
             ),
             Span::styled(
                 result.purpose.clone(),
-                Style::default().fg(theme.text_secondary).bg(bg),
+                Style::default()
+                    .fg(if is_cursor { fg } else { theme.text_secondary })
+                    .bg(bg),
             ),
         ];
 
@@ -169,9 +176,13 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
                 format!(" [{}] ", result.risk_level.label()),
                 Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&result.suggestion, Style::default().fg(theme.text_tertiary)),
+            Span::styled(
+                result.suggestion.clone(),
+                Style::default().fg(if is_cursor { fg } else { theme.text_tertiary }),
+            ),
         ];
-        let detail_text = Paragraph::new(Line::from(detail_spans));
+        let detail_text = Paragraph::new(Line::from(detail_spans))
+            .block(Block::default().style(Style::default().bg(bg)));
         f.render_widget(detail_text, detail_area);
 
         // Separator line after each item
@@ -188,7 +199,7 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
 
         let sep = Paragraph::new(Line::from(Span::styled(
             "─".repeat(sep_area.width as usize),
-            Style::default().fg(theme.text_tertiary),
+            Style::default().fg(theme.text_tertiary).bg(bg),
         )));
         f.render_widget(sep, sep_area);
     }
