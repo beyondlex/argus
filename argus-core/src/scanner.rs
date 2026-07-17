@@ -5,7 +5,9 @@ use std::sync::mpsc;
 
 use jwalk::{Parallelism, WalkDir};
 
-use crate::model::{FileNode, FileType, NodeIndex, ScanError, Snapshot, SnapshotBuilder, ROOT_NODE};
+use crate::model::{
+    FileNode, FileType, NodeIndex, ScanError, Snapshot, SnapshotBuilder, ROOT_NODE,
+};
 
 // Parallel walk is disabled (Serial): TreeBuilder / walk stack is single-threaded.
 // Walk depth stack replaces child_lookup for O(1) parent attachment.

@@ -6,6 +6,7 @@ pub mod delta;
 pub mod event;
 pub mod handler;
 pub mod ipc_client;
+pub mod render;
 pub mod search;
 pub mod theme;
 pub mod time_utils;

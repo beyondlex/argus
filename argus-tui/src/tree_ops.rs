@@ -6,18 +6,26 @@ use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::app::{App, TreeNode};
 
-/// Get the size of a node at `deleted_path` within a snapshot, without modifying it.
-fn node_size_in_snapshot(snapshot: &Snapshot, deleted_path: &Path) -> u64 {
-    let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
-        return 0;
-    };
+/// Convert a filesystem path relative to a base into string components.
+fn path_to_components(base: &Path, full: &Path) -> Option<Vec<String>> {
+    let relative = full.strip_prefix(base).ok()?;
     let components: Vec<String> = relative
         .components()
         .filter_map(|c| c.as_os_str().to_str().map(String::from))
         .collect();
     if components.is_empty() {
-        return 0;
+        None
+    } else {
+        Some(components)
     }
+}
+
+/// Get the size of a node at `deleted_path` within a snapshot, without modifying it.
+fn node_size_in_snapshot(snapshot: &Snapshot, deleted_path: &Path) -> u64 {
+    let components = match path_to_components(&snapshot.root_path, deleted_path) {
+        Some(c) => c,
+        None => return 0,
+    };
     let mut idx = ROOT_NODE;
     for (step, comp) in components.iter().enumerate() {
         if step + 1 == components.len() {
@@ -68,16 +76,10 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
 }
 
 fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bool {
-    let Ok(relative) = deleted_path.strip_prefix(&snapshot.root_path) else {
-        return false;
+    let components = match path_to_components(&snapshot.root_path, deleted_path) {
+        Some(c) => c,
+        None => return false,
     };
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(String::from))
-        .collect();
-    if components.is_empty() {
-        return false;
-    }
     let removed = prune_file_node(snapshot, ROOT_NODE, &components, 0);
     if removed {
         snapshot.total_size = snapshot.node(ROOT_NODE).size();
@@ -86,16 +88,10 @@ fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bo
 }
 
 fn remove_path_from_tree(snap: &mut Snapshot, root_path: &Path, deleted_path: &Path) -> bool {
-    let Ok(relative) = deleted_path.strip_prefix(root_path) else {
-        return false;
+    let components = match path_to_components(root_path, deleted_path) {
+        Some(c) => c,
+        None => return false,
     };
-    let components: Vec<String> = relative
-        .components()
-        .filter_map(|c| c.as_os_str().to_str().map(String::from))
-        .collect();
-    if components.is_empty() {
-        return false;
-    }
     prune_file_node(snap, ROOT_NODE, &components, 0)
 }
 
