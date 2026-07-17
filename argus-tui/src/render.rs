@@ -1,6 +1,6 @@
 use crate::app::{App, AppMode};
 use crate::components::{
-    command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
+    ai_review, command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
 };
 use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
 use ratatui::{
@@ -222,6 +222,9 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
             if let Some(finder) = app.finder_state.as_mut() {
                 ratatui_finder::render_finder_popup(f, area, finder);
             }
+        }
+        AppMode::AiReview => {
+            ai_review::render(f, area, app);
         }
     }
 

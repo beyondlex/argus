@@ -55,6 +55,13 @@ pub fn render(
             " HELP ",
             Style::default().fg(theme.accent).bg(theme.bg),
         ));
+    } else if matches!(mode, AppMode::AiReview) {
+        left_spans.push(Span::styled(
+            " AI REVIEW ",
+            Style::default()
+                .fg(theme.success)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
     }
 
     // Current directory stats (after scan)

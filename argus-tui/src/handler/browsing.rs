@@ -146,6 +146,16 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
         KeyCode::Char('i') => handle_info_popup(app),
         KeyCode::Char('K') => handle_delta_detail_popup(app),
+        KeyCode::Char('a') => {
+            if app.multi_select {
+                app.enter_ai_review_multi();
+            } else {
+                app.enter_ai_review_single();
+            }
+        }
+        KeyCode::Char('A') if app.multi_select => {
+            app.enter_ai_review_multi();
+        }
         KeyCode::Char('q') => {
             if app.info_data.is_some() {
                 app.info_data = None;

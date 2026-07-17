@@ -1,3 +1,4 @@
+pub mod ai_review;
 pub mod command_bar;
 pub mod delta_detail;
 pub mod flat_tree;

@@ -119,6 +119,10 @@ pub struct App {
     // Finder (Go to Path)
     pub finder_state: Option<FinderState>,
 
+    // AI review
+    pub ai_state: Option<AiReviewState>,
+    pub ai_cache: HashMap<PathBuf, AiPathVerdict>,
+
     // Hidden files
     pub show_hidden: bool,
 
@@ -219,6 +223,8 @@ impl App {
             time_help_scroll: 0,
             should_quit: false,
             finder_state: None,
+            ai_state: None,
+            ai_cache: HashMap::new(),
             show_hidden: false,
             current_children: Vec::new(),
             current_filtered: Vec::new(),
@@ -859,6 +865,183 @@ impl App {
             (None, false) => self.search_match_indices.len() - 1,
         };
         self.cursor = self.search_match_indices[next];
+    }
+
+    // ── AI Review ────────────────────────────────────────────────────
+
+    /// Enter AI review mode for a single path at cursor.
+    pub fn enter_ai_review_single(&mut self) {
+        let Some(full_path) = self.selected_node_full_path() else {
+            return;
+        };
+        let results = self.resolve_ai_verdicts(vec![full_path]);
+        self.ai_state = Some(AiReviewState {
+            results,
+            cursor: 0,
+            mark_for_delete: HashSet::new(),
+            status: AiStatus::Ready,
+        });
+        self.mode = AppMode::AiReview;
+    }
+
+    /// Enter AI review mode for all multi-selected paths.
+    pub fn enter_ai_review_multi(&mut self) {
+        let paths = self.selected_paths_full();
+        if paths.is_empty() {
+            self.set_info("no items selected".into(), 3);
+            return;
+        }
+        let results = self.resolve_ai_verdicts(paths);
+        self.ai_state = Some(AiReviewState {
+            results,
+            cursor: 0,
+            mark_for_delete: HashSet::new(),
+            status: AiStatus::Ready,
+        });
+        self.mode = AppMode::AiReview;
+    }
+
+    /// Exit AI review mode and clear state.
+    pub fn exit_ai_review(&mut self) {
+        self.ai_state = None;
+        self.mode = AppMode::Browsing;
+    }
+
+    /// Resolve AI verdicts for paths: use cache or generate mock.
+    fn resolve_ai_verdicts(&mut self, paths: Vec<PathBuf>) -> Vec<AiPathVerdict> {
+        paths
+            .into_iter()
+            .map(|path| {
+                if let Some(cached) = self.ai_cache.get(&path) {
+                    return cached.clone();
+                }
+                let verdict = mock_ai_verdict(&path);
+                self.ai_cache.insert(path.clone(), verdict.clone());
+                verdict
+            })
+            .collect()
+    }
+
+    /// Toggle delete mark on the current AI review item.
+    pub fn ai_review_toggle_mark(&mut self) {
+        let Some(ref mut state) = self.ai_state else {
+            return;
+        };
+        if state.mark_for_delete.contains(&state.cursor) {
+            state.mark_for_delete.remove(&state.cursor);
+        } else {
+            state.mark_for_delete.insert(state.cursor);
+        }
+    }
+}
+
+/// Generate a mock AI verdict based on directory/file name heuristics.
+/// Phase 1: no real AI call. Phase 2+: will call AI API.
+fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let name_lower = name.to_lowercase();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    match name_lower.as_str() {
+        "target" | "build" | "builds" | "dist" | "out" | "output" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Build artifacts".into(),
+            purpose: "Compiled output from the build process. Contains object files, binaries, and intermediate build products.".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete. Will be recreated on next build. Deleting frees significant disk space.".into(),
+            deletable: true,
+        },
+        "node_modules" | "vendor" | "bower_components" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Package dependencies".into(),
+            purpose: "Third-party dependencies downloaded by a package manager (npm, yarn, Composer, etc.).".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete. Can be restored with the package manager's install command.".into(),
+            deletable: true,
+        },
+        ".git" | ".svn" | ".hg" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Version control data".into(),
+            purpose: "Version control history and metadata. Contains all commits, branches, and revision history.".into(),
+            risk_level: RiskLevel::High,
+            suggestion: "Do NOT delete unless you want to remove version history. May break git/svn operations.".into(),
+            deletable: false,
+        },
+        ".cache" | "cache" | "caches" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Application cache".into(),
+            purpose: "Cached data from various applications. Speeds up repeated operations.".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete. Caches will be regenerated as needed. Deleting may slow down first use.".into(),
+            deletable: true,
+        },
+        "logs" | "log" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Log files".into(),
+            purpose: "Application or system log files recording events, errors, and debug information.".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete if you don't need historical logs. May help with debugging if kept.".into(),
+            deletable: true,
+        },
+        ".terraform" | ".serverless" | ".next" | ".nuxt" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Framework tooling cache".into(),
+            purpose: "Cache and build artifacts from infrastructure or frontend framework tooling.".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete. Will be regenerated on next deploy or build.".into(),
+            deletable: true,
+        },
+        "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Temporary files".into(),
+            purpose: "Temporary files that should have been cleaned up by the creating application.".into(),
+            risk_level: RiskLevel::Safe,
+            suggestion: "Safe to delete. These are temporary files not needed for normal operation.".into(),
+            deletable: true,
+        },
+        "downloads" | ".download" => AiPathVerdict {
+            path: path.to_path_buf(),
+            size,
+            label: "Downloads".into(),
+            purpose: "Downloaded files. May contain important documents or installers.".into(),
+            risk_level: RiskLevel::Low,
+            suggestion: "Review contents before deleting. Safe to delete installers and temporary downloads.".into(),
+            deletable: true,
+        },
+        _ => {
+            // Heuristic: hidden directories are often config/cache
+            if name.starts_with('.') {
+                AiPathVerdict {
+                    path: path.to_path_buf(),
+                    size,
+                    label: "Hidden directory".into(),
+                    purpose: "Application configuration or data directory. Used by various programs to store settings.".into(),
+                    risk_level: RiskLevel::Medium,
+                    suggestion: "Check which application owns this directory before deleting. May lose app settings.".into(),
+                    deletable: true,
+                }
+            } else {
+                AiPathVerdict {
+                    path: path.to_path_buf(),
+                    size,
+                    label: "Unknown directory".into(),
+                    purpose: "Unable to determine purpose automatically. May contain user data or application files.".into(),
+                    risk_level: RiskLevel::Medium,
+                    suggestion: "Review contents manually before deciding to delete.".into(),
+                    deletable: true,
+                }
+            }
+        }
     }
 }
 

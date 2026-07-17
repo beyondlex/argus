@@ -1,3 +1,4 @@
+mod ai_review;
 mod browsing;
 mod command;
 mod finder;
@@ -20,6 +21,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::TimeHelp => prompt::handle_time_help_key(key, app),
         AppMode::Command => command::handle_command_key(key, app),
         AppMode::Finder => finder::handle_finder_key(key, app),
+        AppMode::AiReview => ai_review::handle_ai_review_key(key, app),
     }
 }
 

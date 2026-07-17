@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +50,7 @@ pub enum AppMode {
     TimeHelp,
     Command,
     Finder, // Finder mode (Go to Path)
+    AiReview,
 }
 
 /// Tree search mode
@@ -187,3 +189,55 @@ pub fn delta_unit_multiplier(unit: usize) -> u64 {
 pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
 
 pub const TIME_PRESET_COUNT: usize = 7;
+
+// ── AI Review ─────────────────────────────────────────────────────────────────
+
+/// Status of an AI analysis request
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiStatus {
+    Idle,
+    Loading,
+    Ready,
+    Error(String),
+}
+
+/// Risk level for a path verdict
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RiskLevel {
+    Safe,
+    Low,
+    Medium,
+    High,
+}
+
+impl RiskLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            RiskLevel::Safe => "Safe",
+            RiskLevel::Low => "Low Risk",
+            RiskLevel::Medium => "Medium Risk",
+            RiskLevel::High => "High Risk",
+        }
+    }
+}
+
+/// AI verdict for a single path
+#[derive(Debug, Clone)]
+pub struct AiPathVerdict {
+    pub path: PathBuf,
+    pub size: u64,
+    pub label: String,
+    pub purpose: String,
+    pub risk_level: RiskLevel,
+    pub suggestion: String,
+    pub deletable: bool,
+}
+
+/// State for the AI review popup
+#[derive(Debug, Clone)]
+pub struct AiReviewState {
+    pub results: Vec<AiPathVerdict>,
+    pub cursor: usize,
+    pub mark_for_delete: HashSet<usize>,
+    pub status: AiStatus,
+}

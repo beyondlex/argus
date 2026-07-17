@@ -23,6 +23,7 @@
 | 08 | [数据模型与算法](08-data-model.md) | FileNode 结构、SQLite 存储模型、IPC 协议 |
 | 09 | [迭代路线图](09-roadmap.md) | Phase 1-5 完整演进规划 |
 | 11 | [日志系统设计](11-logging.md) | 等级规范、JSON 结构、Span 定义、AI Agent 调试 |
+| 12 | [AI 路径分析交互设计](12-ai-ux.md) | AI 分析路径用途与删除建议的交互流程与 UI 设计 |
 | — | [Phase 3 Daemon 设计](../plans/phase3-daemon-design.md) | 守护进程、delta 存储、IPC 协议、TUI 服务模式 |
 | — | [文件树 size 语义](../plans/file-tree-size-design.md) | size 占位符与 scan_data 语义 |
 
