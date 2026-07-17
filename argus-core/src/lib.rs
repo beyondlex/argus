@@ -1,3 +1,4 @@
+pub mod bloom;
 pub mod db;
 pub mod ipc;
 pub mod model;

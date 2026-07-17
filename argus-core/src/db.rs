@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, PathBuf::from("/tmp/dir"));
         assert_eq!(entries[0].delta_size, 2000);
-        assert_eq!(entries[0].is_agg, true);
+        assert!(entries[0].is_agg);
     }
 
     #[test]

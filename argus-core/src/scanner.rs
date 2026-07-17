@@ -1,10 +1,10 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use jwalk::{Parallelism, WalkDir};
 
+use crate::bloom::SeenInodes;
 use crate::model::{
     FileNode, FileType, NodeIndex, ScanError, Snapshot, SnapshotBuilder, ROOT_NODE,
 };
@@ -115,7 +115,7 @@ pub fn scan_path(
         return Err(ScanError::PathNotFound(path.to_path_buf()));
     }
 
-    let mut seen_inodes: HashSet<(u64, u64)> = HashSet::new();
+    let mut seen_inodes = SeenInodes::new();
     let mut progress = ProgressTracker::new(progress_tx);
 
     let root_name = path
@@ -342,7 +342,7 @@ pub fn list_dir(path: &Path) -> Result<Snapshot, ScanError> {
     Ok(builder.finish(path.to_path_buf(), total_size, total_disk_usage))
 }
 
-fn compute_size(nodes: &mut [crate::model::FileNode]) {
+fn compute_size(nodes: &mut [FileNode]) {
     for i in (1..nodes.len()).rev() {
         let size = nodes[i].size();
         if let Some(parent) = nodes[i].parent() {
@@ -352,7 +352,7 @@ fn compute_size(nodes: &mut [crate::model::FileNode]) {
     }
 }
 
-fn compute_disk_usage(nodes: &mut [crate::model::FileNode]) {
+fn compute_disk_usage(nodes: &mut [FileNode]) {
     for i in (1..nodes.len()).rev() {
         let du = nodes[i].disk_usage();
         if let Some(parent) = nodes[i].parent() {
