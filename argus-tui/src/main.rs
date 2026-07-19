@@ -12,6 +12,7 @@ async fn main() -> Result<()> {
 
     // Build tree for current working directory
     app.rebuild_tree();
+    app.push_initial_nav_state();
 
     // Try to connect to daemon
     let uds_path = tui_config.daemon.uds_path.clone();

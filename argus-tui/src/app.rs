@@ -16,6 +16,14 @@ use crate::tree_ops;
 pub use crate::types::*;
 use crate::util::{default_log_path, log_msg};
 
+/// A snapshot of navigation state for back/forward history.
+#[derive(Debug, Clone)]
+pub struct NavPosition {
+    pub current_dir_path: Vec<String>,
+    pub cursor: usize,
+    pub scroll_offset: usize,
+}
+
 // ── App ─────────────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -141,6 +149,10 @@ pub struct App {
     /// Navigation stack: each entry directory push, `h` pops
     pub dir_stack: Vec<Vec<String>>,
 
+    /// Navigation history for back/forward (b/f)
+    pub nav_history: Vec<NavPosition>,
+    pub nav_history_idx: usize,
+
     /// Total size of the current directory (for percentage calculation)
     pub current_dir_total: u64,
 
@@ -253,6 +265,8 @@ impl App {
             current_filtered: Vec::new(),
             current_dir_path: Vec::new(),
             dir_stack: Vec::new(),
+            nav_history: Vec::new(),
+            nav_history_idx: 0,
             current_dir_total: 0,
             current_dir_disk_usage: 0,
             current_dir_items: 0,
@@ -824,6 +838,7 @@ impl App {
             self.view_root_path = full_path;
             self.dir_stack.clear();
             self.rebuild_tree();
+            self.push_nav_history();
             self.set_info(
                 format!("switched to cached scan: {}", self.view_root_path.display()),
                 2,
@@ -836,6 +851,7 @@ impl App {
         self.cursor = 0;
         self.scroll_offset = 0;
         self.load_current_children();
+        self.push_nav_history();
     }
 
     /// Go to parent directory (flat mode).
@@ -853,6 +869,7 @@ impl App {
         self.cursor = 0;
         self.scroll_offset = 0;
         self.load_current_children();
+        self.push_nav_history();
     }
 
     /// Go to root directory (flat mode).
@@ -863,6 +880,7 @@ impl App {
         self.cursor = 0;
         self.scroll_offset = 0;
         self.load_current_children();
+        self.push_nav_history();
     }
 
     /// Go up one directory level. If inside a subdirectory of the current tree,
@@ -877,10 +895,57 @@ impl App {
         if let Some(parent) = parent {
             self.view_root_path = parent;
             self.rebuild_tree();
+            self.push_nav_history();
             self.set_info(
                 format!("changed root to {}", self.view_root_path.display()),
                 3,
             );
+        }
+    }
+
+    /// Record current position in nav history (called after navigation).
+    fn push_nav_history(&mut self) {
+        let pos = NavPosition {
+            current_dir_path: self.current_dir_path.clone(),
+            cursor: self.cursor,
+            scroll_offset: self.scroll_offset,
+        };
+        // Truncate any forward history beyond current position
+        self.nav_history.truncate(self.nav_history_idx);
+        self.nav_history.push(pos);
+        self.nav_history_idx = self.nav_history.len() - 1;
+    }
+
+    /// Push the initial navigation state (called once after rebuild_tree).
+    pub fn push_initial_nav_state(&mut self) {
+        self.push_nav_history();
+    }
+
+    /// Go back in navigation history.
+    pub fn nav_back(&mut self) {
+        if self.nav_history_idx == 0 {
+            return;
+        }
+        self.nav_history_idx -= 1;
+        if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
+            self.current_dir_path = pos.current_dir_path.clone();
+            self.cursor = pos.cursor;
+            self.scroll_offset = pos.scroll_offset;
+            self.load_current_children();
+        }
+    }
+
+    /// Go forward in navigation history.
+    pub fn nav_forward(&mut self) {
+        if self.nav_history_idx + 1 >= self.nav_history.len() {
+            return;
+        }
+        self.nav_history_idx += 1;
+        if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
+            self.current_dir_path = pos.current_dir_path.clone();
+            self.cursor = pos.cursor;
+            self.scroll_offset = pos.scroll_offset;
+            self.load_current_children();
         }
     }
 
