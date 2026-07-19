@@ -20,6 +20,7 @@ use crate::util::{default_log_path, log_msg};
 #[derive(Debug, Clone)]
 pub struct NavPosition {
     pub current_dir_path: Vec<String>,
+    pub view_root_path: PathBuf,
     pub cursor: usize,
     pub scroll_offset: usize,
 }
@@ -907,11 +908,13 @@ impl App {
     fn push_nav_history(&mut self) {
         let pos = NavPosition {
             current_dir_path: self.current_dir_path.clone(),
+            view_root_path: self.view_root_path.clone(),
             cursor: self.cursor,
             scroll_offset: self.scroll_offset,
         };
         // Truncate any forward history beyond current position
-        self.nav_history.truncate(self.nav_history_idx);
+        // Keep elements [0..=idx] (current position inclusive), remove rest
+        self.nav_history.truncate(self.nav_history_idx + 1);
         self.nav_history.push(pos);
         self.nav_history_idx = self.nav_history.len() - 1;
     }
@@ -928,10 +931,16 @@ impl App {
         }
         self.nav_history_idx -= 1;
         if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
+            let root_changed = pos.view_root_path != self.view_root_path;
             self.current_dir_path = pos.current_dir_path.clone();
+            self.view_root_path = pos.view_root_path.clone();
             self.cursor = pos.cursor;
             self.scroll_offset = pos.scroll_offset;
-            self.load_current_children();
+            if root_changed {
+                self.rebuild_tree();
+            } else {
+                self.load_current_children();
+            }
         }
     }
 
@@ -942,10 +951,16 @@ impl App {
         }
         self.nav_history_idx += 1;
         if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
+            let root_changed = pos.view_root_path != self.view_root_path;
             self.current_dir_path = pos.current_dir_path.clone();
+            self.view_root_path = pos.view_root_path.clone();
             self.cursor = pos.cursor;
             self.scroll_offset = pos.scroll_offset;
-            self.load_current_children();
+            if root_changed {
+                self.rebuild_tree();
+            } else {
+                self.load_current_children();
+            }
         }
     }
 
