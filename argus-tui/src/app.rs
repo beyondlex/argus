@@ -1024,7 +1024,7 @@ fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
                 AiPathVerdict {
                     path: path.to_path_buf(),
                     size,
-                    label: "Hidden directory".into(),
+                    label: name.clone(),
                     purpose: "Application configuration or data directory. Used by various programs to store settings.".into(),
                     risk_level: RiskLevel::Medium,
                     suggestion: "Check which application owns this directory before deleting. May lose app settings.".into(),
@@ -1034,7 +1034,7 @@ fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
                 AiPathVerdict {
                     path: path.to_path_buf(),
                     size,
-                    label: "Unknown directory".into(),
+                    label: name.clone(),
                     purpose: "Unable to determine purpose automatically. May contain user data or application files.".into(),
                     risk_level: RiskLevel::Medium,
                     suggestion: "Review contents manually before deciding to delete.".into(),

@@ -103,11 +103,6 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
         let is_cursor = i == state.cursor;
         let is_marked = state.mark_for_delete.contains(&i);
 
-        let (bg, fg) = if is_cursor {
-            (theme.focus_bg, theme.focus_fg)
-        } else {
-            (theme.popup_bg, theme.text)
-        };
         let cursor_arrow = if is_cursor { "▸" } else { " " };
         let prefix = if is_marked { "●" } else { "○" };
 
@@ -119,42 +114,43 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
         };
 
         let size_str = util::format_size(result.size);
+        let path_str = result.path.to_string_lossy().to_string();
+
+        let prefix_style = if is_cursor {
+            Style::default().fg(theme.accent)
+        } else if is_marked {
+            Style::default().fg(theme.success)
+        } else {
+            Style::default().fg(theme.text_tertiary)
+        };
 
         let spans = vec![
+            Span::styled(format!("{} {} ", cursor_arrow, prefix), prefix_style),
             Span::styled(
-                format!("{} {} ", cursor_arrow, prefix),
-                Style::default()
-                    .fg(if is_marked {
-                        theme.success
-                    } else {
-                        theme.text_tertiary
-                    })
-                    .bg(bg),
+                path_str,
+                Style::default().fg(theme.text).bg(theme.popup_bg),
             ),
+            Span::raw("  "),
             Span::styled(
                 format!(" {} ", result.label),
                 Style::default()
-                    .fg(if is_cursor {
-                        fg
-                    } else {
-                        theme.text_highlight
-                    })
+                    .fg(theme.text_highlight)
                     .add_modifier(Modifier::BOLD)
-                    .bg(bg),
+                    .bg(theme.popup_bg),
             ),
             Span::styled(
                 format!("({})  ", size_str),
-                Style::default().fg(theme.text_tertiary).bg(bg),
+                Style::default().fg(theme.text_tertiary).bg(theme.popup_bg),
             ),
             Span::styled(
                 result.purpose.clone(),
                 Style::default()
-                    .fg(if is_cursor { fg } else { theme.text_secondary })
-                    .bg(bg),
+                    .fg(theme.text_secondary)
+                    .bg(theme.popup_bg),
             ),
         ];
 
-        let block = Block::default().style(Style::default().bg(bg));
+        let block = Block::default().style(Style::default().bg(theme.popup_bg));
         let text = Paragraph::new(Line::from(spans)).block(block);
         f.render_widget(text, item_area);
 
@@ -178,11 +174,11 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
             ),
             Span::styled(
                 result.suggestion.clone(),
-                Style::default().fg(if is_cursor { fg } else { theme.text_tertiary }),
+                Style::default().fg(theme.text_tertiary),
             ),
         ];
         let detail_text = Paragraph::new(Line::from(detail_spans))
-            .block(Block::default().style(Style::default().bg(bg)));
+            .block(Block::default().style(Style::default().bg(theme.popup_bg)));
         f.render_widget(detail_text, detail_area);
 
         // Separator line after each item
@@ -199,7 +195,7 @@ fn render_result_list(f: &mut Frame, area: Rect, state: &AiReviewState, app: &Ap
 
         let sep = Paragraph::new(Line::from(Span::styled(
             "─".repeat(sep_area.width as usize),
-            Style::default().fg(theme.text_tertiary).bg(bg),
+            Style::default().fg(theme.text_tertiary).bg(theme.popup_bg),
         )));
         f.render_widget(sep, sep_area);
     }
@@ -211,7 +207,7 @@ fn render_footer(state: &AiReviewState, theme: &ColorTheme) -> Vec<Span<'static>
     let mut spans = vec![
         label(" j/k ", theme.accent),
         label("Navigate  ", theme.text_tertiary),
-        label(" d ", theme.accent),
+        label(" Space ", theme.accent),
         label("Mark/Unmark  ", theme.text_tertiary),
         label(" Enter ", theme.accent),
         label("Confirm  ", theme.text_tertiary),

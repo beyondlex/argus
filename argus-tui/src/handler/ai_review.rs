@@ -16,7 +16,7 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('k') | KeyCode::Up => {
             state.cursor = state.cursor.saturating_sub(1);
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char(' ') => {
             app.ai_review_toggle_mark();
         }
         KeyCode::Enter => {

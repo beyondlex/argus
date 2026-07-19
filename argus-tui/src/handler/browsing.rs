@@ -47,10 +47,10 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    // Handle multi-select mode Tab / Esc
+    // Handle multi-select mode Space / Esc
     if app.multi_select {
         match key.code {
-            KeyCode::Tab => {
+            KeyCode::Char(' ') => {
                 app.toggle_selection();
                 move_cursor(app, 1);
                 app.pending_gg = false;
@@ -74,8 +74,8 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             _ => {}
         }
     } else {
-        // Enter multi-select mode on Tab
-        if key.code == KeyCode::Tab {
+        // Enter multi-select mode on Space
+        if key.code == KeyCode::Char(' ') {
             if app.current_filtered.is_empty() {
                 app.pending_gg = false;
                 return;
