@@ -48,7 +48,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let [summary_area, list_area] =
         Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
 
-    render_summary(f, summary_area, state, theme);
+    render_summary(f, summary_area, state, app.deleted_bytes, theme);
     render_result_list(f, list_area, state, app);
 
     if let Some(idx) = state.info_item {
@@ -212,7 +212,13 @@ fn render_delete_confirm(f: &mut Frame, area: Rect, state: &AiReviewState, theme
     f.render_widget(text, popup);
 }
 
-fn render_summary(f: &mut Frame, area: Rect, state: &AiReviewState, theme: &ColorTheme) {
+fn render_summary(
+    f: &mut Frame,
+    area: Rect,
+    state: &AiReviewState,
+    deleted_bytes: u64,
+    theme: &ColorTheme,
+) {
     let marked_size: u64 = state
         .mark_for_delete
         .iter()
@@ -231,15 +237,20 @@ fn render_summary(f: &mut Frame, area: Rect, state: &AiReviewState, theme: &Colo
         util::format_size(state.pending_total_size)
     );
 
-    let right = if state.mark_for_delete.is_empty() {
-        String::new()
-    } else {
-        format!(
+    let mut right = String::new();
+    if !state.mark_for_delete.is_empty() {
+        right.push_str(&format!(
             "Marked {} item(s) ({} to free)  ",
             state.mark_for_delete.len(),
             util::format_size(marked_size)
-        )
-    };
+        ));
+    }
+    if deleted_bytes > 0 {
+        right.push_str(&format!(
+            "Freed: {}  ",
+            util::format_size(deleted_bytes)
+        ));
+    }
 
     let text = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::default().fg(theme.text_secondary)),

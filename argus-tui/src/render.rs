@@ -282,6 +282,19 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
+    if app.deleted_bytes > 0 {
+        summary_spans.push(Span::styled(
+            format!(" {} ", format_size(app.deleted_bytes)),
+            Style::default()
+                .fg(app.theme.success)
+                .add_modifier(Modifier::BOLD),
+        ));
+        summary_spans.push(Span::styled(
+            "Freed",
+            Style::default().fg(app.theme.text_tertiary),
+        ));
+    }
+
     let (daemon_text, daemon_color) = if app.server_connected {
         ("● Daemon", app.theme.success)
     } else {

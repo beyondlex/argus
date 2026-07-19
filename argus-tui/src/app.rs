@@ -457,7 +457,7 @@ impl App {
                     state.results = results;
                     state.status = AiStatus::Ready;
                 }
-                self.refresh_current_filtered();
+                self.load_current_children();
             }
             AppMessage::AiAnalysisError(msg) => {
                 if let Some(ref mut state) = self.ai_state {
