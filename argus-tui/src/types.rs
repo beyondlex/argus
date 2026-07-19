@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argus_core::{FileType, NodeIndex, Snapshot};
+use serde::{Deserialize, Serialize};
 
 // ── Messages ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,8 @@ pub enum AppMessage {
         errors: Vec<String>,
         paths: Vec<PathBuf>,
     },
+    AiAnalysisComplete(Vec<AiPathVerdict>),
+    AiAnalysisError(String),
     Error(String),
     Info(String),
 }
@@ -96,6 +99,7 @@ pub struct DirEntry {
     pub node: TreeNode,
     pub path: Vec<String>,
     pub has_scan_data: bool,
+    pub has_ai: bool,
     pub is_dir: bool,
     pub size: u64,
     pub disk_usage: u64,
@@ -193,7 +197,7 @@ pub const TIME_PRESET_COUNT: usize = 7;
 // ── AI Review ─────────────────────────────────────────────────────────────────
 
 /// Status of an AI analysis request
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AiStatus {
     Idle,
     Loading,
@@ -202,7 +206,7 @@ pub enum AiStatus {
 }
 
 /// Risk level for a path verdict
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RiskLevel {
     Safe,
     Low,
@@ -222,7 +226,7 @@ impl RiskLevel {
 }
 
 /// AI verdict for a single path
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiPathVerdict {
     pub path: PathBuf,
     pub size: u64,
@@ -237,7 +241,12 @@ pub struct AiPathVerdict {
 #[derive(Debug, Clone)]
 pub struct AiReviewState {
     pub results: Vec<AiPathVerdict>,
+    pub pending_paths: Vec<PathBuf>,
+    pub pending_total_size: u64,
     pub cursor: usize,
+    pub scroll_offset: usize,
     pub mark_for_delete: HashSet<usize>,
     pub status: AiStatus,
+    pub delete_confirm: Option<(Vec<PathBuf>, bool)>,
+    pub info_item: Option<usize>,
 }

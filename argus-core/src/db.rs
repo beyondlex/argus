@@ -59,9 +59,97 @@ pub fn init_db(conn: &Connection) -> Result<(), DbError> {
         -- (is_agg filter + path prefix + time window).
         CREATE INDEX IF NOT EXISTS idx_delta_agg_path_time
             ON delta_events(is_agg, path, timestamp);
+
+        CREATE TABLE IF NOT EXISTS ai_analysis_cache (
+            path_hash TEXT PRIMARY KEY,
+            path      TEXT NOT NULL,
+            data      BLOB NOT NULL,
+            created_at INTEGER NOT NULL
+        );
         ",
     )?;
     Ok(())
+}
+
+pub fn set_ai_analysis(conn: &Connection, path: &str, data: &[u8]) -> Result<(), DbError> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT OR REPLACE INTO ai_analysis_cache (path_hash, path, data, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![path_hash, path, data, now],
+    )?;
+    Ok(())
+}
+
+pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>, DbError> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish().to_string();
+    let mut stmt = conn.prepare(
+        "SELECT data FROM ai_analysis_cache WHERE path_hash = ?1",
+    )?;
+    let mut rows = stmt.query(params![path_hash])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row.get(0)?)),
+        None => Ok(None),
+    }
+}
+
+pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish().to_string();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM ai_analysis_cache WHERE path_hash = ?1",
+        params![path_hash],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
+    use std::hash::{Hash, Hasher};
+    let mut results = Vec::with_capacity(paths.len());
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 LIMIT 1",
+    )?;
+    for path in paths {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut hasher);
+        let path_hash = hasher.finish().to_string();
+        let exists: bool = stmt.query(params![path_hash])?.next().map(|r| r.is_some()).unwrap_or(false);
+        results.push(exists);
+    }
+    Ok(results)
+}
+
+pub fn delete_ai_analysis(conn: &Connection, path: &str) -> Result<(), DbError> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let path_hash = hasher.finish().to_string();
+    conn.execute(
+        "DELETE FROM ai_analysis_cache WHERE path_hash = ?1",
+        params![path_hash],
+    )?;
+    Ok(())
+}
+
+pub fn load_all_ai_analyzed_paths(conn: &Connection) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare("SELECT path FROM ai_analysis_cache")?;
+    let paths: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(paths)
 }
 
 pub fn query_delta_total(

@@ -4,15 +4,16 @@ use std::path::Path;
 use chrono::{DateTime, Local, Utc};
 
 use ratatui::{
-    layout::Rect,
-    style::{Style, Stylize},
+    layout::{Alignment, Rect},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::components::popup::{popup_block, PopupStyle};
 use crate::theme::ColorTheme;
+use crate::types::{AiPathVerdict, RiskLevel};
 use crate::util;
 use crate::util::key_hints;
 
@@ -22,13 +23,15 @@ pub fn render(
     area: Rect,
     path: &Path,
     metadata: &std::fs::Metadata,
+    ai: Option<&AiPathVerdict>,
     theme: &ColorTheme,
 ) {
-    let popup_area = crate::components::popup::centered_rect(60, 40, area);
+    let height_pct = if ai.is_some() { 60 } else { 40 };
+    let popup_area = crate::components::popup::centered_rect(60, height_pct, area);
 
     let block = popup_block(" File Info ", PopupStyle::Normal, theme)
         .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme)))
-        .title_alignment(ratatui::layout::Alignment::Right);
+        .title_alignment(Alignment::Right);
 
     let type_str = if metadata.is_dir() {
         "Directory"
@@ -85,7 +88,7 @@ pub fn render(
         }
     };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(
                 "Path:    ",
@@ -136,10 +139,86 @@ pub fn render(
             ),
             Span::styled(perm_str, Style::default().fg(theme.text)),
         ]),
-        Line::from(Span::raw("")),
     ];
 
-    let text = Paragraph::new(lines).block(block);
+    if let Some(ai) = ai {
+        let risk_color = match ai.risk_level {
+            RiskLevel::Safe => theme.success,
+            RiskLevel::Low => theme.warning,
+            RiskLevel::Medium => theme.unit_mb,
+            RiskLevel::High => theme.danger,
+        };
+        let ai_size = util::format_size(ai.size);
+
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(vec![Span::styled(
+            "── AI Analysis ──",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Label:    ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(
+                &ai.label,
+                Style::default()
+                    .fg(theme.text_highlight)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Risk:     ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(
+                ai.risk_level.label(),
+                Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                if ai.deletable {
+                    "Deletable: Yes"
+                } else {
+                    "Deletable: No"
+                },
+                Style::default().fg(if ai.deletable {
+                    theme.success
+                } else {
+                    theme.danger
+                }),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Size:     ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(ai_size, Style::default().fg(theme.text)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Purpose:  ",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(&ai.purpose, Style::default().fg(theme.text_secondary)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Suggestion:",
+                Style::default().fg(theme.text_secondary).bold(),
+            ),
+            Span::styled(&ai.suggestion, Style::default().fg(theme.text_secondary)),
+        ]));
+    }
+
+    let text = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
 
     f.render_widget(Clear, popup_area);
     f.render_widget(text, popup_area);

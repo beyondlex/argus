@@ -158,6 +158,12 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
         let delta = ctx.delta_cache.and_then(|c| c.get(&entry.path).copied());
 
         let is_selected_item = ctx.multi_select && ctx.selected_paths.contains(&entry.path);
+        let is_inherited_selected = ctx.multi_select
+            && !is_selected_item
+            && ctx
+                .selected_paths
+                .iter()
+                .any(|p| p.len() < entry.path.len() && entry.path.starts_with(p));
 
         let (info_spans, mut name_spans) = render_flat_entry(
             entry,
@@ -170,6 +176,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
             ctx.current_dir_disk_usage,
             ctx.multi_select,
             is_selected_item,
+            is_inherited_selected,
             ctx.theme,
         );
 
@@ -268,21 +275,23 @@ fn render_flat_entry(
     current_dir_disk_usage: u64,
     multi_select: bool,
     is_selected_item: bool,
+    is_inherited_selected: bool,
     theme: &ColorTheme,
 ) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let highlighted = is_selected;
     let row = RowStyle::new(row_bg, highlighted, theme);
 
-    let multi_indicator = if multi_select {
+    let name_prefix: Span<'static> = if multi_select {
         if is_selected_item {
-            "● "
+            Span::styled("● ", Style::default().fg(theme.success))
+        } else if is_inherited_selected {
+            Span::styled("● ", Style::default().fg(theme.text_tertiary))
         } else {
-            "○ "
+            Span::styled("○ ", row.prefix())
         }
     } else {
-        ""
+        Span::raw("")
     };
-    let name_prefix = multi_indicator.to_string();
 
     let name_text = if entry.is_dir {
         format!("{}/", entry.node.name())
@@ -352,9 +361,16 @@ fn render_flat_entry(
         }
     }
 
+    // AI analysis icon
+    if entry.has_ai {
+        info.push(Span::styled(" ⚡", row.filesize(theme.accent)));
+    } else {
+        info.push(Span::raw("    "));
+    }
+
     let name = name_spans(
         &name_text,
-        &name_prefix,
+        name_prefix,
         has_search,
         search_word,
         &row,
@@ -460,14 +476,14 @@ impl RowStyle {
 
 fn name_spans(
     name_text: &str,
-    name_prefix: &str,
+    name_prefix: Span<'static>,
     has_search: bool,
     search_word: &str,
     row: &RowStyle,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
     if has_search && !search_word.is_empty() {
-        let mut spans = vec![Span::styled(name_prefix.to_string(), row.prefix())];
+        let mut spans = vec![name_prefix];
 
         if let Some(indices) = fuzzy_match_indices(search_word, name_text) {
             if row.highlighted {
@@ -485,7 +501,7 @@ fn name_spans(
         spans
     } else {
         let name_style = row.name(entry_fg_raw(name_text, theme));
-        let mut spans = vec![Span::styled(name_prefix.to_string(), row.prefix())];
+        let mut spans = vec![name_prefix];
         spans.push(Span::styled(name_text.to_string(), name_style));
         spans
     }

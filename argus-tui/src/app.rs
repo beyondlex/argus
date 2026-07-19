@@ -98,6 +98,7 @@ pub struct App {
 
     // Info popup
     pub info_data: Option<(std::path::PathBuf, std::fs::Metadata)>,
+    pub info_ai: Option<AiPathVerdict>,
 
     // Delta detail popup
     pub delta_detail: Option<DeltaDetailState>,
@@ -122,6 +123,7 @@ pub struct App {
     // AI review
     pub ai_state: Option<AiReviewState>,
     pub ai_cache: HashMap<PathBuf, AiPathVerdict>,
+    pub ai_analyzed: HashSet<PathBuf>,
 
     // Hidden files
     pub show_hidden: bool,
@@ -209,6 +211,7 @@ impl App {
             selected_paths: HashSet::new(),
             deleted_bytes: 0,
             info_data: None,
+            info_ai: None,
             delta_detail: None,
             command_input: String::new(),
             command_matches: Vec::new(),
@@ -225,6 +228,17 @@ impl App {
             finder_state: None,
             ai_state: None,
             ai_cache: HashMap::new(),
+            ai_analyzed: {
+                let mut set = HashSet::new();
+                if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
+                    if let Ok(paths) = argus_core::load_all_ai_analyzed_paths(&conn) {
+                        for p in paths {
+                            set.insert(PathBuf::from(p));
+                        }
+                    }
+                }
+                set
+            },
             show_hidden: false,
             current_children: Vec::new(),
             current_filtered: Vec::new(),
@@ -408,6 +422,24 @@ impl App {
                     self.set_info(format!("deleted {} item(s)", paths.len()), 3);
                 }
             }
+            AppMessage::AiAnalysisComplete(results) => {
+                if let Some(ref mut state) = self.ai_state {
+                    for result in &results {
+                        self.ai_cache.insert(result.path.clone(), result.clone());
+                        self.ai_analyzed.insert(result.path.clone());
+                    }
+                    state.pending_paths.clear();
+                    state.results = results;
+                    state.status = AiStatus::Ready;
+                }
+                self.refresh_current_filtered();
+            }
+            AppMessage::AiAnalysisError(msg) => {
+                if let Some(ref mut state) = self.ai_state {
+                    state.results = Vec::new();
+                    state.status = AiStatus::Error(msg);
+                }
+            }
         }
     }
 
@@ -526,9 +558,13 @@ impl App {
         self.selected_paths.clear();
     }
 
-    /// Toggle selection of the item at the current cursor position
+    /// Toggle selection of the item at the current cursor position.
+    /// If the item is a descendant of an already-selected directory, it cannot be toggled.
     pub fn toggle_selection(&mut self) {
         if let Some(entry) = self.selected_entry() {
+            if self.is_inherited_selection(&entry.path) {
+                return;
+            }
             let path = entry.path.clone();
             if self.selected_paths.contains(&path) {
                 self.selected_paths.remove(&path);
@@ -536,6 +572,13 @@ impl App {
                 self.selected_paths.insert(path);
             }
         }
+    }
+
+    /// Check if a path is a descendant of any selected directory.
+    pub fn is_inherited_selection(&self, path: &[String]) -> bool {
+        self.selected_paths
+            .iter()
+            .any(|p| p.len() < path.len() && path.starts_with(p))
     }
 
     /// Get the full path for a relative path key
@@ -666,6 +709,7 @@ impl App {
                 node: TreeNode::Snapshot(snap_arc.clone(), child_idx),
                 path: child_path,
                 has_scan_data: has_scan,
+                has_ai: false,
                 is_dir: child_node.is_dir(),
                 size: child_node.size(),
                 disk_usage: child_node.disk_usage(),
@@ -674,6 +718,15 @@ impl App {
 
         // (4) Sort children
         sort_children(&mut children, self.sort_mode, &self.delta_cache);
+
+        // (4.5) Populate AI analysis flags
+        for entry in &mut children {
+            let mut full_path = self.view_root_path.clone();
+            for part in entry.path.iter().skip(1) {
+                full_path.push(part);
+            }
+            entry.has_ai = self.ai_analyzed.contains(&full_path);
+        }
 
         // (5) Update totals
         self.current_children = children;
@@ -874,14 +927,21 @@ impl App {
         let Some(full_path) = self.selected_node_full_path() else {
             return;
         };
-        let results = self.resolve_ai_verdicts(vec![full_path]);
+        let paths = vec![full_path];
+        let total = self.compute_pending_total_size(&paths);
         self.ai_state = Some(AiReviewState {
-            results,
+            results: Vec::new(),
+            pending_paths: paths.clone(),
+            pending_total_size: total,
             cursor: 0,
+            scroll_offset: 0,
             mark_for_delete: HashSet::new(),
-            status: AiStatus::Ready,
+            status: AiStatus::Loading,
+            delete_confirm: None,
+            info_item: None,
         });
         self.mode = AppMode::AiReview;
+        self.spawn_ai_analysis(paths);
     }
 
     /// Enter AI review mode for all multi-selected paths.
@@ -891,35 +951,101 @@ impl App {
             self.set_info("no items selected".into(), 3);
             return;
         }
-        let results = self.resolve_ai_verdicts(paths);
+        let total = self.compute_pending_total_size(&paths);
         self.ai_state = Some(AiReviewState {
-            results,
+            results: Vec::new(),
+            pending_paths: paths.clone(),
+            pending_total_size: total,
             cursor: 0,
+            scroll_offset: 0,
             mark_for_delete: HashSet::new(),
-            status: AiStatus::Ready,
+            status: AiStatus::Loading,
+            delete_confirm: None,
+            info_item: None,
         });
         self.mode = AppMode::AiReview;
+        self.spawn_ai_analysis(paths);
+    }
+
+    /// Compute total size of paths using scan cache, with metadata fallback.
+    fn compute_pending_total_size(&self, paths: &[PathBuf]) -> u64 {
+        let mut total = 0u64;
+        for path in paths {
+            if let Some(snapshot) = self.scan_cache.get(path) {
+                total += snapshot.total_size;
+            } else {
+                let mut found = false;
+                for (root, snapshot) in &self.scan_cache {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        let mut idx = argus_core::ROOT_NODE;
+                        let mut ok = true;
+                        for component in relative.components() {
+                            let name = component.as_os_str().to_str().unwrap_or("");
+                            if let Some(child) = snapshot.child_idx(idx, name) {
+                                idx = child;
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            total += snapshot.node(idx).size();
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if !found {
+                    if let Ok(meta) = std::fs::metadata(path) {
+                        total += meta.len();
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    /// Spawn a background thread to compute AI verdicts.
+    fn spawn_ai_analysis(&self, paths: Vec<PathBuf>) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            // Phase 1: mock 3s delay for UI development
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            let db_path = argus_core::default_db_path();
+            let conn = argus_core::open_db(&db_path).ok();
+
+            let results: Vec<AiPathVerdict> = paths
+                .into_iter()
+                .map(|path| {
+                    // Check DB cache first
+                    if let Some(ref conn) = conn {
+                        let path_str = path.to_string_lossy();
+                        if let Ok(Some(data)) = argus_core::get_ai_analysis(conn, &path_str) {
+                            if let Ok(verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
+                                return verdict;
+                            }
+                        }
+                    }
+                    let verdict = mock_ai_verdict(&path);
+                    // Write to DB cache
+                    if let Some(ref conn) = conn {
+                        let path_str = path.to_string_lossy();
+                        if let Ok(data) = serde_json::to_vec(&verdict) {
+                            let _ = argus_core::set_ai_analysis(conn, &path_str, &data);
+                        }
+                    }
+                    verdict
+                })
+                .collect();
+            let _ = tx.blocking_send(AppMessage::AiAnalysisComplete(results));
+        });
     }
 
     /// Exit AI review mode and clear state.
     pub fn exit_ai_review(&mut self) {
         self.ai_state = None;
         self.mode = AppMode::Browsing;
-    }
-
-    /// Resolve AI verdicts for paths: use cache or generate mock.
-    fn resolve_ai_verdicts(&mut self, paths: Vec<PathBuf>) -> Vec<AiPathVerdict> {
-        paths
-            .into_iter()
-            .map(|path| {
-                if let Some(cached) = self.ai_cache.get(&path) {
-                    return cached.clone();
-                }
-                let verdict = mock_ai_verdict(&path);
-                self.ai_cache.insert(path.clone(), verdict.clone());
-                verdict
-            })
-            .collect()
     }
 
     /// Toggle delete mark on the current AI review item.
@@ -1024,7 +1150,7 @@ fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
                 AiPathVerdict {
                     path: path.to_path_buf(),
                     size,
-                    label: name.clone(),
+                    label: "Uncategorized".into(),
                     purpose: "Application configuration or data directory. Used by various programs to store settings.".into(),
                     risk_level: RiskLevel::Medium,
                     suggestion: "Check which application owns this directory before deleting. May lose app settings.".into(),
@@ -1034,7 +1160,7 @@ fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
                 AiPathVerdict {
                     path: path.to_path_buf(),
                     size,
-                    label: name.clone(),
+                    label: "Uncategorized".into(),
                     purpose: "Unable to determine purpose automatically. May contain user data or application files.".into(),
                     risk_level: RiskLevel::Medium,
                     suggestion: "Review contents manually before deciding to delete.".into(),

@@ -145,6 +145,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
         KeyCode::Char('i') => handle_info_popup(app),
+        KeyCode::Char('x') => handle_delete_ai_analysis(app),
         KeyCode::Char('K') => handle_delta_detail_popup(app),
         KeyCode::Char('a') => {
             if app.multi_select {
@@ -159,6 +160,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('q') => {
             if app.info_data.is_some() {
                 app.info_data = None;
+                app.info_ai = None;
             } else {
                 app.should_quit = true;
             }
@@ -173,6 +175,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Esc => {
             app.info_data = None;
+            app.info_ai = None;
             app.delta_detail = None;
         }
         _ => {}
@@ -261,9 +264,39 @@ pub(crate) fn handle_info_popup(app: &mut App) {
         return;
     };
     match std::fs::metadata(&path) {
-        Ok(meta) => app.info_data = Some((path, meta)),
+        Ok(meta) => {
+            app.info_data = Some((path.clone(), meta));
+            // Fetch AI analysis data
+            app.info_ai = app.ai_cache.get(&path).cloned().or_else(|| {
+                let path_str = path.to_string_lossy();
+                if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
+                    if let Ok(Some(data)) = argus_core::get_ai_analysis(&conn, &path_str) {
+                        if let Ok(verdict) = serde_json::from_slice(&data) {
+                            return Some(verdict);
+                        }
+                    }
+                }
+                None
+            });
+        }
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }
+}
+
+pub(crate) fn handle_delete_ai_analysis(app: &mut App) {
+    let Some(path) = app.selected_node_full_path() else {
+        return;
+    };
+    let path_str = path.to_string_lossy();
+    let existed = app.ai_analyzed.remove(&path);
+    app.ai_cache.remove(&path);
+    if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
+        let _ = argus_core::delete_ai_analysis(&conn, &path_str);
+    }
+    if existed {
+        app.set_info(format!("AI analysis data deleted: {}", path_str), 3);
+    }
+    app.load_current_children();
 }
 
 pub(crate) fn handle_delta_detail_popup(app: &mut App) {
