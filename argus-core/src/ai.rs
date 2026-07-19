@@ -7,14 +7,14 @@ use serde::{Deserialize, Serialize};
 pub type AiLanguage = String;
 
 /// Numeric fingerprint for a directory, sent to AI for analysis.
-/// Contains only metadata (paths, sizes, extensions), never file contents.
+/// Contains only metadata (paths, sizes), never file contents.
+///
+/// FUTURE: add size_delta_mb, top_large_files, primary_extensions for
+/// root-cause analysis scenarios (Phase 2+).
 #[derive(Debug, Clone, Serialize)]
 pub struct AiContext {
     pub target_path: String,
-    pub size_delta_mb: f64,
     pub current_size_mb: f64,
-    pub top_large_files: Vec<(String, u64)>,
-    pub primary_extensions: Vec<(String, f32)>,
 }
 
 /// Unified AI response for a single path (from JSON parsing).
@@ -144,18 +144,37 @@ pub fn call_ai_api(prompt: &str, config: &AiConfig) -> Result<String, AiError> {
     });
 
     let resp = ureq::post(&config.api_url)
-        .set("Authorization", &format!("Bearer {}", config.api_key))
-        .set("Content-Type", "application/json")
+        .header("Authorization", &format!("Bearer {}", config.api_key))
         .send_json(body)
         .map_err(|e| AiError::Http(e.to_string()))?;
 
-    let json: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| AiError::Http(format!("response parse: {e}")))?;
+    let raw = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| AiError::Http(format!("response read: {e}")))?;
 
+    let json: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| AiError::Http(format!("response json: {e}")))?;
+
+    // Check for API error
+    if let Some(err) = json["error"]["message"].as_str() {
+        return Err(AiError::Http(format!("api error: {err}")));
+    }
+
+    // Try multiple response formats:
+    // 1. OpenAI Chat Completions: choices[0].message.content
+    // 2. OpenAI Responses API: output[0].content[0].text
+    // 3. DashScope compatible: output.text
     let content = json["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| AiError::Http("no content in response".into()))?
+        .or_else(|| json["output"][0]["content"][0]["text"].as_str())
+        .or_else(|| json["output"]["text"].as_str())
+        .ok_or_else(|| {
+            AiError::Http(format!(
+                "unrecognized response format. raw: {}",
+                &raw[..raw.len().min(500)]
+            ))
+        })?
         .to_string();
 
     Ok(content)
@@ -268,13 +287,7 @@ mod tests {
     fn sample_context() -> AiContext {
         AiContext {
             target_path: "/var/log/nginx/".into(),
-            size_delta_mb: 4190.0,
             current_size_mb: 4200.0,
-            top_large_files: vec![
-                ("access.log".into(), 4_100_000_000),
-                ("error.log".into(), 90_000_000),
-            ],
-            primary_extensions: vec![(".log".into(), 100.0)],
         }
     }
 
@@ -301,10 +314,7 @@ mod tests {
         let ctx1 = sample_context();
         let ctx2 = AiContext {
             target_path: "~/Library/Caches/pip/".into(),
-            size_delta_mb: 800.0,
             current_size_mb: 2400.0,
-            top_large_files: vec![("wheels/*.whl".into(), 2_000_000_000)],
-            primary_extensions: vec![(".whl".into(), 80.0), (".gz".into(), 20.0)],
         };
         let prompt = build_prompt(&[ctx1, ctx2], "en-US");
         assert!(prompt.contains("/var/log/nginx/"));

@@ -168,6 +168,10 @@ pub(crate) fn enrich_snapshot_sizes(
         snap.node_mut(idx).set_size(size);
     }
 
+    if let Some(du) = disk_usage_for_path(scan_cache, view_root_path, root_scan_tree, path) {
+        snap.node_mut(idx).set_disk_usage(du);
+    }
+
     if snap.node(idx).is_dir() {
         let children: Vec<NodeIndex> = snap.children_clone(idx);
         for child_idx in children {
@@ -183,6 +187,31 @@ pub(crate) fn enrich_snapshot_sizes(
     }
 
     path.pop();
+}
+
+pub(crate) fn disk_usage_for_path(
+    scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
+    view_root_path: &Path,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    path_key: &[String],
+) -> Option<u64> {
+    if path_key.is_empty() {
+        return None;
+    }
+
+    let mut path = view_root_path.to_path_buf();
+    for component in path_key.iter().skip(1) {
+        path.push(component);
+    }
+
+    if let Some(snapshot) = scan_cache.get(&path) {
+        return Some(snapshot.node(ROOT_NODE).disk_usage());
+    }
+
+    root_scan_tree.and_then(|(snap, idx)| {
+        snap.find_node(idx, path_key)
+            .map(|found_idx| snap.node(found_idx).disk_usage())
+    })
 }
 
 pub(crate) fn size_for_path(

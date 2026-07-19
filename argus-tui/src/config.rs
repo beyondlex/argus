@@ -16,13 +16,36 @@ pub struct TuiConfig {
 
 #[derive(Debug, Clone)]
 pub struct AiConfig {
+    pub enabled: bool,
+    pub api_url: String,
+    pub api_key: String,
+    pub model: String,
     pub language: String,
+    pub max_tokens_per_request: usize,
 }
 
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
+            api_url: String::new(),
+            api_key: String::new(),
+            model: "gpt-4o".into(),
             language: "en-US".into(),
+            max_tokens_per_request: 4096,
+        }
+    }
+}
+
+impl AiConfig {
+    /// Convert to core's AiConfig for API calls.
+    pub fn to_core_config(&self) -> argus_core::AiConfig {
+        argus_core::AiConfig {
+            api_url: self.api_url.clone(),
+            api_key: self.api_key.clone(),
+            model: self.model.clone(),
+            language: self.language.clone(),
+            max_tokens_per_request: self.max_tokens_per_request,
         }
     }
 }
@@ -137,7 +160,12 @@ struct RawConfig {
 
 #[derive(Debug, Deserialize)]
 struct RawAi {
+    enabled: Option<bool>,
+    api_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
     language: Option<String>,
+    max_tokens_per_request: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,8 +286,23 @@ pub fn load_config(path: &Path) -> TuiConfig {
     }
 
     if let Some(a) = raw.ai {
+        if let Some(v) = a.enabled {
+            config.ai.enabled = v;
+        }
+        if let Some(v) = a.api_url {
+            config.ai.api_url = v;
+        }
+        if let Some(v) = a.api_key {
+            config.ai.api_key = v;
+        }
+        if let Some(v) = a.model {
+            config.ai.model = v;
+        }
         if let Some(v) = a.language {
             config.ai.language = v;
+        }
+        if let Some(v) = a.max_tokens_per_request {
+            config.ai.max_tokens_per_request = v;
         }
     }
 
@@ -285,6 +328,11 @@ mod tests {
         assert!(!config.browsing.auto_scan_on_start);
         assert_eq!(config.daemon.uds_path, argus_core::DEFAULT_UDS_PATH);
         assert_eq!(config.ai.language, "en-US");
+        assert!(!config.ai.enabled);
+        assert!(config.ai.api_url.is_empty());
+        assert!(config.ai.api_key.is_empty());
+        assert_eq!(config.ai.model, "gpt-4o");
+        assert_eq!(config.ai.max_tokens_per_request, 4096);
     }
 
     #[test]
@@ -435,24 +483,41 @@ custom_mappings = [
     }
 
     #[test]
-    fn test_default_ai_language() {
+    fn test_default_ai_config() {
         let config = TuiConfig::default();
         assert_eq!(config.ai.language, "en-US");
+        assert!(!config.ai.enabled);
+        assert!(config.ai.api_url.is_empty());
+        assert_eq!(config.ai.model, "gpt-4o");
+        assert_eq!(config.ai.max_tokens_per_request, 4096);
     }
 
     #[test]
-    fn test_load_config_ai_language() {
+    fn test_load_config_ai_full() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
             r#"
 [ai]
+enabled = true
+api_url = "https://api.openai.com/v1/chat/completions"
+api_key = "sk-xxx"
+model = "gpt-4o-mini"
 language = "zh-CN"
+max_tokens_per_request = 2048
 "#,
         )
         .unwrap();
         let config = load_config(&path);
+        assert!(config.ai.enabled);
+        assert_eq!(
+            config.ai.api_url,
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(config.ai.api_key, "sk-xxx");
+        assert_eq!(config.ai.model, "gpt-4o-mini");
         assert_eq!(config.ai.language, "zh-CN");
+        assert_eq!(config.ai.max_tokens_per_request, 2048);
     }
 }

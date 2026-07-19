@@ -1,6 +1,6 @@
 use ratatui_finder::FinderState;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
@@ -1097,40 +1097,153 @@ impl App {
         total
     }
 
+    /// Get the recursive size of a path using scan cache, with metadata fallback.
+    fn compute_path_size(&self, path: &Path) -> u64 {
+        if let Some(snapshot) = self.scan_cache.get(path) {
+            return snapshot.total_size;
+        }
+        for (root, snapshot) in &self.scan_cache {
+            if let Ok(relative) = path.strip_prefix(root) {
+                let mut idx = argus_core::ROOT_NODE;
+                let mut ok = true;
+                for component in relative.components() {
+                    let name = component.as_os_str().to_str().unwrap_or("");
+                    if let Some(child) = snapshot.child_idx(idx, name) {
+                        idx = child;
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    return snapshot.node(idx).size();
+                }
+            }
+        }
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    }
+
     /// Spawn a background thread to compute AI verdicts.
     fn spawn_ai_analysis(&self, paths: Vec<PathBuf>) {
+        // Pre-compute correct sizes using scan cache (recursive for dirs)
+        let path_sizes: HashMap<PathBuf, u64> = paths
+            .iter()
+            .map(|p| (p.clone(), self.compute_path_size(p)))
+            .collect();
+
         let tx = self.tx.clone();
+        let ai_config = self.config.ai.clone();
+        let db_path = argus_core::default_db_path();
+        let log_path = crate::util::default_log_path();
+
         std::thread::spawn(move || {
-            // Phase 1: mock 3s delay for UI development
-            std::thread::sleep(std::time::Duration::from_secs(3));
-
-            let db_path = argus_core::default_db_path();
             let conn = argus_core::open_db(&db_path).ok();
+            let use_ai = ai_config.enabled
+                && !ai_config.api_url.is_empty()
+                && !ai_config.api_key.is_empty();
 
-            let results: Vec<AiPathVerdict> = paths
-                .into_iter()
-                .map(|path| {
-                    // Check DB cache first
-                    if let Some(ref conn) = conn {
-                        let path_str = path.to_string_lossy();
-                        if let Ok(Some(data)) = argus_core::get_ai_analysis(conn, &path_str) {
-                            if let Ok(verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
-                                return verdict;
+            // First pass: check DB cache, prepare uncached paths
+            let mut cached: Vec<AiPathVerdict> = Vec::new();
+            let mut uncached: Vec<(PathBuf, u64, String)> = Vec::new();
+
+            for path in &paths {
+                let path_str = path.to_string_lossy();
+                let mut found = false;
+
+                if let Some(ref conn) = conn {
+                    if let Ok(Some(data)) = argus_core::get_ai_analysis(conn, &path_str) {
+                        if let Ok(mut verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
+                            // Override cached size with scan-cache aggregated size (fixes
+                            // directories that were cached with metadata.len() values)
+                            if let Some(&scan_size) = path_sizes.get(path) {
+                                verdict.size = scan_size;
                             }
+                            cached.push(verdict);
+                            found = true;
                         }
                     }
-                    let verdict = mock_ai_verdict(&path);
-                    // Write to DB cache
+                }
+
+                if !found {
+                    let size = path_sizes.get(path).copied().unwrap_or(0);
+                    let label = resolve_label(path);
+                    uncached.push((path.to_path_buf(), size, label));
+                }
+            }
+
+            if !uncached.is_empty() && use_ai {
+                let contexts: Vec<argus_core::AiContext> = uncached
+                    .iter()
+                    .map(|(path, size, _)| argus_core::AiContext {
+                        target_path: path.to_string_lossy().to_string(),
+                        current_size_mb: *size as f64 / (1024.0 * 1024.0),
+                    })
+                    .collect();
+
+                let prompt = argus_core::build_prompt(&contexts, &ai_config.language);
+                crate::util::log_msg(&log_path, &format!("AI prompt:\n{}", prompt));
+
+                match argus_core::analyze(&contexts, &ai_config.to_core_config()) {
+                    Ok(ai_map) => {
+                        crate::util::log_msg(
+                            &log_path,
+                            &format!(
+                                "AI response ({} paths):\n{}",
+                                ai_map.len(),
+                                serde_json::to_string_pretty(&ai_map).unwrap_or_default()
+                            ),
+                        );
+
+                        for (path, size, label) in &uncached {
+                            let path_str = path.to_string_lossy();
+                            let verdict = if let Some(resp) = ai_map.get(path_str.as_ref()) {
+                                AiPathVerdict::from_response(
+                                    path.to_path_buf(),
+                                    *size,
+                                    label.clone(),
+                                    resp.clone(),
+                                )
+                            } else {
+                                mock_ai_verdict(path, *size)
+                            };
+
+                            if let Some(ref conn) = conn {
+                                if let Ok(data) = serde_json::to_vec(&verdict) {
+                                    let _ = argus_core::set_ai_analysis(conn, &path_str, &data);
+                                }
+                            }
+                            cached.push(verdict);
+                        }
+                    }
+                    Err(e) => {
+                        crate::util::log_msg(&log_path, &format!("AI error: {}", e));
+                        for (path, size, label) in &uncached {
+                            let verdict = mock_ai_verdict(path, *size);
+                            if let Some(ref conn) = conn {
+                                let path_str = path.to_string_lossy();
+                                if let Ok(data) = serde_json::to_vec(&verdict) {
+                                    let _ = argus_core::set_ai_analysis(conn, &path_str, &data);
+                                }
+                            }
+                            cached.push(verdict);
+                        }
+                    }
+                }
+            } else {
+                // AI not available: use heuristic for uncached paths
+                for (path, size, label) in uncached {
+                    let verdict = mock_ai_verdict(&path, size);
                     if let Some(ref conn) = conn {
                         let path_str = path.to_string_lossy();
                         if let Ok(data) = serde_json::to_vec(&verdict) {
                             let _ = argus_core::set_ai_analysis(conn, &path_str, &data);
                         }
                     }
-                    verdict
-                })
-                .collect();
-            let _ = tx.blocking_send(AppMessage::AiAnalysisComplete(results));
+                    cached.push(verdict);
+                }
+            }
+
+            let _ = tx.blocking_send(AppMessage::AiAnalysisComplete(cached));
         });
     }
 
@@ -1153,17 +1266,45 @@ impl App {
     }
 }
 
-/// Generate a mock AI verdict based on directory/file name heuristics.
-/// Phase 1: no real AI call. Phase 2+: will call AI API.
-/// Label is program-determined (built-in heuristic). label_detail is left empty
-/// in Phase 1 mock; Phase 2+ AI will fill it.
-fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
+/// Determine the program label for a path based on built-in heuristics.
+/// Used by both mock_ai_verdict and the AI analysis path.
+fn resolve_label(path: &std::path::Path) -> String {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let name_lower = name.to_lowercase();
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    match name_lower.as_str() {
+        "target" | "build" | "builds" | "dist" | "out" | "output" => labels::BUILD_ARTIFACTS,
+        "node_modules" | "vendor" | "bower_components" => labels::PACKAGE_DEPENDENCIES,
+        ".git" | ".svn" | ".hg" => labels::VCS_DATA,
+        ".cache" | "cache" | "caches" => labels::APP_CACHE,
+        "logs" | "log" => labels::LOG_FILES,
+        ".terraform" | ".serverless" | ".next" | ".nuxt" => labels::FRAMEWORK_CACHE,
+        "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => labels::TEMP_FILES,
+        "downloads" | ".download" => labels::DOWNLOADS,
+        _ => {
+            if name.starts_with('.') {
+                labels::HIDDEN_CONFIG
+            } else {
+                labels::UNCATEGORIZED
+            }
+        }
+    }
+    .to_string()
+}
+
+/// Generate a mock AI verdict based on directory/file name heuristics.
+/// Phase 1: no real AI call. Phase 2+: will call AI API.
+/// Label is program-determined (built-in heuristic). label_detail is left empty
+/// in Phase 1 mock; Phase 2+ AI will fill it.
+fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let name_lower = name.to_lowercase();
 
     let (label, purpose, risk_level, suggestion, deletable) = match name_lower.as_str() {
         "target" | "build" | "builds" | "dist" | "out" | "output" => (

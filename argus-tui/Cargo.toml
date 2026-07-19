@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-argus-core = { path = "../argus-core" }
+argus-core = { path = "../argus-core", features = ["ai"] }
 anyhow = "1"
 arboard = "3"
 chrono = "0.4"
