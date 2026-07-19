@@ -246,10 +246,7 @@ fn render_summary(
         ));
     }
     if deleted_bytes > 0 {
-        right.push_str(&format!(
-            "Freed: {}  ",
-            util::format_size(deleted_bytes)
-        ));
+        right.push_str(&format!("Freed: {}  ", util::format_size(deleted_bytes)));
     }
 
     let text = Paragraph::new(Line::from(vec![

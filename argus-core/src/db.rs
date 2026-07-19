@@ -92,9 +92,7 @@ pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>,
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
     let path_hash = hasher.finish().to_string();
-    let mut stmt = conn.prepare(
-        "SELECT data FROM ai_analysis_cache WHERE path_hash = ?1",
-    )?;
+    let mut stmt = conn.prepare("SELECT data FROM ai_analysis_cache WHERE path_hash = ?1")?;
     let mut rows = stmt.query(params![path_hash])?;
     match rows.next()? {
         Some(row) => Ok(Some(row.get(0)?)),
@@ -118,14 +116,16 @@ pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
 pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
     use std::hash::{Hash, Hasher};
     let mut results = Vec::with_capacity(paths.len());
-    let mut stmt = conn.prepare(
-        "SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 LIMIT 1",
-    )?;
+    let mut stmt = conn.prepare("SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 LIMIT 1")?;
     for path in paths {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         path.hash(&mut hasher);
         let path_hash = hasher.finish().to_string();
-        let exists: bool = stmt.query(params![path_hash])?.next().map(|r| r.is_some()).unwrap_or(false);
+        let exists: bool = stmt
+            .query(params![path_hash])?
+            .next()
+            .map(|r| r.is_some())
+            .unwrap_or(false);
         results.push(exists);
     }
     Ok(results)

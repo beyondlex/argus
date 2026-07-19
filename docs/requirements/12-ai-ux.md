@@ -60,15 +60,15 @@
 │  Selected 3 paths, total 4.7 GB                    │
 │                                                    │
 │  ○ target/                               3.2 GB   │  ← 绿色 (Safe)
-│    Rust build artifacts                            │
+│    [build-artifacts] Rust build artifacts           │
 │    Build cache, safe to delete, will rebuild        │
 │                                                    │
 │  ● node_modules/                         423 MB    │  ← 黄色 (Caution)
-│    Node.js dependencies                            │
+│    [package-dependencies] Node.js dependencies      │
 │    Can reinstall via npm install                    │
 │                                                    │
 │  ○ Downloads/secret.zip                  1.5 GB    │  ← 红色 (High)
-│    Unknown purpose                                  │
+│    [uncategorized] Unknown purpose                  │
 │    Cannot determine — review manually                │
 │                                                    │
 │  ─────────────────────────────────────────────      │
@@ -77,6 +77,8 @@
 └────────────────────────────────────────────────────┘
 ```
 
+第一行显示格式：`[label] label_detail`。label 在方括号中，label_detail 紧跟其后。
+如果 label_detail 为空，只显示 `[label]` 和 purpose。
 summary 行 total 始终使用 scan cache 实际大小（与 loading 一致），不依赖 `std::fs::metadata`。
 
 ### 2.4 错误状态（Error）
@@ -186,11 +188,12 @@ pub struct AiReviewState {
 pub struct AiPathVerdict {
     pub path: PathBuf,
     pub size: u64,
-    pub label: String,        // "node_modules", "build cache" …
-    pub purpose: String,      // 一句话用途说明
+    pub label: Label,            // 程序确定，稳定分类
+    pub label_detail: String,    // AI 补充，具体来源描述
+    pub purpose: String,         // 一句话用途说明
     pub risk_level: RiskLevel,
-    pub suggestion: String,   // 治理建议
-    pub deletable: bool,      // 是否建议删除
+    pub suggestion: String,      // 治理建议
+    pub deletable: bool,         // 是否建议删除
 }
 
 pub enum RiskLevel { Safe, Low, Medium, High }

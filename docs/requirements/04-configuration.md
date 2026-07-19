@@ -147,7 +147,24 @@ daily_limit = 0
 auto_scan_on_start = false
 ```
 
-## 7. 配置管理需求
+## 9. 标签配置组 `[labels]`
+
+自定义 path→label 映射，覆盖内置启发式规则。
+
+```toml
+[labels]
+# 自定义路径到标签的映射（glob 模式，优先于内置启发式）
+# 匹配规则：使用 globset 语法，路径匹配时优先使用用户配置的 label
+custom_mappings = [
+    { pattern = "*/.terraform/*", label = "iac-cache" },
+    { pattern = "*.pyc",          label = "python-bytecode" },
+    { pattern = ".venv/*",        label = "python-virtualenv" },
+]
+```
+
+Label 不直接由 AI 决定——AI 只输出 `label_detail`（自由描述），程序根据内置规则 + 用户配置确定 `label`（稳定分类）。
+
+## 10. 配置管理需求
 
 - 配置文件使用 TOML 格式，支持 Rust 的 `serde` 直接反序列化。
 - 所有配置项均有合理默认值，用户可增量覆盖。

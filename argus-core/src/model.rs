@@ -19,6 +19,37 @@ pub const SNAPSHOT_VERSION: u32 = 4;
 /// Names with length ≤ this are stored inline in `FileNode::inline_name` (Phase 4).
 pub const INLINE_NAME_MAX: usize = 12;
 
+/// Label type for AI analysis categorization.
+/// Built-in labels are defined as constants below.
+/// Users can extend via config custom mappings.
+pub type Label = String;
+
+/// Built-in label constants.
+/// These are the canonical labels used by the program's heuristic classifier.
+/// Extend this list when adding new built-in path→label mappings.
+pub mod labels {
+    /// Compiled output: target/, build/, dist/
+    pub const BUILD_ARTIFACTS: &str = "build-artifacts";
+    /// Third-party deps: node_modules/, vendor/
+    pub const PACKAGE_DEPENDENCIES: &str = "package-dependencies";
+    /// VCS metadata: .git/, .svn/, .hg/
+    pub const VCS_DATA: &str = "vcs-data";
+    /// App caches: .cache/, __pycache__/
+    pub const APP_CACHE: &str = "app-cache";
+    /// Log files: logs/, *.log
+    pub const LOG_FILES: &str = "log-files";
+    /// Temp files: tmp/, .Trash/
+    pub const TEMP_FILES: &str = "temp-files";
+    /// Downloads directory
+    pub const DOWNLOADS: &str = "downloads";
+    /// Framework tooling cache: .next/, .terraform/, .nuxt/
+    pub const FRAMEWORK_CACHE: &str = "framework-cache";
+    /// Hidden dir not matched by other categories
+    pub const HIDDEN_CONFIG: &str = "hidden-config";
+    /// No heuristic match
+    pub const UNCATEGORIZED: &str = "uncategorized";
+}
+
 const FLAG_DIR: u16 = 1 << 0;
 const FLAG_INLINE_NAME: u16 = 1 << 1;
 const FLAG_TYPE_SHIFT: u16 = 2;

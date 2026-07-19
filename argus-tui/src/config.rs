@@ -10,6 +10,7 @@ pub struct TuiConfig {
     pub theme: Theme,
     pub browsing: BrowsingConfig,
     pub daemon: DaemonAccessConfig,
+    pub labels: LabelConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,25 @@ impl Default for DaemonAccessConfig {
     fn default() -> Self {
         Self {
             uds_path: argus_core::DEFAULT_UDS_PATH.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LabelConfig {
+    pub custom_mappings: Vec<LabelMapping>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LabelMapping {
+    pub pattern: String,
+    pub label: String,
+}
+
+impl Default for LabelConfig {
+    fn default() -> Self {
+        Self {
+            custom_mappings: Vec::new(),
         }
     }
 }
@@ -97,6 +117,18 @@ struct RawConfig {
     theme: Option<RawTheme>,
     browsing: Option<RawBrowsing>,
     daemon: Option<RawDaemon>,
+    labels: Option<RawLabels>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLabels {
+    custom_mappings: Option<Vec<RawLabelMapping>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLabelMapping {
+    pattern: String,
+    label: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +222,18 @@ pub fn load_config(path: &Path) -> TuiConfig {
     if let Some(d) = raw.daemon {
         if let Some(v) = d.uds_path {
             config.daemon.uds_path = v;
+        }
+    }
+
+    if let Some(l) = raw.labels {
+        if let Some(mappings) = l.custom_mappings {
+            config.labels.custom_mappings = mappings
+                .into_iter()
+                .map(|m| LabelMapping {
+                    pattern: m.pattern,
+                    label: m.label,
+                })
+                .collect();
         }
     }
 
@@ -332,5 +376,34 @@ auto_scan_on_start = true
         .unwrap();
         let config = load_config(&path);
         assert!(config.browsing.auto_scan_on_start);
+    }
+
+    #[test]
+    fn test_default_config_labels_empty() {
+        let config = TuiConfig::default();
+        assert!(config.labels.custom_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_load_config_labels_custom_mappings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[labels]
+custom_mappings = [
+    { pattern = "*/.terraform/*", label = "iac-cache" },
+    { pattern = "*.pyc", label = "python-bytecode" },
+]
+"#,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.labels.custom_mappings.len(), 2);
+        assert_eq!(config.labels.custom_mappings[0].pattern, "*/.terraform/*");
+        assert_eq!(config.labels.custom_mappings[0].label, "iac-cache");
+        assert_eq!(config.labels.custom_mappings[1].pattern, "*.pyc");
+        assert_eq!(config.labels.custom_mappings[1].label, "python-bytecode");
     }
 }

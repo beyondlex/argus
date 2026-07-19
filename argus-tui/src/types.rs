@@ -231,7 +231,12 @@ impl RiskLevel {
 pub struct AiPathVerdict {
     pub path: PathBuf,
     pub size: u64,
+    /// Program-determined label (built-in heuristic + user config mapping).
+    /// Stable, predictable, usable for grouping/sorting/filtering.
     pub label: String,
+    /// AI-determined specific source entity name (e.g. "Docker Desktop Buildx cache").
+    /// Free-form, display-only, supplements the program label.
+    pub label_detail: String,
     pub purpose: String,
     pub risk_level: RiskLevel,
     pub suggestion: String,

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use argus_core::{Snapshot, ROOT_NODE};
+use argus_core::{labels, Snapshot, ROOT_NODE};
 
 use crate::ipc_client::IpcClient;
 use crate::theme::ColorTheme;
@@ -1155,6 +1155,8 @@ impl App {
 
 /// Generate a mock AI verdict based on directory/file name heuristics.
 /// Phase 1: no real AI call. Phase 2+: will call AI API.
+/// Label is program-determined (built-in heuristic). label_detail is left empty
+/// in Phase 1 mock; Phase 2+ AI will fill it.
 fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
     let name = path
         .file_name()
@@ -1163,103 +1165,93 @@ fn mock_ai_verdict(path: &std::path::Path) -> AiPathVerdict {
     let name_lower = name.to_lowercase();
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-    match name_lower.as_str() {
-        "target" | "build" | "builds" | "dist" | "out" | "output" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Build artifacts".into(),
-            purpose: "Compiled output from the build process. Contains object files, binaries, and intermediate build products.".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete. Will be recreated on next build. Deleting frees significant disk space.".into(),
-            deletable: true,
-        },
-        "node_modules" | "vendor" | "bower_components" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Package dependencies".into(),
-            purpose: "Third-party dependencies downloaded by a package manager (npm, yarn, Composer, etc.).".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete. Can be restored with the package manager's install command.".into(),
-            deletable: true,
-        },
-        ".git" | ".svn" | ".hg" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Version control data".into(),
-            purpose: "Version control history and metadata. Contains all commits, branches, and revision history.".into(),
-            risk_level: RiskLevel::High,
-            suggestion: "Do NOT delete unless you want to remove version history. May break git/svn operations.".into(),
-            deletable: false,
-        },
-        ".cache" | "cache" | "caches" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Application cache".into(),
-            purpose: "Cached data from various applications. Speeds up repeated operations.".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete. Caches will be regenerated as needed. Deleting may slow down first use.".into(),
-            deletable: true,
-        },
-        "logs" | "log" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Log files".into(),
-            purpose: "Application or system log files recording events, errors, and debug information.".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete if you don't need historical logs. May help with debugging if kept.".into(),
-            deletable: true,
-        },
-        ".terraform" | ".serverless" | ".next" | ".nuxt" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Framework tooling cache".into(),
-            purpose: "Cache and build artifacts from infrastructure or frontend framework tooling.".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete. Will be regenerated on next deploy or build.".into(),
-            deletable: true,
-        },
-        "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Temporary files".into(),
-            purpose: "Temporary files that should have been cleaned up by the creating application.".into(),
-            risk_level: RiskLevel::Safe,
-            suggestion: "Safe to delete. These are temporary files not needed for normal operation.".into(),
-            deletable: true,
-        },
-        "downloads" | ".download" => AiPathVerdict {
-            path: path.to_path_buf(),
-            size,
-            label: "Downloads".into(),
-            purpose: "Downloaded files. May contain important documents or installers.".into(),
-            risk_level: RiskLevel::Low,
-            suggestion: "Review contents before deleting. Safe to delete installers and temporary downloads.".into(),
-            deletable: true,
-        },
+    let (label, purpose, risk_level, suggestion, deletable) = match name_lower.as_str() {
+        "target" | "build" | "builds" | "dist" | "out" | "output" => (
+            labels::BUILD_ARTIFACTS,
+            "Compiled output from the build process. Contains object files, binaries, and intermediate build products.",
+            RiskLevel::Safe,
+            "Safe to delete. Will be recreated on next build. Deleting frees significant disk space.",
+            true,
+        ),
+        "node_modules" | "vendor" | "bower_components" => (
+            labels::PACKAGE_DEPENDENCIES,
+            "Third-party dependencies downloaded by a package manager (npm, yarn, Composer, etc.).",
+            RiskLevel::Safe,
+            "Safe to delete. Can be restored with the package manager's install command.",
+            true,
+        ),
+        ".git" | ".svn" | ".hg" => (
+            labels::VCS_DATA,
+            "Version control history and metadata. Contains all commits, branches, and revision history.",
+            RiskLevel::High,
+            "Do NOT delete unless you want to remove version history. May break git/svn operations.",
+            false,
+        ),
+        ".cache" | "cache" | "caches" => (
+            labels::APP_CACHE,
+            "Cached data from various applications. Speeds up repeated operations.",
+            RiskLevel::Safe,
+            "Safe to delete. Caches will be regenerated as needed. Deleting may slow down first use.",
+            true,
+        ),
+        "logs" | "log" => (
+            labels::LOG_FILES,
+            "Application or system log files recording events, errors, and debug information.",
+            RiskLevel::Safe,
+            "Safe to delete if you don't need historical logs. May help with debugging if kept.",
+            true,
+        ),
+        ".terraform" | ".serverless" | ".next" | ".nuxt" => (
+            labels::FRAMEWORK_CACHE,
+            "Cache and build artifacts from infrastructure or frontend framework tooling.",
+            RiskLevel::Safe,
+            "Safe to delete. Will be regenerated on next deploy or build.",
+            true,
+        ),
+        "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => (
+            labels::TEMP_FILES,
+            "Temporary files that should have been cleaned up by the creating application.",
+            RiskLevel::Safe,
+            "Safe to delete. These are temporary files not needed for normal operation.",
+            true,
+        ),
+        "downloads" | ".download" => (
+            labels::DOWNLOADS,
+            "Downloaded files. May contain important documents or installers.",
+            RiskLevel::Low,
+            "Review contents before deleting. Safe to delete installers and temporary downloads.",
+            true,
+        ),
         _ => {
-            // Heuristic: hidden directories are often config/cache
             if name.starts_with('.') {
-                AiPathVerdict {
-                    path: path.to_path_buf(),
-                    size,
-                    label: "Uncategorized".into(),
-                    purpose: "Application configuration or data directory. Used by various programs to store settings.".into(),
-                    risk_level: RiskLevel::Medium,
-                    suggestion: "Check which application owns this directory before deleting. May lose app settings.".into(),
-                    deletable: true,
-                }
+                (
+                    labels::HIDDEN_CONFIG,
+                    "Application configuration or data directory. Used by various programs to store settings.",
+                    RiskLevel::Medium,
+                    "Check which application owns this directory before deleting. May lose app settings.",
+                    true,
+                )
             } else {
-                AiPathVerdict {
-                    path: path.to_path_buf(),
-                    size,
-                    label: "Uncategorized".into(),
-                    purpose: "Unable to determine purpose automatically. May contain user data or application files.".into(),
-                    risk_level: RiskLevel::Medium,
-                    suggestion: "Review contents manually before deciding to delete.".into(),
-                    deletable: true,
-                }
+                (
+                    labels::UNCATEGORIZED,
+                    "Unable to determine purpose automatically. May contain user data or application files.",
+                    RiskLevel::Medium,
+                    "Review contents manually before deciding to delete.",
+                    true,
+                )
             }
         }
+    };
+
+    AiPathVerdict {
+        path: path.to_path_buf(),
+        size,
+        label: label.to_string(),
+        label_detail: String::new(),
+        purpose: purpose.to_string(),
+        risk_level,
+        suggestion: suggestion.to_string(),
+        deletable,
     }
 }
 

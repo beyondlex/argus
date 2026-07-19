@@ -1,5 +1,45 @@
 # 数据模型与核心算法
 
+## Label 类型
+
+Label 是 AI 分析结果中的分类标签，由程序基于内置启发式规则和用户配置确定：
+
+```rust
+pub type Label = String;
+
+// 内置常量定义
+pub mod labels {
+    pub const BUILD_ARTIFACTS: &str = "build-artifacts";
+    pub const PACKAGE_DEPENDENCIES: &str = "package-dependencies";
+    pub const VCS_DATA: &str = "vcs-data";
+    pub const APP_CACHE: &str = "app-cache";
+    pub const LOG_FILES: &str = "log-files";
+    pub const TEMP_FILES: &str = "temp-files";
+    pub const DOWNLOADS: &str = "downloads";
+    pub const FRAMEWORK_CACHE: &str = "framework-cache";
+    pub const HIDDEN_CONFIG: &str = "hidden-config";
+    pub const UNCATEGORIZED: &str = "uncategorized";
+}
+```
+
+Label 确定优先级：`内置启发式 → 用户配置 custom_mappings → AI 补充`。
+后一层覆盖前一层。AI 不直接输出 label，只输出 label_detail 作为补充描述。
+
+## AiPathVerdict
+
+```rust
+pub struct AiPathVerdict {
+    pub path: PathBuf,
+    pub size: u64,
+    pub label: Label,           // 程序确定，稳定可控，用于分组排序
+    pub label_detail: String,   // AI 确定，自由描述，仅用于展示
+    pub purpose: String,
+    pub risk_level: RiskLevel,
+    pub suggestion: String,
+    pub deletable: bool,
+}
+```
+
 ## DeltaEvent / DeltaEntry
 
 - `DeltaEvent`: 全字段版本（含 `is_agg`, `process_info`），用于 watcher → debounce 管道
