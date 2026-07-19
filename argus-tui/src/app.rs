@@ -123,7 +123,7 @@ pub struct App {
     // AI review
     pub ai_state: Option<AiReviewState>,
     pub ai_cache: HashMap<PathBuf, AiPathVerdict>,
-    pub ai_analyzed: HashSet<PathBuf>,
+    pub ai_analyzed: HashMap<PathBuf, RiskLevel>,
 
     // Hidden files
     pub show_hidden: bool,
@@ -229,15 +229,24 @@ impl App {
             ai_state: None,
             ai_cache: HashMap::new(),
             ai_analyzed: {
-                let mut set = HashSet::new();
+                let mut map = HashMap::new();
                 if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
                     if let Ok(paths) = argus_core::load_all_ai_analyzed_paths(&conn) {
                         for p in paths {
-                            set.insert(PathBuf::from(p));
+                            let path = PathBuf::from(&p);
+                            let risk = argus_core::get_ai_analysis(&conn, &p)
+                                .ok()
+                                .flatten()
+                                .and_then(|data| {
+                                    serde_json::from_slice::<AiPathVerdict>(&data).ok()
+                                })
+                                .map(|v| v.risk_level)
+                                .unwrap_or(RiskLevel::Medium);
+                            map.insert(path, risk);
                         }
                     }
                 }
-                set
+                map
             },
             show_hidden: false,
             current_children: Vec::new(),
@@ -426,7 +435,8 @@ impl App {
                 if let Some(ref mut state) = self.ai_state {
                     for result in &results {
                         self.ai_cache.insert(result.path.clone(), result.clone());
-                        self.ai_analyzed.insert(result.path.clone());
+                        self.ai_analyzed
+                            .insert(result.path.clone(), result.risk_level);
                     }
                     state.pending_paths.clear();
                     state.results = results;
@@ -710,6 +720,7 @@ impl App {
                 path: child_path,
                 has_scan_data: has_scan,
                 has_ai: false,
+                ai_risk_level: None,
                 is_dir: child_node.is_dir(),
                 size: child_node.size(),
                 disk_usage: child_node.disk_usage(),
@@ -725,7 +736,8 @@ impl App {
             for part in entry.path.iter().skip(1) {
                 full_path.push(part);
             }
-            entry.has_ai = self.ai_analyzed.contains(&full_path);
+            entry.has_ai = self.ai_analyzed.contains_key(&full_path);
+            entry.ai_risk_level = self.ai_analyzed.get(&full_path).copied();
         }
 
         // (5) Update totals

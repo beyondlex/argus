@@ -363,7 +363,14 @@ fn render_flat_entry(
 
     // AI analysis icon
     if entry.has_ai {
-        info.push(Span::styled(" ⚡", row.filesize(theme.accent)));
+        let ai_color = match entry.ai_risk_level {
+            Some(crate::types::RiskLevel::Safe) => theme.success,
+            Some(crate::types::RiskLevel::Low) => theme.warning,
+            Some(crate::types::RiskLevel::Medium) => theme.unit_mb,
+            Some(crate::types::RiskLevel::High) => theme.danger,
+            None => theme.accent,
+        };
+        info.push(Span::styled(" ⚡", row.filesize(ai_color)));
     } else {
         info.push(Span::raw("    "));
     }

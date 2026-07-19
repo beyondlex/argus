@@ -100,6 +100,7 @@ pub struct DirEntry {
     pub path: Vec<String>,
     pub has_scan_data: bool,
     pub has_ai: bool,
+    pub ai_risk_level: Option<RiskLevel>,
     pub is_dir: bool,
     pub size: u64,
     pub disk_usage: u64,

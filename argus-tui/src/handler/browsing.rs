@@ -288,7 +288,7 @@ pub(crate) fn handle_delete_ai_analysis(app: &mut App) {
         return;
     };
     let path_str = path.to_string_lossy();
-    let existed = app.ai_analyzed.remove(&path);
+    let existed = app.ai_analyzed.remove(&path).is_some();
     app.ai_cache.remove(&path);
     if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
         let _ = argus_core::delete_ai_analysis(&conn, &path_str);
