@@ -36,12 +36,46 @@ pub struct AiResponse {
     pub confidence: f64,
 }
 
+/// Configuration for AI API calls.
+/// All fields are always available; only the HTTP call is gated behind `ai` feature.
+#[derive(Debug, Clone)]
+pub struct AiConfig {
+    /// OpenAI-compatible API endpoint URL
+    pub api_url: String,
+    /// API key
+    pub api_key: String,
+    /// Model name (e.g. "gpt-4o", "gemini-1.5-flash")
+    pub model: String,
+    /// Response language (BCP 47 tag, e.g. "en-US", "zh-CN")
+    pub language: String,
+    /// Max tokens per request (split batch into chunks if exceeded)
+    pub max_tokens_per_request: usize,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            api_url: String::new(),
+            api_key: String::new(),
+            model: "gpt-4o".into(),
+            language: "en-US".into(),
+            max_tokens_per_request: 4096,
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum AiError {
     #[error("JSON parse error: {0}")]
     JsonParse(#[from] serde_json::Error),
     #[error("missing field: {0}")]
     MissingField(String),
+    #[error("HTTP error: {0}")]
+    Http(String),
+    #[error("AI not configured: missing api_url or api_key")]
+    NotConfigured,
+    #[error("all retries failed")]
+    AllRetriesFailed,
 }
 
 /// Build a unified prompt for AI analysis.
@@ -82,13 +116,6 @@ Directories to analyze:
 /// Parse an AI JSON response into a path-to-response map.
 /// The response JSON must be a single object with path keys and AiResponse values.
 /// Returns an empty map if parsing fails.
-///
-/// Retry strategy (caller responsibility):
-/// - On empty map, retry the same batch request (up to 2-3 times).
-/// - Do NOT fall back to per-path sequential requests — the JSON format is the same
-///   regardless of batch size, so sequential would have the same failure rate.
-/// - If all retries fail, report the error to the user.
-/// - The only reason to split a batch is token overflow (chunked by token count).
 pub fn try_parse_json(raw: &str) -> HashMap<String, AiResponse> {
     serde_json::from_str::<HashMap<String, AiResponse>>(raw).unwrap_or_default()
 }
@@ -98,6 +125,140 @@ pub fn try_parse_json(raw: &str) -> HashMap<String, AiResponse> {
 pub fn estimate_tokens(prompt: &str) -> usize {
     let char_count = prompt.chars().count();
     (char_count + 2) / 3
+}
+
+// ── HTTP API (gated behind `ai` feature) ─────────────────────────────────
+
+/// Send a prompt to the AI API and return the raw response text.
+/// Uses OpenAI Chat Completions format.
+#[cfg(feature = "ai")]
+pub fn call_ai_api(prompt: &str, config: &AiConfig) -> Result<String, AiError> {
+    if config.api_url.is_empty() || config.api_key.is_empty() {
+        return Err(AiError::NotConfigured);
+    }
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": config.max_tokens_per_request,
+    });
+
+    let resp = ureq::post(&config.api_url)
+        .set("Authorization", &format!("Bearer {}", config.api_key))
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(|e| AiError::Http(e.to_string()))?;
+
+    let json: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| AiError::Http(format!("response parse: {e}")))?;
+
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| AiError::Http("no content in response".into()))?
+        .to_string();
+
+    Ok(content)
+}
+
+/// Maximum number of retries for a failed batch.
+#[cfg(feature = "ai")]
+const MAX_RETRIES: usize = 3;
+
+/// Analyze directories via AI API, with retry and chunking.
+///
+/// Strategy:
+/// 1. Estimate prompt token count. If under limit, send as single batch.
+/// 2. If parsing fails, retry same batch up to MAX_RETRIES times.
+/// 3. If token count exceeds limit, split into chunks and analyze each.
+/// 4. Never fall back to per-path sequential — JSON format is batch-size agnostic.
+#[cfg(feature = "ai")]
+pub fn analyze(
+    contexts: &[AiContext],
+    config: &AiConfig,
+) -> Result<HashMap<String, AiResponse>, AiError> {
+    if contexts.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let estimated = estimate_tokens(&build_prompt(contexts, &config.language));
+
+    if estimated <= config.max_tokens_per_request {
+        analyze_batch(contexts, config)
+    } else {
+        analyze_chunked(contexts, config)
+    }
+}
+
+/// Send a single batch with retry.
+#[cfg(feature = "ai")]
+fn analyze_batch(
+    contexts: &[AiContext],
+    config: &AiConfig,
+) -> Result<HashMap<String, AiResponse>, AiError> {
+    let prompt = build_prompt(contexts, &config.language);
+
+    for attempt in 0..MAX_RETRIES {
+        let raw = call_ai_api(&prompt, config)?;
+        let result = try_parse_json(&raw);
+        if !result.is_empty() {
+            // Verify all expected paths are present
+            let all_found = contexts
+                .iter()
+                .all(|ctx| result.contains_key(&ctx.target_path));
+            if all_found {
+                return Ok(result);
+            }
+            // Partial result on last attempt: return what we got
+            if attempt == MAX_RETRIES - 1 {
+                return Ok(result);
+            }
+        }
+        // Empty or partial: retry
+    }
+
+    Err(AiError::AllRetriesFailed)
+}
+
+/// Split contexts into token-safe chunks and analyze each.
+#[cfg(feature = "ai")]
+fn analyze_chunked(
+    contexts: &[AiContext],
+    config: &AiConfig,
+) -> Result<HashMap<String, AiResponse>, AiError> {
+    let mut results = HashMap::new();
+    let mut remaining = contexts;
+
+    while !remaining.is_empty() {
+        // Find the largest prefix that fits within token limit
+        let split = find_chunk_boundary(remaining, config);
+        let chunk = &remaining[..split];
+
+        let chunk_result = analyze_batch(chunk, config)?;
+        results.extend(chunk_result);
+        remaining = &remaining[split..];
+    }
+
+    Ok(results)
+}
+
+/// Find how many contexts fit in one chunk without exceeding token limit.
+#[cfg(feature = "ai")]
+fn find_chunk_boundary(contexts: &[AiContext], config: &AiConfig) -> usize {
+    let mut high = contexts.len();
+    let mut low = 1;
+
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let prompt = build_prompt(&contexts[..mid], &config.language);
+        if estimate_tokens(&prompt) <= config.max_tokens_per_request {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    low
 }
 
 #[cfg(test)]

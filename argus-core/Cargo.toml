@@ -3,6 +3,10 @@ name = "argus-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+ai = ["dep:ureq"]
+
 [dependencies]
 jwalk = "0.8"
 serde = { version = "=1.0.217", features = ["derive"] }
@@ -14,6 +18,7 @@ sha2 = "=0.10"
 flate2 = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 bincode = "1"
+ureq = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

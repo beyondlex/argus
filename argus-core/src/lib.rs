@@ -6,8 +6,12 @@ pub mod model;
 pub mod scanner;
 
 pub use ai::{
-    build_prompt, estimate_tokens, try_parse_json, AiContext, AiError, AiLanguage, AiResponse,
+    build_prompt, estimate_tokens, try_parse_json, AiConfig, AiContext, AiError, AiLanguage,
+    AiResponse,
 };
+
+#[cfg(feature = "ai")]
+pub use ai::{analyze, call_ai_api};
 pub use db::{
     clear_all_events, consolidate_events, default_db_path, delete_ai_analysis, get_ai_analysis,
     has_ai_analysis, has_ai_analysis_batch, init_db, insert_events, load_all_ai_analyzed_paths,
