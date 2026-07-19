@@ -11,6 +11,20 @@ pub struct TuiConfig {
     pub browsing: BrowsingConfig,
     pub daemon: DaemonAccessConfig,
     pub labels: LabelConfig,
+    pub ai: AiConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiConfig {
+    pub language: String,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            language: "en-US".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +132,12 @@ struct RawConfig {
     browsing: Option<RawBrowsing>,
     daemon: Option<RawDaemon>,
     labels: Option<RawLabels>,
+    ai: Option<RawAi>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAi {
+    language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +257,12 @@ pub fn load_config(path: &Path) -> TuiConfig {
         }
     }
 
+    if let Some(a) = raw.ai {
+        if let Some(v) = a.language {
+            config.ai.language = v;
+        }
+    }
+
     config
 }
 
@@ -258,6 +284,7 @@ mod tests {
         assert!(config.theme.colors.contains_key("text_primary"));
         assert!(!config.browsing.auto_scan_on_start);
         assert_eq!(config.daemon.uds_path, argus_core::DEFAULT_UDS_PATH);
+        assert_eq!(config.ai.language, "en-US");
     }
 
     #[test]
@@ -405,5 +432,27 @@ custom_mappings = [
         assert_eq!(config.labels.custom_mappings[0].label, "iac-cache");
         assert_eq!(config.labels.custom_mappings[1].pattern, "*.pyc");
         assert_eq!(config.labels.custom_mappings[1].label, "python-bytecode");
+    }
+
+    #[test]
+    fn test_default_ai_language() {
+        let config = TuiConfig::default();
+        assert_eq!(config.ai.language, "en-US");
+    }
+
+    #[test]
+    fn test_load_config_ai_language() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[ai]
+language = "zh-CN"
+"#,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.ai.language, "zh-CN");
     }
 }

@@ -24,6 +24,10 @@ api_key = ""
 # 自定义中转 URL（兼容 OpenAI 格式的任意服务）
 api_url = ""
 
+# AI 输出语言（BCP 47 标签）。所有文本字段（label_detail, description, suggestion）
+# 将使用此语言返回。默认 en-US，用户可按需配置如 zh-CN、ja-JP 等。
+language = "en-US"
+
 # 单次请求 Token 上限保护
 max_tokens_per_request = 4096
 ```

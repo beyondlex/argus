@@ -1,9 +1,13 @@
+pub mod ai;
 pub mod bloom;
 pub mod db;
 pub mod ipc;
 pub mod model;
 pub mod scanner;
 
+pub use ai::{
+    build_prompt, estimate_tokens, try_parse_json, AiContext, AiError, AiLanguage, AiResponse,
+};
 pub use db::{
     clear_all_events, consolidate_events, default_db_path, delete_ai_analysis, get_ai_analysis,
     has_ai_analysis, has_ai_analysis_batch, init_db, insert_events, load_all_ai_analyzed_paths,

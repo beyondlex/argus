@@ -243,6 +243,36 @@ pub struct AiPathVerdict {
     pub deletable: bool,
 }
 
+impl AiPathVerdict {
+    /// Build a verdict from a program label and an AI response.
+    /// Maps the AI's risk_level string to the local RiskLevel enum.
+    pub fn from_response(
+        path: PathBuf,
+        size: u64,
+        label: String,
+        response: argus_core::AiResponse,
+    ) -> Self {
+        let risk_level = match response.risk_level.to_lowercase().as_str() {
+            "safe" => RiskLevel::Safe,
+            "low" => RiskLevel::Low,
+            "medium" => RiskLevel::Medium,
+            "high" => RiskLevel::High,
+            _ => RiskLevel::Medium,
+        };
+
+        Self {
+            path,
+            size,
+            label,
+            label_detail: response.label_detail,
+            purpose: response.description,
+            risk_level,
+            suggestion: response.suggestion,
+            deletable: response.deletable,
+        }
+    }
+}
+
 /// State for the AI review popup
 #[derive(Debug, Clone)]
 pub struct AiReviewState {
