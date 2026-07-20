@@ -156,6 +156,30 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
             }
             state.delete_confirm = Some((paths, false));
         }
+        KeyCode::Char('x') => {
+            if state.status != AiStatus::Ready || state.results.is_empty() {
+                return;
+            }
+            let (path, path_str, should_exit) = {
+                let path = state.results[state.cursor].path.clone();
+                let path_str = path.to_string_lossy().to_string();
+                state.results.remove(state.cursor);
+                if state.cursor >= state.results.len() && !state.results.is_empty() {
+                    state.cursor = state.results.len() - 1;
+                }
+                (path, path_str, state.results.is_empty())
+            };
+
+            app.ai_analyzed.remove(&path);
+            app.ai_cache.remove(&path);
+            if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
+                let _ = argus_core::delete_ai_analysis(&conn, &path_str);
+            }
+            app.set_info(format!("AI analysis data deleted: {}", path_str), 3);
+            if should_exit {
+                app.exit_ai_review();
+            }
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.exit_ai_review();
         }

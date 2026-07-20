@@ -474,7 +474,11 @@ impl App {
                             .insert(result.path.clone(), result.risk_level);
                     }
                     state.pending_paths.clear();
-                    state.results = results;
+                    state.results = {
+                        let mut r = results;
+                        r.sort_by(|a, b| a.path.cmp(&b.path));
+                        r
+                    };
                     state.status = AiStatus::Ready;
                 }
                 self.load_current_children();
@@ -1065,11 +1069,12 @@ impl App {
 
     /// Enter AI review mode for all multi-selected paths.
     pub fn enter_ai_review_multi(&mut self) {
-        let paths = self.selected_paths_full();
+        let mut paths = self.selected_paths_full();
         if paths.is_empty() {
             self.set_info("no items selected".into(), 3);
             return;
         }
+        paths.sort();
         let total = self.compute_pending_total_size(&paths);
         self.ai_state = Some(AiReviewState {
             results: Vec::new(),
@@ -1243,17 +1248,10 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        crate::util::log_msg(&log_path, &format!("AI error: {}", e));
-                        for (path, size, label) in &uncached {
-                            let verdict = mock_ai_verdict(path, *size);
-                            if let Some(ref conn) = conn {
-                                let path_str = path.to_string_lossy();
-                                if let Ok(data) = serde_json::to_vec(&verdict) {
-                                    let _ = argus_core::set_ai_analysis(conn, &path_str, &data);
-                                }
-                            }
-                            cached.push(verdict);
-                        }
+                        let msg = format!("AI error: {}", e);
+                        crate::util::log_msg(&log_path, &msg);
+                        let _ = tx.blocking_send(AppMessage::AiAnalysisError(msg));
+                        return;
                     }
                 }
             } else {

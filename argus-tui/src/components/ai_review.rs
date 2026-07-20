@@ -519,6 +519,8 @@ fn render_footer(state: &AiReviewState, theme: &ColorTheme) -> Vec<Span<'static>
         label("Delete  ", theme.text_tertiary),
         label(" i ", theme.accent),
         label("Info  ", theme.text_tertiary),
+        label(" x ", theme.accent),
+        label("Del-Analysis  ", theme.text_tertiary),
         label(" Esc ", theme.accent),
         label("Close", theme.text_tertiary),
     ];
