@@ -484,6 +484,7 @@ impl App {
                 self.load_current_children();
             }
             AppMessage::AiAnalysisError(msg) => {
+                self.set_error(format!("AI analysis error: {}", msg), 10);
                 if let Some(ref mut state) = self.ai_state {
                     state.results = Vec::new();
                     state.status = AiStatus::Error(msg);

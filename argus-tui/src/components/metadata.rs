@@ -4,10 +4,10 @@ use std::path::Path;
 use chrono::{DateTime, Local, Utc};
 
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -16,6 +16,44 @@ use crate::theme::ColorTheme;
 use crate::types::{AiPathVerdict, RiskLevel};
 use crate::util;
 use crate::util::key_hints;
+
+fn cjk_width(c: char) -> u16 {
+    if c >= '\u{2E80}' && c <= '\u{9FFF}' { 2 }
+    else if c >= '\u{F900}' && c <= '\u{FAFF}' { 2 }
+    else if c >= '\u{FE30}' && c <= '\u{FE6F}' { 2 }
+    else if c >= '\u{FF00}' && c <= '\u{FFEF}' { 2 }
+    else { 1 }
+}
+
+fn text_lines(text: &str, max_width: u16) -> u16 {
+    if max_width < 2 { return text.len().max(1) as u16; }
+    let mut col = 0u16;
+    let mut lines = 1u16;
+    for c in text.chars() {
+        let w = cjk_width(c);
+        if col + w > max_width {
+            lines += 1;
+            col = w;
+        } else {
+            col += w;
+        }
+    }
+    lines
+}
+
+fn render_label(f: &mut Frame, area: Rect, label: &str, theme: &ColorTheme) {
+    let p = Paragraph::new(Line::from(Span::styled(
+        label,
+        Style::default().fg(theme.text_secondary).bold(),
+    )));
+    f.render_widget(p, area);
+}
+
+fn render_val(f: &mut Frame, area: Rect, val: &str, _theme: &ColorTheme, color: ratatui::style::Color) {
+    let p = Paragraph::new(Line::from(Span::styled(val, Style::default().fg(color))))
+        .wrap(Wrap { trim: false });
+    f.render_widget(p, area);
+}
 
 /// Render a centered popup with file metadata
 pub fn render(
@@ -31,7 +69,8 @@ pub fn render(
 
     let block = popup_block(" File Info ", PopupStyle::Normal, theme)
         .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme)))
-        .title_alignment(Alignment::Right);
+        .title_alignment(Alignment::Right)
+        .padding(Padding::horizontal(2));
 
     let type_str = if metadata.is_dir() {
         "Directory"
@@ -63,7 +102,7 @@ pub fn render(
     let mode = metadata.permissions().mode();
     let perm_str = unix_mode_string(mode);
 
-    let path_str = path.to_string_lossy();
+    let path_str = path.to_string_lossy().to_string();
     let size_str = util::format_size(metadata.len());
 
     let (num_span, unit_span) = {
@@ -88,58 +127,85 @@ pub fn render(
         }
     };
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "Path:    ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(path_str, Style::default().fg(theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Size:    ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            num_span,
-            Span::styled(" ", Style::default()),
-            unit_span,
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Type:    ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(type_str, Style::default().fg(theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Modified:",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(
-                format!(" {}", modified.format("%Y-%m-%d %H:%M:%S")),
-                Style::default().fg(theme.text),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Created: ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(
-                format!(" {}", created.format("%Y-%m-%d %H:%M:%S")),
-                Style::default().fg(theme.text),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Perms:   ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(perm_str, Style::default().fg(theme.text)),
-        ]),
+    f.render_widget(Clear, popup_area);
+    f.render_widget(&block, popup_area);
+    let inner = block.inner(popup_area);
+
+    let mut rows = vec![
+        Constraint::Length(1), // Path
+        Constraint::Length(1), // Size
+        Constraint::Length(1), // Type
+        Constraint::Length(1), // Modified
+        Constraint::Length(1), // Created
+        Constraint::Length(1), // Perms
     ];
+    if let Some(ref ai) = ai {
+        let val_w = inner.width.saturating_sub(13).max(1);
+        rows.push(Constraint::Length(1)); // blank
+        rows.push(Constraint::Length(1)); // AI header
+        rows.push(Constraint::Length(1)); // blank
+        rows.push(Constraint::Length(1)); // Label
+        rows.push(Constraint::Length(1)); // Risk
+        rows.push(Constraint::Length(1)); // Size
+        rows.push(Constraint::Length(text_lines(&ai.purpose, val_w))); // Purpose
+        rows.push(Constraint::Length(text_lines(&ai.suggestion, val_w))); // Suggestion
+        if !ai.background.is_empty() {
+            rows.push(Constraint::Length(text_lines(&ai.background, val_w))); // Background
+        }
+    }
+
+    let row_areas = Layout::vertical(rows).split(inner);
+    let label_w = 13;
+    let mut r = 0;
+
+    // Path
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Path:", theme);
+    render_val(f, v, &path_str, theme, theme.text);
+    r += 1;
+
+    // Size
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Size:", theme);
+    let size_line = Line::from(vec![num_span, Span::styled(" ", Style::default()), unit_span]);
+    f.render_widget(Paragraph::new(size_line), v);
+    r += 1;
+
+    // Type
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Type:", theme);
+    render_val(f, v, type_str, theme, theme.text);
+    r += 1;
+
+    // Modified
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Modified:", theme);
+    render_val(f, v, &modified.format("%Y-%m-%d %H:%M:%S").to_string(), theme, theme.text);
+    r += 1;
+
+    // Created
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Created:", theme);
+    render_val(f, v, &created.format("%Y-%m-%d %H:%M:%S").to_string(), theme, theme.text);
+    r += 1;
+
+    // Perms
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Perms:", theme);
+    render_val(f, v, &perm_str, theme, theme.text);
+    r += 1;
 
     if let Some(ai) = ai {
         let risk_color = match ai.risk_level {
@@ -150,84 +216,98 @@ pub fn render(
         };
         let ai_size = util::format_size(ai.size);
 
-        lines.push(Line::from(Span::raw("")));
-        lines.push(Line::from(vec![Span::styled(
-            "── AI Analysis ──",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )]));
-        lines.push(Line::from(Span::raw("")));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Label:    ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(
+        // blank
+        r += 1;
+
+        // AI header
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "── AI Analysis ──",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            row_areas[r],
+        );
+        r += 1;
+
+        // blank
+        r += 1;
+
+        // Label
+        let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+            .flex(Flex::Start)
+            .areas(row_areas[r]);
+        render_label(f, l, "Label:", theme);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
                 &ai.label,
                 Style::default()
                     .fg(theme.text_highlight)
                     .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Risk:     ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(
+            ))),
+            v,
+        );
+        r += 1;
+
+        // Risk + Deletable
+        let [l, r1, r2] = Layout::horizontal([
+            Constraint::Length(label_w),
+            Constraint::Length(12),
+            Constraint::Min(0),
+        ])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+        render_label(f, l, "Risk:", theme);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
                 ai.risk_level.label(),
                 Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                if ai.deletable {
-                    "Deletable: Yes"
-                } else {
-                    "Deletable: No"
-                },
-                Style::default().fg(if ai.deletable {
-                    theme.success
-                } else {
-                    theme.danger
-                }),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Size:     ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(ai_size, Style::default().fg(theme.text)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Purpose:  ",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(&ai.purpose, Style::default().fg(theme.text_secondary)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Suggestion:",
-                Style::default().fg(theme.text_secondary).bold(),
-            ),
-            Span::styled(&ai.suggestion, Style::default().fg(theme.text_secondary)),
-        ]));
+            ))),
+            r1,
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                if ai.deletable { "Deletable: Yes" } else { "Deletable: No" },
+                Style::default().fg(if ai.deletable { theme.success } else { theme.danger }),
+            ))),
+            r2,
+        );
+        r += 1;
+
+        // Size
+        let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+            .flex(Flex::Start)
+            .areas(row_areas[r]);
+        render_label(f, l, "Size:", theme);
+        render_val(f, v, &ai_size, theme, theme.text);
+        r += 1;
+
+        // Purpose
+        let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+            .flex(Flex::Start)
+            .areas(row_areas[r]);
+        render_label(f, l, "Purpose:", theme);
+        render_val(f, v, &ai.purpose, theme, theme.text_secondary);
+        r += 1;
+
+        // Suggestion
+        let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+            .flex(Flex::Start)
+            .areas(row_areas[r]);
+        render_label(f, l, "Suggestion:", theme);
+        render_val(f, v, &ai.suggestion, theme, theme.text_secondary);
+        r += 1;
+
+        // Background
         if !ai.background.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Background:", Style::default().fg(theme.text_secondary).bold()),
-                Span::styled(&ai.background, Style::default().fg(theme.text_secondary)),
-            ]));
+            let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+                .flex(Flex::Start)
+                .areas(row_areas[r]);
+            render_label(f, l, "Background:", theme);
+            render_val(f, v, &ai.background, theme, theme.text_secondary);
         }
     }
-
-    let text = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(Clear, popup_area);
-    f.render_widget(text, popup_area);
 }
 
 fn unix_mode_string(mode: u32) -> String {
