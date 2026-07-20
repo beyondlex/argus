@@ -28,8 +28,12 @@ pub struct AiResponse {
     pub description: String,
     /// "safe" | "low" | "medium" | "high"
     pub risk_level: String,
-    /// Governance advice (what to do with this directory)
+    /// Governance advice (what to do with this directory).
+    /// Must include: what happens if the user deletes it (consequences).
     pub suggestion: String,
+    /// Background knowledge explaining what the software/tool is.
+    /// Helps users who are unfamiliar with the term.
+    pub background: String,
     /// Whether the AI recommends deletion
     pub deletable: bool,
     /// Confidence score 0.0-1.0
@@ -86,7 +90,7 @@ pub fn build_prompt(contexts: &[AiContext], language: &str) -> String {
 
     format!(
         r#"You are a disk cleanup expert for macOS and Linux.
-Respond in {language}. All text fields (label_detail, description, suggestion) must be in {language}.
+Respond in {language}. All text fields (label_detail, description, suggestion, background) must be in {language}.
 
 Analyze the following directories. Return a JSON object where keys are directory paths
 and values have this exact schema:
@@ -96,11 +100,24 @@ and values have this exact schema:
     "label_detail": "specific source entity name",
     "description": "what this directory is used for",
     "risk_level": "safe|low|medium|high",
-    "suggestion": "governance advice",
+    "suggestion": "governance advice including what happens if deleted",
+    "background": "brief explanation of what this software/tool is for users unfamiliar with it",
     "deletable": true,
     "confidence": 0.95
   }}
 }}
+
+Rules:
+- "suggestion" MUST include what happens if the user deletes this directory
+  (e.g. "Safe to delete. Will be recreated on next build." or "Do NOT delete — removes version history.")
+- "background" must explain what the associated software/tool is in simple terms
+  (e.g. "A build tool that compiles source code." or "A web server and reverse proxy.")
+  If the directory is not tied to a specific well-known tool, set background to an empty string.
+- CRITICAL: Use the FULL directory path to determine the software/tool, not just the leaf directory name.
+  A directory named "Biome" under /Users/*/Library/ is a macOS application data directory, not the
+  JavaScript/TypeScript formatter tool. Consider parent directories like Library, Application Support,
+  Cache, Preferences, .config, .cache, node_modules, .npm, .cargo, etc. to classify correctly.
+  Different paths with the same leaf name can be completely different things.
 
 The "label" field (program category like "build-artifacts", "package-dependencies") is
 determined automatically by the program. Do NOT output a label field.
@@ -299,7 +316,7 @@ mod tests {
         assert!(prompt.contains("en-US"));
         assert!(prompt.contains("label_detail"));
         assert!(prompt.contains("risk_level"));
-        assert!(prompt.contains("\"label\" field (program category"));
+        assert!(prompt.contains("background"));
     }
 
     #[test]
@@ -329,6 +346,7 @@ mod tests {
                 "description": "HTTP server access and error logs",
                 "risk_level": "safe",
                 "suggestion": "Configure log rotation or use fail2ban",
+                "background": "Nginx is a web server and reverse proxy.",
                 "deletable": true,
                 "confidence": 0.95
             }
@@ -350,6 +368,7 @@ mod tests {
                 "description": "HTTP logs",
                 "risk_level": "safe",
                 "suggestion": "Rotate logs",
+                "background": "Nginx is a web server.",
                 "deletable": true,
                 "confidence": 0.9
             },
@@ -358,6 +377,7 @@ mod tests {
                 "description": "Python package build cache",
                 "risk_level": "safe",
                 "suggestion": "Safe to delete",
+                "background": "",
                 "deletable": true,
                 "confidence": 0.85
             }

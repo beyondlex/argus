@@ -214,6 +214,12 @@ pub fn render(
             ),
             Span::styled(&ai.suggestion, Style::default().fg(theme.text_secondary)),
         ]));
+        if !ai.background.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Background:", Style::default().fg(theme.text_secondary).bold()),
+                Span::styled(&ai.background, Style::default().fg(theme.text_secondary)),
+            ]));
+        }
     }
 
     let text = Paragraph::new(lines)

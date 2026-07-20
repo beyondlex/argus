@@ -240,6 +240,9 @@ pub struct AiPathVerdict {
     pub purpose: String,
     pub risk_level: RiskLevel,
     pub suggestion: String,
+    /// Background knowledge explaining what the software/tool is
+    /// (e.g. "Biome is a code formatter and linter written in Rust.")
+    pub background: String,
     pub deletable: bool,
 }
 
@@ -268,6 +271,7 @@ impl AiPathVerdict {
             purpose: response.description,
             risk_level,
             suggestion: response.suggestion,
+            background: response.background,
             deletable: response.deletable,
         }
     }

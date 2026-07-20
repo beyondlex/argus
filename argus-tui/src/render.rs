@@ -95,9 +95,9 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
-    const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
     let width = (area.width * 70 / 100).max(40).min(area.width).min(120);
     let height: u16 = 7.min(area.height);
     let x = area.x + (area.width.saturating_sub(width)) / 2;

@@ -98,7 +98,16 @@ fn collect_items(path: &Path, items: &mut Vec<PathBuf>) {
     items.push(path.to_path_buf());
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            collect_items(&entry.path(), items);
+            let path = entry.path();
+            // Don't follow symlinks — add them as leaf items but don't recurse
+            let is_symlink = std::fs::symlink_metadata(&path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            if is_symlink {
+                items.push(path);
+            } else {
+                collect_items(&path, items);
+            }
         }
     }
 }
@@ -130,8 +139,13 @@ fn delete_dir_progressive(
 
     let mut errors = Vec::new();
     for (i, item) in items.iter().enumerate() {
+        let is_symlink = std::fs::symlink_metadata(item)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
         let result = if permanent {
-            if item.is_dir() {
+            if is_symlink {
+                std::fs::remove_file(item)
+            } else if item.is_dir() {
                 std::fs::remove_dir(item)
             } else {
                 std::fs::remove_file(item)
@@ -141,7 +155,11 @@ fn delete_dir_progressive(
             trash::delete(item).map_err(|e| e.to_string())
         };
         if let Err(e) = result {
-            errors.push(format!("{}: {}", item.display(), e));
+            // Skip "not found" errors — path may have been removed by a prior step
+            // (e.g. a parent symlink was deleted, or the file was already cleaned up)
+            if !e.contains("No such file or directory") {
+                errors.push(format!("{}: {}", item.display(), e));
+            }
         }
         let _ = tx.blocking_send(AppMessage::DeleteProgress {
             current: (i + 1) as u64,

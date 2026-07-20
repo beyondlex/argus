@@ -89,6 +89,10 @@ pub struct App {
     pub delete_progress: Option<(u64, u64)>,
     pub delete_permanent: bool,
 
+    // AI spinner for loading animation
+    pub ai_spinner: u8,
+    pub ai_spinner_tick: Instant,
+
     // Multi-select state
     pub multi_select: bool,
     pub selected_paths: HashSet<Vec<String>>,
@@ -220,6 +224,8 @@ impl App {
             deleting: false,
             delete_progress: None,
             delete_permanent: false,
+            ai_spinner: 0,
+            ai_spinner_tick: Instant::now(),
             multi_select: false,
             selected_paths: HashSet::new(),
             deleted_bytes: 0,
@@ -305,6 +311,20 @@ impl App {
                         root_scan_tree,
                         &mut Vec::new(),
                     );
+
+                    // Recompute root totals from enriched children
+                    let mut total_size = 0u64;
+                    let mut total_disk = 0u64;
+                    for &child_idx in snap.children(ROOT_NODE) {
+                        let c = snap.node(child_idx);
+                        total_size = total_size.saturating_add(c.size());
+                        total_disk = total_disk.saturating_add(c.disk_usage());
+                    }
+                    snap.root_mut().set_size(total_size);
+                    snap.root_mut().set_disk_usage(total_disk);
+                    snap.total_size = total_size;
+                    snap.total_disk_usage = total_disk;
+
                     self.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
                 }
                 Err(e) => {
@@ -637,7 +657,14 @@ impl App {
     /// and `parent_dir_total`.
     pub fn load_current_children(&mut self) {
         // Search matches are stale after children reload
+        self.search_word.clear();
         self.search_match_indices.clear();
+        self.search_mode = SearchMode::Inactive;
+
+        // Rebuild tree at root level to pick up scan cache updates from deletions
+        if self.current_dir_path.len() <= 1 {
+            self.build_current_tree();
+        }
 
         // Check if listing is needed before taking any borrow on tree_root
         let needs_listing = self.current_dir_path.len() > 1
@@ -1306,13 +1333,14 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
         .unwrap_or_default();
     let name_lower = name.to_lowercase();
 
-    let (label, purpose, risk_level, suggestion, deletable) = match name_lower.as_str() {
+    let (label, purpose, risk_level, suggestion, deletable, background) = match name_lower.as_str() {
         "target" | "build" | "builds" | "dist" | "out" | "output" => (
             labels::BUILD_ARTIFACTS,
             "Compiled output from the build process. Contains object files, binaries, and intermediate build products.",
             RiskLevel::Safe,
             "Safe to delete. Will be recreated on next build. Deleting frees significant disk space.",
             true,
+            "Rust (Cargo) or other compiled language build system. Produces binaries and intermediate artifacts.",
         ),
         "node_modules" | "vendor" | "bower_components" => (
             labels::PACKAGE_DEPENDENCIES,
@@ -1320,6 +1348,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Safe,
             "Safe to delete. Can be restored with the package manager's install command.",
             true,
+            "npm (Node.js) / yarn / Composer (PHP) package manager directory. Contains all external libraries used by the project.",
         ),
         ".git" | ".svn" | ".hg" => (
             labels::VCS_DATA,
@@ -1327,6 +1356,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::High,
             "Do NOT delete unless you want to remove version history. May break git/svn operations.",
             false,
+            "Git is a distributed version control system. Deleting .git erases all commit history.",
         ),
         ".cache" | "cache" | "caches" => (
             labels::APP_CACHE,
@@ -1334,6 +1364,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Safe,
             "Safe to delete. Caches will be regenerated as needed. Deleting may slow down first use.",
             true,
+            "",
         ),
         "logs" | "log" => (
             labels::LOG_FILES,
@@ -1341,6 +1372,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Safe,
             "Safe to delete if you don't need historical logs. May help with debugging if kept.",
             true,
+            "",
         ),
         ".terraform" | ".serverless" | ".next" | ".nuxt" => (
             labels::FRAMEWORK_CACHE,
@@ -1348,6 +1380,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Safe,
             "Safe to delete. Will be regenerated on next deploy or build.",
             true,
+            "Terraform: infrastructure-as-code tool. Serverless: serverless framework. Next.js/Nuxt: JavaScript frameworks.",
         ),
         "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => (
             labels::TEMP_FILES,
@@ -1355,6 +1388,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Safe,
             "Safe to delete. These are temporary files not needed for normal operation.",
             true,
+            "",
         ),
         "downloads" | ".download" => (
             labels::DOWNLOADS,
@@ -1362,6 +1396,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             RiskLevel::Low,
             "Review contents before deleting. Safe to delete installers and temporary downloads.",
             true,
+            "",
         ),
         _ => {
             if name.starts_with('.') {
@@ -1371,6 +1406,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
                     RiskLevel::Medium,
                     "Check which application owns this directory before deleting. May lose app settings.",
                     true,
+                    "",
                 )
             } else {
                 (
@@ -1379,6 +1415,8 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
                     RiskLevel::Medium,
                     "Review contents manually before deciding to delete.",
                     true,
+                    "",
+
                 )
             }
         }
@@ -1392,6 +1430,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
         purpose: purpose.to_string(),
         risk_level,
         suggestion: suggestion.to_string(),
+        background: background.to_string(),
         deletable,
     }
 }

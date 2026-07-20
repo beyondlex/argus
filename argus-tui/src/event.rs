@@ -126,6 +126,14 @@ fn advance_timers(
         dirty = true;
     }
 
+    if app.ai_state.as_ref().is_some_and(|s| matches!(s.status, crate::types::AiStatus::Loading))
+        && app.ai_spinner_tick.elapsed() >= spinner_rate
+    {
+        app.ai_spinner = (app.ai_spinner + 1) % 10;
+        app.ai_spinner_tick = Instant::now();
+        dirty = true;
+    }
+
     if app.deleting {
         dirty = true;
     }

@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::components::popup;
+use crate::render::SPINNER_FRAMES;
 use crate::theme::ColorTheme;
 use crate::types::{AiReviewState, AiStatus, RiskLevel};
 use crate::util;
@@ -7,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -31,10 +32,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         .title_alignment(Alignment::Center);
 
     let title = match state.status {
-        AiStatus::Loading => " AI Analysis (loading...) ",
-        AiStatus::Ready => " AI Analysis ",
-        AiStatus::Error(_) => " AI Analysis (error) ",
-        AiStatus::Idle => " AI Analysis ",
+        AiStatus::Loading => format!(
+            " AI Analysis [{}] ",
+            SPINNER_FRAMES[app.ai_spinner as usize % SPINNER_FRAMES.len()]
+        ),
+        AiStatus::Ready => " AI Analysis ".to_string(),
+        AiStatus::Error(_) => " AI Analysis (error) ".to_string(),
+        AiStatus::Idle => " AI Analysis ".to_string(),
     };
     let block = block.title(title);
 
@@ -146,8 +150,21 @@ fn render_info_popup(
         )]),
     ];
 
+    let mut lines = lines;
+    if !result.background.is_empty() {
+        lines.push(Line::from(vec![Span::raw("")]));
+        lines.push(Line::from(vec![Span::styled(
+            "Background: ",
+            Style::default().fg(theme.text_tertiary),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            result.background.clone(),
+            Style::default().fg(theme.text_secondary),
+        )]));
+    }
+
     let text = Paragraph::new(lines)
-        .block(Block::default())
+        .block(Block::default().padding(Padding::left(1)))
         .wrap(Wrap { trim: false });
     f.render_widget(text, inner);
 }
