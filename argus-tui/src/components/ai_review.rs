@@ -5,10 +5,10 @@ use crate::theme::ColorTheme;
 use crate::types::{AiReviewState, AiStatus, RiskLevel};
 use crate::util;
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -66,6 +66,44 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+fn render_label(f: &mut Frame, area: Rect, label: &str, theme: &ColorTheme) {
+    let p = Paragraph::new(Line::from(Span::styled(
+        label,
+        Style::default().fg(theme.text_tertiary),
+    )));
+    f.render_widget(p, area);
+}
+
+fn render_val(f: &mut Frame, area: Rect, val: &str, color: ratatui::style::Color) {
+    let p = Paragraph::new(Line::from(Span::styled(val, Style::default().fg(color))))
+        .wrap(Wrap { trim: false });
+    f.render_widget(p, area);
+}
+
+fn cjk_width(c: char) -> u16 {
+    if c >= '\u{2E80}' && c <= '\u{9FFF}' { 2 }
+    else if c >= '\u{F900}' && c <= '\u{FAFF}' { 2 }
+    else if c >= '\u{FE30}' && c <= '\u{FE6F}' { 2 }
+    else if c >= '\u{FF00}' && c <= '\u{FFEF}' { 2 }
+    else { 1 }
+}
+
+fn text_lines(text: &str, max_width: u16) -> u16 {
+    if max_width < 2 { return text.len().max(1) as u16; }
+    let mut col = 0u16;
+    let mut lines = 1u16;
+    for c in text.chars() {
+        let w = cjk_width(c);
+        if col + w > max_width {
+            lines += 1;
+            col = w;
+        } else {
+            col += w;
+        }
+    }
+    lines
+}
+
 fn render_info_popup(
     f: &mut Frame,
     area: Rect,
@@ -92,81 +130,99 @@ fn render_info_popup(
 
     let path_str = result.path.to_string_lossy();
     let size_str = util::format_size(result.size);
+    let label_w = 13;
+    let val_w = inner.width.saturating_sub(label_w).max(1);
 
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Path: ", Style::default().fg(theme.text_tertiary)),
-            Span::styled(path_str.to_string(), Style::default().fg(theme.text)),
-        ]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![
-            Span::styled("Label: ", Style::default().fg(theme.text_tertiary)),
-            Span::styled(
-                result.label.clone(),
-                Style::default()
-                    .fg(theme.text_highlight)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Size: ", Style::default().fg(theme.text_tertiary)),
-            Span::styled(size_str, Style::default().fg(theme.text)),
-        ]),
-        Line::from(vec![
-            Span::styled("Risk: ", Style::default().fg(theme.text_tertiary)),
-            Span::styled(
-                result.risk_level.label(),
-                Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Deletable: ", Style::default().fg(theme.text_tertiary)),
-            Span::styled(
-                if result.deletable { "Yes" } else { "No" },
-                Style::default().fg(if result.deletable {
-                    theme.success
-                } else {
-                    theme.danger
-                }),
-            ),
-        ]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled(
-            "Purpose: ",
-            Style::default().fg(theme.text_tertiary),
-        )]),
-        Line::from(vec![Span::styled(
-            result.purpose.clone(),
-            Style::default().fg(theme.text_secondary),
-        )]),
-        Line::from(vec![Span::raw("")]),
-        Line::from(vec![Span::styled(
-            "Suggestion: ",
-            Style::default().fg(theme.text_tertiary),
-        )]),
-        Line::from(vec![Span::styled(
-            result.suggestion.clone(),
-            Style::default().fg(theme.text_secondary),
-        )]),
+    let mut rows = vec![
+        Constraint::Length(1), // Path
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // Label
+        Constraint::Length(1), // Size
+        Constraint::Length(1), // Risk + Deletable
+        Constraint::Length(1), // blank
+        Constraint::Length(text_lines(&result.purpose, val_w)), // Purpose
+        Constraint::Length(1), // blank
+        Constraint::Length(text_lines(&result.suggestion, val_w)), // Suggestion
     ];
-
-    let mut lines = lines;
     if !result.background.is_empty() {
-        lines.push(Line::from(vec![Span::raw("")]));
-        lines.push(Line::from(vec![Span::styled(
-            "Background: ",
-            Style::default().fg(theme.text_tertiary),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            result.background.clone(),
-            Style::default().fg(theme.text_secondary),
-        )]));
+        rows.push(Constraint::Length(1)); // blank
+        rows.push(Constraint::Length(text_lines(&result.background, val_w))); // Background
     }
 
-    let text = Paragraph::new(lines)
-        .block(Block::default().padding(Padding::left(1)))
-        .wrap(Wrap { trim: false });
-    f.render_widget(text, inner);
+    let row_areas = Layout::vertical(rows).split(inner);
+    let mut r = 0;
+
+    // Path
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Path:", theme);
+    render_val(f, v, &path_str, theme.text);
+    r += 1;
+
+    // blank
+    r += 1;
+
+    // Label
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Label:", theme);
+    render_val(f, v, &result.label, theme.text_highlight);
+    r += 1;
+
+    // Size
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Size:", theme);
+    render_val(f, v, &size_str, theme.text);
+    r += 1;
+
+    // Risk
+    let [l, r1, r2] = Layout::horizontal([Constraint::Length(label_w), Constraint::Length(8), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Risk:", theme);
+    render_val(f, r1, result.risk_level.label(), risk_color);
+    render_val(
+        f, r2,
+        &if result.deletable { "Deletable: Yes" } else { "Deletable: No" },
+        if result.deletable { theme.success } else { theme.danger },
+    );
+    r += 1;
+
+    // blank
+    r += 1;
+
+    // Purpose
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Purpose:", theme);
+    render_val(f, v, &result.purpose, theme.text_secondary);
+    r += 1;
+
+    // blank
+    r += 1;
+
+    // Suggestion
+    let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+        .flex(Flex::Start)
+        .areas(row_areas[r]);
+    render_label(f, l, "Suggestion:", theme);
+    render_val(f, v, &result.suggestion, theme.text_secondary);
+    r += 1;
+
+    // Background
+    if !result.background.is_empty() {
+        r += 1; // blank
+        let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+            .flex(Flex::Start)
+            .areas(row_areas[r]);
+        render_label(f, l, "Background:", theme);
+        render_val(f, v, &result.background, theme.text_secondary);
+    }
 }
 
 fn render_delete_confirm(f: &mut Frame, area: Rect, state: &AiReviewState, theme: &ColorTheme) {
