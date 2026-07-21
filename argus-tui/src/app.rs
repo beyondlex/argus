@@ -655,6 +655,15 @@ impl App {
         Some(path)
     }
 
+    /// Sum of `size` for all selected entries in `current_children`.
+    pub fn selected_total_size(&self) -> u64 {
+        self.current_children
+            .iter()
+            .filter(|e| self.selected_paths.contains(&e.path))
+            .map(|e| e.size)
+            .sum()
+    }
+
     // ── Flat mode methods ───────────────────────────────────────────────
 
     /// Load children of the current directory from the snapshot into `current_children`.

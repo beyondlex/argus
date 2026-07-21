@@ -82,6 +82,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         app.sort_mode,
         app.multi_select,
         app.selected_paths.len(),
+        app.selected_total_size(),
         &app.theme,
         app.time_custom,
         app.time_preset,

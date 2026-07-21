@@ -20,6 +20,7 @@ pub fn render(
     sort_mode: SortMode,
     multi_select: bool,
     multi_select_count: usize,
+    multi_select_size: u64,
     theme: &ColorTheme,
     time_custom: bool,
     time_preset: usize,
@@ -36,7 +37,11 @@ pub fn render(
     // Multi-select indicator
     if multi_select {
         left_spans.push(Span::styled(
-            format!(" ● MULTI({}) ", multi_select_count),
+            format!(
+                " ● MULTI({}) {} ",
+                multi_select_count,
+                util::format_size(multi_select_size)
+            ),
             Style::default()
                 .fg(theme.text_highlight)
                 .add_modifier(ratatui::style::Modifier::BOLD),
