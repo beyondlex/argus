@@ -83,6 +83,7 @@ fn remove_path_from_snapshot(snapshot: &mut Snapshot, deleted_path: &Path) -> bo
     let removed = prune_file_node(snapshot, ROOT_NODE, &components, 0);
     if removed {
         snapshot.total_size = snapshot.node(ROOT_NODE).size();
+        snapshot.total_disk_usage = snapshot.node(ROOT_NODE).disk_usage();
     }
     removed
 }
@@ -137,6 +138,7 @@ fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
         // Leaf or emptied dir: keep file size; dirs with no children become 0 if they were dirs
         if snap.node(idx).is_dir() {
             snap.node_mut(idx).set_size(0);
+            snap.node_mut(idx).set_disk_usage(0);
             return 0;
         }
         return snap.node(idx).size();
@@ -144,10 +146,13 @@ fn recompute_file_node_size(snap: &mut Snapshot, idx: NodeIndex) -> u64 {
 
     let children: Vec<NodeIndex> = snap.children_clone(idx);
     let mut total = 0u64;
+    let mut total_du = 0u64;
     for child_idx in children {
         total = total.saturating_add(recompute_file_node_size(snap, child_idx));
+        total_du = total_du.saturating_add(snap.node(child_idx).disk_usage());
     }
     snap.node_mut(idx).set_size(total);
+    snap.node_mut(idx).set_disk_usage(total_du);
     total
 }
 
