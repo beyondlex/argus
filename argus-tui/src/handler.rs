@@ -1,7 +1,9 @@
 mod ai_review;
 mod browsing;
 mod command;
+mod delta_detail;
 mod finder;
+mod info;
 mod prompt;
 mod search;
 
@@ -22,6 +24,8 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::Command => command::handle_command_key(key, app),
         AppMode::Finder => finder::handle_finder_key(key, app),
         AppMode::AiReview => ai_review::handle_ai_review_key(key, app),
+        AppMode::Info => info::handle_info_key(key, app),
+        AppMode::DeltaDetail => delta_detail::handle_delta_detail_key(key, app),
         AppMode::QuitConfirm => prompt::handle_quit_confirm_key(key, app),
         AppMode::MultiSelectExitConfirm => prompt::handle_multi_select_exit_confirm_key(key, app),
     }

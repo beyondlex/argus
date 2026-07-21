@@ -227,16 +227,18 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
         AppMode::AiReview => {
             ai_review::render(f, area, app);
         }
+        AppMode::Info => {
+            if let Some((path, meta)) = &app.info_data {
+                metadata::render(f, area, path, meta, app.info_ai.as_ref(), &app.theme);
+            }
+        }
+        AppMode::DeltaDetail => {
+            if let Some(ref state) = app.delta_detail {
+                crate::components::delta_detail::render(f, area, state, &app.theme);
+            }
+        }
         AppMode::QuitConfirm => render_quit_confirm(f, area, app),
         AppMode::MultiSelectExitConfirm => render_multi_select_exit_confirm(f, area, app),
-    }
-
-    if let Some((path, meta)) = &app.info_data {
-        metadata::render(f, area, path, meta, app.info_ai.as_ref(), &app.theme);
-    }
-
-    if let Some(ref state) = app.delta_detail {
-        crate::components::delta_detail::render(f, area, state, &app.theme);
     }
 }
 
@@ -466,9 +468,7 @@ fn render_multi_select_exit_confirm(f: &mut Frame, area: Rect, app: &App) {
         popup::PopupStyle::Normal,
         &app.theme,
     )
-    .title_bottom(
-        Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], &app.theme)).centered(),
-    );
+    .title_bottom(Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], &app.theme)).centered());
 
     let text = Paragraph::new(vec![
         Line::from(vec![Span::raw("")]),

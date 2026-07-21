@@ -1171,9 +1171,8 @@ impl App {
 
         std::thread::spawn(move || {
             let conn = argus_core::open_db(&db_path).ok();
-            let use_ai = ai_config.enabled
-                && !ai_config.api_url.is_empty()
-                && !ai_config.api_key.is_empty();
+            let use_ai =
+                ai_config.enabled && !ai_config.api_url.is_empty() && !ai_config.api_key.is_empty();
 
             // First pass: check DB cache, prepare uncached paths
             let mut cached: Vec<AiPathVerdict> = Vec::new();

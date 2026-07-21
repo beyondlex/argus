@@ -16,21 +16,20 @@ use crate::theme::ColorTheme;
 use crate::types::{AiPathVerdict, RiskLevel};
 use crate::util;
 use crate::util::key_hints;
+use unicode_width::UnicodeWidthChar;
 
-fn cjk_width(c: char) -> u16 {
-    if c >= '\u{2E80}' && c <= '\u{9FFF}' { 2 }
-    else if c >= '\u{F900}' && c <= '\u{FAFF}' { 2 }
-    else if c >= '\u{FE30}' && c <= '\u{FE6F}' { 2 }
-    else if c >= '\u{FF00}' && c <= '\u{FFEF}' { 2 }
-    else { 1 }
+fn char_width(c: char) -> u16 {
+    UnicodeWidthChar::width(c).unwrap_or(0) as u16
 }
 
 fn text_lines(text: &str, max_width: u16) -> u16 {
-    if max_width < 2 { return text.len().max(1) as u16; }
+    if max_width < 2 {
+        return text.len().max(1) as u16;
+    }
     let mut col = 0u16;
     let mut lines = 1u16;
     for c in text.chars() {
-        let w = cjk_width(c);
+        let w = char_width(c);
         if col + w > max_width {
             lines += 1;
             col = w;
@@ -49,7 +48,13 @@ fn render_label(f: &mut Frame, area: Rect, label: &str, theme: &ColorTheme) {
     f.render_widget(p, area);
 }
 
-fn render_val(f: &mut Frame, area: Rect, val: &str, _theme: &ColorTheme, color: ratatui::style::Color) {
+fn render_val(
+    f: &mut Frame,
+    area: Rect,
+    val: &str,
+    _theme: &ColorTheme,
+    color: ratatui::style::Color,
+) {
     let p = Paragraph::new(Line::from(Span::styled(val, Style::default().fg(color))))
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
@@ -171,7 +176,11 @@ pub fn render(
         .flex(Flex::Start)
         .areas(row_areas[r]);
     render_label(f, l, "Size:", theme);
-    let size_line = Line::from(vec![num_span, Span::styled(" ", Style::default()), unit_span]);
+    let size_line = Line::from(vec![
+        num_span,
+        Span::styled(" ", Style::default()),
+        unit_span,
+    ]);
     f.render_widget(Paragraph::new(size_line), v);
     r += 1;
 
@@ -188,7 +197,13 @@ pub fn render(
         .flex(Flex::Start)
         .areas(row_areas[r]);
     render_label(f, l, "Modified:", theme);
-    render_val(f, v, &modified.format("%Y-%m-%d %H:%M:%S").to_string(), theme, theme.text);
+    render_val(
+        f,
+        v,
+        &modified.format("%Y-%m-%d %H:%M:%S").to_string(),
+        theme,
+        theme.text,
+    );
     r += 1;
 
     // Created
@@ -196,7 +211,13 @@ pub fn render(
         .flex(Flex::Start)
         .areas(row_areas[r]);
     render_label(f, l, "Created:", theme);
-    render_val(f, v, &created.format("%Y-%m-%d %H:%M:%S").to_string(), theme, theme.text);
+    render_val(
+        f,
+        v,
+        &created.format("%Y-%m-%d %H:%M:%S").to_string(),
+        theme,
+        theme.text,
+    );
     r += 1;
 
     // Perms
@@ -268,8 +289,16 @@ pub fn render(
         );
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                if ai.deletable { "Deletable: Yes" } else { "Deletable: No" },
-                Style::default().fg(if ai.deletable { theme.success } else { theme.danger }),
+                if ai.deletable {
+                    "Deletable: Yes"
+                } else {
+                    "Deletable: No"
+                },
+                Style::default().fg(if ai.deletable {
+                    theme.success
+                } else {
+                    theme.danger
+                }),
             ))),
             r2,
         );

@@ -6,31 +6,6 @@ use crate::ipc_client::IpcClient;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
-    // If delta detail popup is open, intercept j/k for scroll and Esc to dismiss
-    if app.delta_detail.is_some() {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ref mut state) = app.delta_detail {
-                    if delta_detail_needs_scroll(state) && state.scroll + 1 < state.entries.len() {
-                        state.scroll += 1;
-                    }
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(ref mut state) = app.delta_detail {
-                    if delta_detail_needs_scroll(state) {
-                        state.scroll = state.scroll.saturating_sub(1);
-                    }
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                app.delta_detail = None;
-            }
-            _ => {}
-        }
-        return;
-    }
-
     if app.scanning {
         if key.code == KeyCode::Esc {
             app.cancel_scan.store(true, Ordering::Relaxed);
@@ -164,12 +139,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.enter_ai_review_multi();
         }
         KeyCode::Char('q') => {
-            if app.info_data.is_some() {
-                app.info_data = None;
-                app.info_ai = None;
-            } else {
-                app.mode = AppMode::QuitConfirm;
-            }
+            app.mode = AppMode::QuitConfirm;
         }
         KeyCode::Char('y') => handle_copy_path(app),
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => app.should_quit = true,
@@ -179,11 +149,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
             app.clear_filter_pane();
         }
-        KeyCode::Esc => {
-            app.info_data = None;
-            app.info_ai = None;
-            app.delta_detail = None;
-        }
+        KeyCode::Esc => {}
         _ => {}
     }
     if key.code != KeyCode::Char('g') {
@@ -284,6 +250,7 @@ pub(crate) fn handle_info_popup(app: &mut App) {
                 }
                 None
             });
+            app.mode = AppMode::Info;
         }
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }
@@ -309,6 +276,7 @@ pub(crate) fn handle_delta_detail_popup(app: &mut App) {
     let Some(path) = app.selected_node_full_path() else {
         return;
     };
+    app.mode = AppMode::DeltaDetail;
     crate::components::delta_detail::load_delta_detail(app, &path);
 }
 
@@ -374,15 +342,6 @@ pub(crate) fn move_cursor(app: &mut App, delta: isize) {
     } else {
         app.cursor = new_cursor as usize;
     }
-}
-
-/// Returns true if delta detail entries exceed the popup viewport (scroll needed).
-fn delta_detail_needs_scroll(state: &crate::types::DeltaDetailState) -> bool {
-    let visible_rows = crossterm::terminal::size()
-        .ok()
-        .map(|(_, h)| ((h as f64 * 0.65) as usize).saturating_sub(4))
-        .unwrap_or(10);
-    state.entries.len() > visible_rows
 }
 
 pub fn start_scan(app: &mut App) {

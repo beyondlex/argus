@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 const ITEM_LINES: usize = 4;
 
@@ -80,20 +81,18 @@ fn render_val(f: &mut Frame, area: Rect, val: &str, color: ratatui::style::Color
     f.render_widget(p, area);
 }
 
-fn cjk_width(c: char) -> u16 {
-    if c >= '\u{2E80}' && c <= '\u{9FFF}' { 2 }
-    else if c >= '\u{F900}' && c <= '\u{FAFF}' { 2 }
-    else if c >= '\u{FE30}' && c <= '\u{FE6F}' { 2 }
-    else if c >= '\u{FF00}' && c <= '\u{FFEF}' { 2 }
-    else { 1 }
+fn char_width(c: char) -> u16 {
+    UnicodeWidthChar::width(c).unwrap_or(0) as u16
 }
 
 fn text_lines(text: &str, max_width: u16) -> u16 {
-    if max_width < 2 { return text.len().max(1) as u16; }
+    if max_width < 2 {
+        return text.len().max(1) as u16;
+    }
     let mut col = 0u16;
     let mut lines = 1u16;
     for c in text.chars() {
-        let w = cjk_width(c);
+        let w = char_width(c);
         if col + w > max_width {
             lines += 1;
             col = w;
@@ -134,14 +133,14 @@ fn render_info_popup(
     let val_w = inner.width.saturating_sub(label_w).max(1);
 
     let mut rows = vec![
-        Constraint::Length(1), // Path
-        Constraint::Length(1), // blank
-        Constraint::Length(1), // Label
-        Constraint::Length(1), // Size
-        Constraint::Length(1), // Risk + Deletable
-        Constraint::Length(1), // blank
-        Constraint::Length(text_lines(&result.purpose, val_w)), // Purpose
-        Constraint::Length(1), // blank
+        Constraint::Length(1),                                     // Path
+        Constraint::Length(1),                                     // blank
+        Constraint::Length(1),                                     // Label
+        Constraint::Length(1),                                     // Size
+        Constraint::Length(1),                                     // Risk + Deletable
+        Constraint::Length(1),                                     // blank
+        Constraint::Length(text_lines(&result.purpose, val_w)),    // Purpose
+        Constraint::Length(1),                                     // blank
         Constraint::Length(text_lines(&result.suggestion, val_w)), // Suggestion
     ];
     if !result.background.is_empty() {
@@ -180,15 +179,28 @@ fn render_info_popup(
     r += 1;
 
     // Risk
-    let [l, r1, r2] = Layout::horizontal([Constraint::Length(label_w), Constraint::Length(8), Constraint::Min(0)])
-        .flex(Flex::Start)
-        .areas(row_areas[r]);
+    let [l, r1, r2] = Layout::horizontal([
+        Constraint::Length(label_w),
+        Constraint::Length(8),
+        Constraint::Min(0),
+    ])
+    .flex(Flex::Start)
+    .areas(row_areas[r]);
     render_label(f, l, "Risk:", theme);
     render_val(f, r1, result.risk_level.label(), risk_color);
     render_val(
-        f, r2,
-        &if result.deletable { "Deletable: Yes" } else { "Deletable: No" },
-        if result.deletable { theme.success } else { theme.danger },
+        f,
+        r2,
+        &if result.deletable {
+            "Deletable: Yes"
+        } else {
+            "Deletable: No"
+        },
+        if result.deletable {
+            theme.success
+        } else {
+            theme.danger
+        },
     );
     r += 1;
 
