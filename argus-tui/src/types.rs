@@ -54,6 +54,8 @@ pub enum AppMode {
     Command,
     Finder, // Finder mode (Go to Path)
     AiReview,
+    QuitConfirm,
+    MultiSelectExitConfirm,
 }
 
 /// Tree search mode

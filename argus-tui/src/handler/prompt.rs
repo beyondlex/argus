@@ -169,6 +169,31 @@ fn delete_dir_progressive(
     errors
 }
 
+pub(crate) fn handle_quit_confirm_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            app.should_quit = true;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Browsing;
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn handle_multi_select_exit_confirm_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            app.exit_multi_select();
+            app.mode = AppMode::Browsing;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Browsing;
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn handle_help_key(key: KeyEvent, app: &mut App) {
     match key.code {
         KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {

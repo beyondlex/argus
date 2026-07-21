@@ -227,6 +227,8 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
         AppMode::AiReview => {
             ai_review::render(f, area, app);
         }
+        AppMode::QuitConfirm => render_quit_confirm(f, area, app),
+        AppMode::MultiSelectExitConfirm => render_multi_select_exit_confirm(f, area, app),
     }
 
     if let Some((path, meta)) = &app.info_data {
@@ -401,6 +403,83 @@ fn render_delete_prompt(f: &mut Frame, area: Rect, app: &App, permanent: bool) {
         Line::from(vec![Span::styled(
             action_text,
             Style::default().fg(app.theme.text),
+        )]),
+    ])
+    .block(block)
+    .alignment(Alignment::Center);
+    f.render_widget(text, popup);
+}
+
+fn render_quit_confirm(f: &mut Frame, area: Rect, app: &App) {
+    let height_fixed: u16 = 7;
+    let popup_area = popup::centered_rect(40, 40, area);
+    let height = height_fixed.min(area.height);
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect {
+        x: popup_area.x,
+        y,
+        width: popup_area.width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
+
+    let block = popup::popup_block(" Quit Argus? ", popup::PopupStyle::Normal, &app.theme)
+        .title_bottom(
+            Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], &app.theme)).centered(),
+        );
+
+    let text = Paragraph::new(vec![
+        Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            "Are you sure you want to quit?",
+            Style::default().fg(app.theme.text),
+        )]),
+        Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            "Any unsaved changes will be lost.",
+            Style::default().fg(app.theme.text_secondary),
+        )]),
+    ])
+    .block(block)
+    .alignment(Alignment::Center);
+    f.render_widget(text, popup);
+}
+
+fn render_multi_select_exit_confirm(f: &mut Frame, area: Rect, app: &App) {
+    let height_fixed: u16 = 7;
+    let popup_area = popup::centered_rect(45, 40, area);
+    let height = height_fixed.min(area.height);
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect {
+        x: popup_area.x,
+        y,
+        width: popup_area.width,
+        height,
+    };
+
+    f.render_widget(Clear, popup);
+
+    let count = app.selected_paths.len();
+    let block = popup::popup_block(
+        format!(" Exit Multi-Select ({} selected)? ", count),
+        popup::PopupStyle::Normal,
+        &app.theme,
+    )
+    .title_bottom(
+        Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], &app.theme)).centered(),
+    );
+
+    let text = Paragraph::new(vec![
+        Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            "Exit multi-select mode?",
+            Style::default().fg(app.theme.text),
+        )]),
+        Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            format!("{} selected item(s) will be deselected.", count),
+            Style::default().fg(app.theme.text_secondary),
         )]),
     ])
     .block(block)

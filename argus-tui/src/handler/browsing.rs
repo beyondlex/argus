@@ -57,7 +57,11 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 return;
             }
             KeyCode::Esc => {
-                app.exit_multi_select();
+                if app.selected_paths.is_empty() {
+                    app.exit_multi_select();
+                } else {
+                    app.mode = AppMode::MultiSelectExitConfirm;
+                }
                 app.pending_gg = false;
                 return;
             }
@@ -164,7 +168,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
                 app.info_data = None;
                 app.info_ai = None;
             } else {
-                app.should_quit = true;
+                app.mode = AppMode::QuitConfirm;
             }
         }
         KeyCode::Char('y') => handle_copy_path(app),

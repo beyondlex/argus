@@ -22,6 +22,8 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::Command => command::handle_command_key(key, app),
         AppMode::Finder => finder::handle_finder_key(key, app),
         AppMode::AiReview => ai_review::handle_ai_review_key(key, app),
+        AppMode::QuitConfirm => prompt::handle_quit_confirm_key(key, app),
+        AppMode::MultiSelectExitConfirm => prompt::handle_multi_select_exit_confirm_key(key, app),
     }
 }
 
@@ -35,7 +37,8 @@ mod tests {
     use crate::handler::command::{execute_command, handle_command_key};
     use crate::handler::prompt::{
         handle_delete_common, handle_delete_permanent_prompt_key, handle_delete_prompt_key,
-        handle_help_key, handle_time_help_key,
+        handle_help_key, handle_multi_select_exit_confirm_key, handle_quit_confirm_key,
+        handle_time_help_key,
     };
     use crate::handler::search::handle_search_keys;
     use crate::types::SearchMode;
@@ -331,6 +334,105 @@ mod tests {
         assert_eq!(app.time_help_scroll, 0);
     }
 
+    // ── handle_quit_confirm_key ──────────────────────────────────────────
+
+    #[test]
+    fn test_quit_confirm_y_sets_should_quit() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::QuitConfirm;
+
+        handle_quit_confirm_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_confirm_n_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::QuitConfirm;
+
+        handle_quit_confirm_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_confirm_esc_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::QuitConfirm;
+
+        handle_quit_confirm_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()), &mut app);
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(!app.should_quit);
+    }
+
+    // ── handle_multi_select_exit_confirm_key ───────────────────────────────
+
+    #[test]
+    fn test_multi_select_exit_confirm_y_exits_multi_select() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::MultiSelectExitConfirm;
+        app.multi_select = true;
+        app.selected_paths
+            .insert(vec!["test".to_string(), "file.txt".to_string()]);
+
+        handle_multi_select_exit_confirm_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(!app.multi_select);
+        assert!(app.selected_paths.is_empty());
+    }
+
+    #[test]
+    fn test_multi_select_exit_confirm_n_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::MultiSelectExitConfirm;
+        app.multi_select = true;
+        app.selected_paths
+            .insert(vec!["test".to_string(), "file.txt".to_string()]);
+
+        handle_multi_select_exit_confirm_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.multi_select);
+        assert!(!app.selected_paths.is_empty());
+    }
+
+    #[test]
+    fn test_multi_select_exit_confirm_esc_returns_to_browsing() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::MultiSelectExitConfirm;
+        app.multi_select = true;
+
+        handle_multi_select_exit_confirm_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.multi_select);
+    }
+
     // ── handle_search_keys ───────────────────────────────────────────────
 
     #[test]
@@ -540,7 +642,7 @@ mod tests {
     // ── handle_browsing_key dispatch ─────────────────────────────────────
 
     #[test]
-    fn test_browsing_key_quit() {
+    fn test_browsing_key_quit_goes_to_confirm() {
         let (tx, rx) = mpsc::channel(1);
         let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.mode = AppMode::Browsing;
@@ -550,7 +652,7 @@ mod tests {
             &mut app,
         );
 
-        assert!(app.should_quit);
+        assert_eq!(app.mode, AppMode::QuitConfirm);
     }
 
     #[test]
