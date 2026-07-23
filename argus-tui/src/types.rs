@@ -33,6 +33,14 @@ pub enum AppMessage {
     },
     AiAnalysisComplete(Vec<AiPathVerdict>),
     AiAnalysisError(String),
+    CleanupScanComplete {
+        items: Vec<argus_core::CleanItem>,
+        total_bytes: u64,
+    },
+    CleanupExecComplete(argus_core::CleanReport),
+    AppListReady(Vec<argus_core::AppInfo>),
+    UninstallLeftoversReady(argus_core::AppLeftovers),
+    UninstallComplete(argus_core::CleanReport),
     Error(String),
     Info(String),
 }
@@ -58,6 +66,8 @@ pub enum AppMode {
     DeltaDetail,
     QuitConfirm,
     MultiSelectExitConfirm,
+    Cleanup,
+    Uninstall,
 }
 
 /// Tree search mode
@@ -279,6 +289,52 @@ impl AiPathVerdict {
             deletable: response.deletable,
         }
     }
+}
+
+// ── Cleanup / Uninstall ─────────────────────────────────────────────
+
+/// Cleanup mode (Clean vs Purge)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CleanupMode {
+    Clean,
+    Purge,
+}
+
+/// State for the Clean / Purge panel
+#[derive(Debug, Clone)]
+pub struct CleanupState {
+    pub mode: CleanupMode,
+    pub scanning: bool,
+    pub items: Vec<argus_core::CleanItem>,
+    pub total_bytes: u64,
+    pub selected: HashSet<usize>,
+    pub dry_run: bool,
+    pub confirm_pending: bool,
+    pub report: Option<argus_core::CleanReport>,
+}
+
+/// Uninstall phase
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UninstallPhase {
+    SelectApp,
+    Confirm,
+}
+
+/// State for the Uninstall panel
+#[derive(Debug, Clone)]
+pub struct UninstallState {
+    pub apps: Vec<argus_core::AppInfo>,
+    pub filtered: Vec<usize>,
+    pub search_word: String,
+    pub cursor: usize,
+    pub phase: UninstallPhase,
+    pub selected_app: Option<usize>,
+    pub leftovers: Option<argus_core::AppLeftovers>,
+    pub selected_leftovers: HashSet<usize>,
+    pub remove_leftovers: bool,
+    pub scanning: bool,
+    pub confirm_pending: bool,
+    pub report: Option<argus_core::CleanReport>,
 }
 
 /// State for the AI review popup

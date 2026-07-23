@@ -138,6 +138,10 @@ pub struct App {
     pub ai_cache: HashMap<PathBuf, AiPathVerdict>,
     pub ai_analyzed: HashMap<PathBuf, RiskLevel>,
 
+    // Cleanup / Uninstall
+    pub cleanup_state: Option<CleanupState>,
+    pub uninstall_state: Option<UninstallState>,
+
     // Hidden files
     pub show_hidden: bool,
 
@@ -267,6 +271,8 @@ impl App {
                 }
                 map
             },
+            cleanup_state: None,
+            uninstall_state: None,
             show_hidden: false,
             current_children: Vec::new(),
             current_filtered: Vec::new(),
@@ -488,6 +494,46 @@ impl App {
                 if let Some(ref mut state) = self.ai_state {
                     state.results = Vec::new();
                     state.status = AiStatus::Error(msg);
+                }
+            }
+            AppMessage::CleanupScanComplete { items, total_bytes } => {
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.scanning = false;
+                    state.items = items;
+                    state.total_bytes = total_bytes;
+                    // Pre-select items over 1GB
+                    for (i, item) in state.items.iter().enumerate() {
+                        if item.size > 1_000_000_000 {
+                            state.selected.insert(i);
+                        }
+                    }
+                }
+            }
+            AppMessage::CleanupExecComplete(report) => {
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.confirm_pending = false;
+                    state.report = Some(report);
+                }
+            }
+            AppMessage::AppListReady(apps) => {
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.scanning = false;
+                    state.apps = apps;
+                    state.filtered = (0..state.apps.len()).collect();
+                }
+            }
+            AppMessage::UninstallLeftoversReady(leftovers) => {
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.scanning = false;
+                    state.leftovers = Some(leftovers.clone());
+                    // Pre-select all leftovers
+                    state.selected_leftovers = (0..leftovers.leftover_paths.len()).collect();
+                }
+            }
+            AppMessage::UninstallComplete(report) => {
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.confirm_pending = false;
+                    state.report = Some(report);
                 }
             }
         }
@@ -1265,7 +1311,7 @@ impl App {
                 }
             } else {
                 // AI not available: use heuristic for uncached paths
-                for (path, size, label) in uncached {
+                for (path, size, _label) in uncached {
                     let verdict = mock_ai_verdict(&path, size);
                     if let Some(ref conn) = conn {
                         let path_str = path.to_string_lossy();
@@ -1285,6 +1331,102 @@ impl App {
     pub fn exit_ai_review(&mut self) {
         self.ai_state = None;
         self.mode = AppMode::Browsing;
+    }
+
+    // ── Cleanup / Uninstall ────────────────────────────────────────
+
+    pub fn enter_cleanup(&mut self, mode: CleanupMode) {
+        self.cleanup_state = Some(CleanupState {
+            mode,
+            scanning: true,
+            items: Vec::new(),
+            total_bytes: 0,
+            selected: HashSet::new(),
+            dry_run: false,
+            confirm_pending: false,
+            report: None,
+        });
+        self.mode = AppMode::Cleanup;
+        self.spawn_cleanup_scan(mode);
+    }
+
+    pub fn exit_cleanup(&mut self) {
+        self.cleanup_state = None;
+        self.mode = AppMode::Browsing;
+    }
+
+    fn spawn_cleanup_scan(&self, mode: CleanupMode) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let items = match mode {
+                CleanupMode::Clean => {
+                    let targets = argus_core::default_clean_targets();
+                    match argus_core::dry_clean(&targets) {
+                        Ok(plan) => plan.items,
+                        Err(e) => {
+                            let _ = tx.blocking_send(AppMessage::Error(format!("clean scan failed: {e}")));
+                            return;
+                        }
+                    }
+                }
+                CleanupMode::Purge => {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                    let roots = vec![std::path::PathBuf::from(&home)];
+                    match argus_core::find_artifacts(&roots) {
+                        Ok(artifacts) => artifacts.into_iter().map(|a| argus_core::CleanItem {
+                            path: a.path,
+                            size: a.size,
+                            risk: argus_core::RiskLevel::Safe,
+                            target_id: format!("{:?}", a.kind),
+                        }).collect(),
+                        Err(e) => {
+                            let _ = tx.blocking_send(AppMessage::Error(format!("purge scan failed: {e}")));
+                            return;
+                        }
+                    }
+                }
+            };
+            let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+            let _ = tx.blocking_send(AppMessage::CleanupScanComplete { items, total_bytes });
+        });
+    }
+
+    pub fn enter_uninstall(&mut self) {
+        self.uninstall_state = Some(UninstallState {
+            apps: Vec::new(),
+            filtered: Vec::new(),
+            search_word: String::new(),
+            cursor: 0,
+            phase: UninstallPhase::SelectApp,
+            selected_app: None,
+            leftovers: None,
+            selected_leftovers: HashSet::new(),
+            remove_leftovers: true,
+            scanning: true,
+            confirm_pending: false,
+            report: None,
+        });
+        self.mode = AppMode::Uninstall;
+        self.spawn_app_list_scan();
+    }
+
+    pub fn exit_uninstall(&mut self) {
+        self.uninstall_state = None;
+        self.mode = AppMode::Browsing;
+    }
+
+    fn spawn_app_list_scan(&self) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            match argus_core::find_installed_apps() {
+                Ok(apps) => {
+                    let _ = tx.blocking_send(AppMessage::AppListReady(apps));
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(AppMessage::Error(format!("app scan failed: {e}")));
+                }
+            }
+        });
     }
 
     /// Toggle delete mark on the current AI review item.

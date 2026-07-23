@@ -1,6 +1,6 @@
 use crate::app::{App, AppMode};
 use crate::components::{
-    ai_review, command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
+    ai_review, cleanup, command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
 };
 use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
 use ratatui::{
@@ -237,6 +237,12 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
             if let Some(ref state) = app.delta_detail {
                 crate::components::delta_detail::render(f, area, state, &app.theme);
             }
+        }
+        AppMode::Cleanup => {
+            cleanup::render_cleanup(f, area, app);
+        }
+        AppMode::Uninstall => {
+            cleanup::render_uninstall(f, area, app);
         }
         AppMode::QuitConfirm => render_quit_confirm(f, area, app),
         AppMode::MultiSelectExitConfirm => render_multi_select_exit_confirm(f, area, app),

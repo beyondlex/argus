@@ -6,13 +6,16 @@ use ratatui_finder::{FinderColors, FinderConfig, FinderMode, FinderState};
 
 impl App {
     pub const COMMANDS: &'static [&'static str] = &[
+        "Clean",
         "Consolidate",
         "Delta",
         "Finder",
         "Help",
+        "Purge",
         "Scan",
         "Sort",
         "Time",
+        "Uninstall",
     ];
 
     pub fn update_command_matches(&mut self) {

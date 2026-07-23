@@ -138,6 +138,24 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('A') if app.multi_select => {
             app.enter_ai_review_multi();
         }
+        KeyCode::Char('C') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            app.enter_cleanup(crate::types::CleanupMode::Clean);
+        }
+        KeyCode::Char('P') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            app.enter_cleanup(crate::types::CleanupMode::Purge);
+        }
+        KeyCode::Char('U') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            app.enter_uninstall();
+        }
         KeyCode::Char('q') => {
             app.mode = AppMode::QuitConfirm;
         }

@@ -3,8 +3,12 @@ name = "argus-tui"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["cleanup"]
+cleanup = ["argus-core/cleanup"]
+
 [dependencies]
-argus-core = { path = "../argus-core", features = ["ai"] }
+argus-core = { path = "../argus-core", features = ["ai", "cleanup"] }
 anyhow = "1"
 arboard = "3"
 chrono = "0.4"

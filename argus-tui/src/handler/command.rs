@@ -77,6 +77,24 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
 
     app.push_command_history(cmd);
 
+    if cmd.eq_ignore_ascii_case("Clean") {
+        app.clear_command_state();
+        app.enter_cleanup(crate::types::CleanupMode::Clean);
+        return;
+    }
+
+    if cmd.eq_ignore_ascii_case("Purge") {
+        app.clear_command_state();
+        app.enter_cleanup(crate::types::CleanupMode::Purge);
+        return;
+    }
+
+    if cmd.eq_ignore_ascii_case("Uninstall") {
+        app.clear_command_state();
+        app.enter_uninstall();
+        return;
+    }
+
     if cmd.eq_ignore_ascii_case("Scan") {
         app.clear_command_state();
         crate::handler::start_scan(app);
