@@ -4,9 +4,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+#[cfg(feature = "cleanup")]
+use argus_core::{
+    default_clean_targets, dry_clean, exec_clean, find_artifacts, find_installed_apps,
+    find_leftovers, remove_artifacts, uninstall_app, CleanReport,
+};
 use argus_core::{
     default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
     DeltaSummary, NodeIndex, ROOT_NODE,
@@ -26,12 +32,18 @@ fn main() {
         Commands::Consolidate => cmd_consolidate(),
         Commands::Status => cmd_status(),
         Commands::Clear => cmd_clear(),
+        #[cfg(feature = "cleanup")]
+        Commands::Clean { dry_run, yes } => cmd_clean(*dry_run, *yes),
+        #[cfg(feature = "cleanup")]
+        Commands::Uninstall { dry_run } => cmd_uninstall(*dry_run),
+        #[cfg(feature = "cleanup")]
+        Commands::Purge { paths, dry_run } => cmd_purge(paths.as_deref(), *dry_run),
     };
 
     match result {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("{} {}", "error:".red().bold(), e);
             std::process::exit(3);
         }
     }
@@ -69,6 +81,28 @@ enum Commands {
     Status,
     /// Clear all delta events in the daemon database.
     Clear,
+    /// Scan and clean caches, logs, temp files, and trash.
+    #[cfg(feature = "cleanup")]
+    Clean {
+        #[arg(long, help = "Preview only, don't delete anything")]
+        dry_run: bool,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+    },
+    /// List installed apps and uninstall with leftover cleanup.
+    #[cfg(feature = "cleanup")]
+    Uninstall {
+        #[arg(long, help = "Preview only, don't delete anything")]
+        dry_run: bool,
+    },
+    /// Find and remove project build artifacts (node_modules, target, etc.).
+    #[cfg(feature = "cleanup")]
+    Purge {
+        #[arg(long, help = "Directories to scan for artifacts")]
+        paths: Option<Vec<PathBuf>>,
+        #[arg(long, help = "Preview only, don't delete anything")]
+        dry_run: bool,
+    },
 }
 
 fn cmd_scan(path: &PathBuf) -> Result<i32> {
@@ -77,38 +111,103 @@ fn cmd_scan(path: &PathBuf) -> Result<i32> {
 
     ctrlc::set_handler(move || {
         cancel_clone.store(true, Ordering::Relaxed);
-        eprintln!("\ncancelling scan...");
+        eprintln!("\n{}", "cancelling scan...".yellow());
     })
     .context("failed to set Ctrl+C handler")?;
 
     let snapshot =
         scan_path(path, &cancel, None).map_err(|e| anyhow::anyhow!("scan failed: {}", e))?;
 
-    println!("scan path: {}", path.display());
-    println!("total files: {}", count_files(&snapshot, ROOT_NODE));
-    println!("total size: {}", format_size(snapshot.total_size));
+    println!(
+        "{} {}",
+        "scan path:".bold(),
+        path.display().to_string().cyan()
+    );
+    println!(
+        "{} {}",
+        "total files:".bold(),
+        count_files(&snapshot, ROOT_NODE).to_string().green()
+    );
+    println!(
+        "{} {}",
+        "total size:".bold(),
+        format_size(snapshot.total_size).green()
+    );
 
     Ok(0)
 }
 
 fn cmd_help() -> Result<i32> {
-    println!("Argus - Disk usage scanner");
+    println!("{}", "Argus — Disk Usage Scanner".bold().cyan());
     println!();
-    println!("Commands:");
-    println!("  scan --path <PATH>    Scan a path and print summary");
-    println!("  delta-summary --path <PATH>  Print delta summary for a path");
-    println!("  help                  Print this help text");
-    println!("  consolidate           Request daemon to consolidate delta events");
-    println!("  status                Query daemon status");
-    println!("  clear                 Clear all delta events in daemon database");
+    println!("{}", "Commands:".bold().underline());
+    println!(
+        "  {:34}  {}",
+        "scan --path <PATH>".green(),
+        "Scan a path and print summary"
+    );
+    println!(
+        "  {:34}  {}",
+        "delta-summary --path <PATH>".green(),
+        "Print delta summary for a path"
+    );
+    println!("  {:34}  {}", "help".green(), "Print this help text");
+    println!(
+        "  {:34}  {}",
+        "consolidate".green(),
+        "Request daemon to consolidate delta events"
+    );
+    println!("  {:34}  {}", "status".green(), "Query daemon status");
+    println!(
+        "  {:34}  {}",
+        "clear".green(),
+        "Clear all delta events in daemon database"
+    );
+    #[cfg(feature = "cleanup")]
+    {
+        println!(
+            "  {:34}  {}",
+            "clean [--dry-run] [-y]".green(),
+            "Scan and clean caches, logs, temp files"
+        );
+        println!(
+            "  {:34}  {}",
+            "uninstall [--dry-run]".green(),
+            "List and uninstall apps with leftovers"
+        );
+        println!(
+            "  {:34}  {}",
+            "purge [--paths <DIR>] [--dry-run]".green(),
+            "Find and remove build artifacts"
+        );
+    }
     println!();
-    println!("TUI commands (type : inside the TUI):");
-    println!("  :Scan                 Scan current directory");
-    println!("  :Delta <N>[k|m|g]    Set delta threshold");
-    println!("  :Time <N>[m|h|d|w]   Set time range (relative)");
-    println!("  :Time <from> to <to> Set time range (absolute or mixed)");
-    println!("  :Consolidate          Request event consolidation");
-    println!("  :Help                 Show help overlay");
+    println!(
+        "{}",
+        "TUI commands (type : inside the TUI):".bold().underline()
+    );
+    println!("  {:34}  {}", ":Scan".cyan(), "Scan current directory");
+    println!(
+        "  {:34}  {}",
+        ":Delta <N>[k|m|g]".cyan(),
+        "Set delta threshold"
+    );
+    println!(
+        "  {:34}  {}",
+        ":Time <N>[m|h|d|w]".cyan(),
+        "Set time range (relative)"
+    );
+    println!(
+        "  {:34}  {}",
+        ":Time <from> to <to>".cyan(),
+        "Set time range (absolute or mixed)"
+    );
+    println!(
+        "  {:34}  {}",
+        ":Consolidate".cyan(),
+        "Request event consolidation"
+    );
+    println!("  {:34}  {}", ":Help".cyan(), "Show help overlay");
     Ok(0)
 }
 
@@ -152,15 +251,19 @@ fn cmd_consolidate() -> Result<i32> {
             bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
         match resp {
             DaemonResponse::ConsolidationDone { consolidated_count } => {
-                println!("consolidated {consolidated_count} events");
+                println!(
+                    "{} {} events",
+                    "consolidated".green().bold(),
+                    consolidated_count.to_string().cyan()
+                );
                 Ok(0i32)
             }
             DaemonResponse::Error { message } => {
-                eprintln!("daemon error: {message}");
+                eprintln!("{} {message}", "daemon error:".red().bold());
                 Ok(1)
             }
             _ => {
-                eprintln!("unexpected response");
+                eprintln!("{}", "unexpected response".red());
                 Ok(1)
             }
         }
@@ -202,8 +305,8 @@ fn cmd_status() -> Result<i32> {
                 db_event_count,
                 db_size_bytes,
             } => {
-                println!("version: {version}");
-                println!("uptime: {}", format_duration(uptime_secs));
+                println!("{} v{version}", "argusd".bold().cyan());
+                println!("  {}  {}", "uptime:".bold(), format_duration(uptime_secs));
                 let start_secs = start_time_secs as i64;
                 let naive = chrono::DateTime::from_timestamp(start_secs, 0)
                     .map(|dt| {
@@ -212,15 +315,27 @@ fn cmd_status() -> Result<i32> {
                             .to_string()
                     })
                     .unwrap_or_else(|| "unknown".into());
-                println!("started: {naive}");
-                println!("log_level: {}", log_level.as_deref().unwrap_or("(none)"));
-                println!("debounce_seconds: {debounce_seconds}");
-                println!("delta_retention_days: {delta_retention_days}");
-                println!("db_event_count: {db_event_count}");
-                println!("db_size: {}", format_size(db_size_bytes));
-                println!("watch_dirs:");
+                println!("  {}  {}", "started:".bold(), naive);
+                println!(
+                    "  {}  {}",
+                    "log level:".bold(),
+                    log_level.as_deref().unwrap_or("(none)")
+                );
+                println!("  {}  {}s", "debounce:".bold(), debounce_seconds);
+                println!("  {}  {}d", "retention:".bold(), delta_retention_days);
+                println!(
+                    "  {}  {} events",
+                    "db events:".bold(),
+                    db_event_count.to_string().cyan()
+                );
+                println!(
+                    "  {}  {}",
+                    "db size:".bold(),
+                    format_size(db_size_bytes).cyan()
+                );
+                println!("  {}", "watch dirs:".bold());
                 for dir in &watch_dirs {
-                    let mut line = format!("  {}", dir.path.display());
+                    let mut line = format!("    {}", dir.path.display().to_string().blue());
                     if let Some(ref include) = dir.include {
                         line.push_str(&format!(" (include: {include})"));
                     }
@@ -232,11 +347,11 @@ fn cmd_status() -> Result<i32> {
                 Ok(0i32)
             }
             DaemonResponse::Error { message } => {
-                eprintln!("daemon error: {message}");
+                eprintln!("{} {message}", "daemon error:".red().bold());
                 Ok(1)
             }
             _ => {
-                eprintln!("unexpected response");
+                eprintln!("{}", "unexpected response".red());
                 Ok(1)
             }
         }
@@ -268,20 +383,272 @@ fn cmd_clear() -> Result<i32> {
             bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
         match resp {
             DaemonResponse::DbCleared { deleted_count } => {
-                println!("cleared {deleted_count} events");
+                println!(
+                    "{} {} events",
+                    "cleared".green().bold(),
+                    deleted_count.to_string().cyan()
+                );
                 Ok(0i32)
             }
             DaemonResponse::Error { message } => {
-                eprintln!("daemon error: {message}");
+                eprintln!("{} {message}", "daemon error:".red().bold());
                 Ok(1)
             }
             _ => {
-                eprintln!("unexpected response");
+                eprintln!("{}", "unexpected response".red());
                 Ok(1)
             }
         }
     })
 }
+
+// ── Highlight utils ─────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn risk_color(risk: &str) -> colored::ColoredString {
+    match risk {
+        "safe" => "safe".green(),
+        "low" => "low".cyan(),
+        "medium" => "medium".yellow(),
+        "high" => "high".red(),
+        _ => risk.into(),
+    }
+}
+
+// ── Clean ────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
+    let targets = default_clean_targets();
+    if targets.is_empty() {
+        println!(
+            "{}",
+            "no cleanup targets available for this platform".yellow()
+        );
+        return Ok(0);
+    }
+
+    let plan = dry_clean(&targets).map_err(|e| anyhow::anyhow!("plan clean: {e}"))?;
+    if plan.is_empty() {
+        println!("{}", "nothing to clean — all targets are empty".green());
+        return Ok(0);
+    }
+
+    println!("{}", "Cleanup Plan".bold().cyan().underline());
+    println!(
+        "{} {}\n",
+        "total reclaimable:".bold(),
+        format_size(plan.total_bytes).yellow().bold()
+    );
+
+    for item in &plan.items {
+        let risk_l = item.risk.label();
+        let colored_risk = risk_color(risk_l);
+        let size_s = format_size(item.size).green().bold();
+        println!(
+            "  [{colored_risk:>6}] {size_s}  {}",
+            item.path.display().to_string().white()
+        );
+    }
+
+    if dry_run {
+        println!("\n{}", "[dry-run] no files were deleted".yellow().bold());
+        return Ok(0);
+    }
+
+    if !yes {
+        let ans = inquire::Confirm::new("Proceed with cleanup?")
+            .with_default(false)
+            .prompt()?;
+        if !ans {
+            println!("{}", "cancelled".yellow());
+            return Ok(0);
+        }
+    }
+
+    let report = exec_clean(&plan.items, false).map_err(|e| anyhow::anyhow!("exec clean: {e}"))?;
+    print_clean_report(&report);
+    Ok(0)
+}
+
+// ── Uninstall ────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn cmd_uninstall(dry_run: bool) -> Result<i32> {
+    let apps = find_installed_apps().map_err(|e| anyhow::anyhow!("find apps: {e}"))?;
+    if apps.is_empty() {
+        println!("{}", "no apps found".yellow());
+        return Ok(0);
+    }
+
+    let selections: Vec<String> = apps
+        .iter()
+        .map(|a| {
+            let size = format_size(a.size);
+            format!("{:<30} {:>9}  {}", a.name, size, a.id)
+        })
+        .collect();
+
+    let sel = inquire::Select::new(
+        "Select app to uninstall (↑↓/j/k to move, type to filter, Esc to cancel):",
+        selections,
+    )
+    .with_page_size(15)
+    .with_vim_mode(true)
+    .with_help_message("↑↓ navigate • type to filter • Enter confirm • Esc cancel")
+    .prompt();
+
+    let idx = match sel {
+        Ok(chosen) => apps.iter().position(|a| {
+            let size = format_size(a.size);
+            format!("{:<30} {:>9}  {}", a.name, size, a.id) == chosen
+        }),
+        Err(_) => None,
+    };
+
+    let app = match idx {
+        Some(i) => &apps[i],
+        None => {
+            println!("{}", "cancelled".yellow());
+            return Ok(0);
+        }
+    };
+
+    let leftovers = find_leftovers(app).map_err(|e| anyhow::anyhow!("find leftovers: {e}"))?;
+
+    println!("\n{} {}", "Selected:".bold(), app.name.cyan().bold());
+    println!("  {}  {}", "bundle:".bold(), app.id);
+    println!("  {}  {}", "size:".bold(), format_size(app.size).green());
+
+    if !leftovers.leftover_paths.is_empty() {
+        println!(
+            "  {}  {} across {} paths",
+            "leftovers:".bold(),
+            format_size(leftovers.total_leftover_bytes).yellow(),
+            leftovers.leftover_paths.len().to_string().cyan()
+        );
+        for p in &leftovers.leftover_paths {
+            println!("    └─ {}", p.display().to_string().dimmed());
+        }
+    } else {
+        println!("  {}  none found", "leftovers:".bold());
+    }
+
+    if dry_run {
+        println!("\n{}", "[dry-run] no files were deleted".yellow().bold());
+        return Ok(0);
+    }
+
+    let remove_leftovers = if leftovers.total_leftover_bytes > 0 {
+        inquire::Confirm::new("Remove leftovers too?")
+            .with_default(true)
+            .prompt()?
+    } else {
+        true
+    };
+
+    let proceed = inquire::Confirm::new(&format!("Uninstall {}?", app.name))
+        .with_default(false)
+        .prompt()?;
+    if !proceed {
+        println!("{}", "cancelled".yellow());
+        return Ok(0);
+    }
+
+    let report =
+        uninstall_app(app, remove_leftovers).map_err(|e| anyhow::anyhow!("uninstall: {e}"))?;
+    print_clean_report(&report);
+    Ok(0)
+}
+
+// ── Purge ────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn cmd_purge(paths: Option<&[PathBuf]>, dry_run: bool) -> Result<i32> {
+    let roots = paths.unwrap_or_default();
+    let artifacts = find_artifacts(roots).map_err(|e| anyhow::anyhow!("find artifacts: {e}"))?;
+    if artifacts.is_empty() {
+        println!("{}", "no build artifacts found".green());
+        return Ok(0);
+    }
+
+    let total_size: u64 = artifacts.iter().map(|a| a.size).sum();
+    println!("{}", "Build Artifacts".bold().cyan().underline());
+    println!(
+        "{} {} ({} items)\n",
+        "total:".bold(),
+        format_size(total_size).yellow().bold(),
+        artifacts.len().to_string().cyan()
+    );
+
+    for art in &artifacts {
+        let kind = art.kind.label();
+        let age = if art.age_days == 0 {
+            "today".to_string()
+        } else {
+            format!("{}d old", art.age_days)
+        };
+        println!(
+            "  {:>20}  {}  {}  {}",
+            kind.cyan().bold(),
+            format_size(art.size).green(),
+            art.path.display().to_string().white(),
+            age.dimmed()
+        );
+    }
+
+    if dry_run {
+        println!("\n{}", "[dry-run] no files were deleted".yellow().bold());
+        return Ok(0);
+    }
+
+    let proceed = inquire::Confirm::new(&format!("Remove all {} artifacts?", artifacts.len()))
+        .with_default(false)
+        .prompt()?;
+    if !proceed {
+        println!("{}", "cancelled".yellow());
+        return Ok(0);
+    }
+
+    let report =
+        remove_artifacts(&artifacts).map_err(|e| anyhow::anyhow!("remove artifacts: {e}"))?;
+    print_clean_report(&report);
+    Ok(0)
+}
+
+// ── Report ───────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn print_clean_report(report: &CleanReport) {
+    println!("\n{}", "Result".bold().green().underline());
+    let status = if report.total_failed == 0 {
+        "✓ success".green().bold()
+    } else {
+        format!("⚠ {} failures", report.total_failed).red().bold()
+    };
+    println!(
+        "  {}  {}",
+        status,
+        format_size(report.freed_bytes).yellow().bold()
+    );
+    println!(
+        "  {} {}/{} attempted",
+        "items:".bold(),
+        report.total_succeeded.to_string().green(),
+        report.total_attempted.to_string().cyan()
+    );
+
+    for (path, err) in &report.errors {
+        eprintln!(
+            "  {}  {}  — {}",
+            "✗".red(),
+            path.display().to_string().dimmed(),
+            err.red()
+        );
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {
     let mut count = 0u64;
@@ -339,24 +706,43 @@ fn format_signed_size(bytes: i64) -> String {
 }
 
 fn print_delta_summary(path: &PathBuf, from_ms: u64, to_ms: u64, summary: &DeltaSummary) {
-    println!("delta summary path: {}", path.display());
-    println!("window: {}..{}", from_ms, to_ms);
-    println!("events: {}", summary.event_count);
     println!(
-        "create/modify/delete/agg: {}/{}/{}/{}",
-        summary.create_count, summary.modify_count, summary.delete_count, summary.agg_count
+        "{}  {}",
+        "delta summary path:".bold(),
+        path.display().to_string().cyan()
+    );
+    println!("{}  {} .. {}", "window:".bold(), from_ms, to_ms);
+    println!(
+        "{}  {}",
+        "events:".bold(),
+        summary.event_count.to_string().green()
     );
     println!(
-        "positive/negative/zero events: {}/{}/{}",
-        summary.positive_events, summary.negative_events, summary.zero_events
-    );
-    println!("total delta: {}", format_signed_size(summary.total_delta));
-    println!(
-        "positive delta: {}",
-        format_signed_size(summary.positive_delta)
+        "  create/modify/delete/agg: {}/{}/{}/{}",
+        summary.create_count.to_string().green(),
+        summary.modify_count.to_string().cyan(),
+        summary.delete_count.to_string().red(),
+        summary.agg_count
     );
     println!(
-        "negative delta: {}",
-        format_signed_size(summary.negative_delta)
+        "  +/-/0: {}/{}/{}",
+        summary.positive_events.to_string().green(),
+        summary.negative_events.to_string().red(),
+        summary.zero_events
+    );
+    println!(
+        "{}  {}",
+        "total delta:".bold(),
+        format_signed_size(summary.total_delta)
+    );
+    println!(
+        "  {}  {}",
+        "positive delta:".bold(),
+        format_signed_size(summary.positive_delta).green()
+    );
+    println!(
+        "  {}  {}",
+        "negative delta:".bold(),
+        format_signed_size(summary.negative_delta).red()
     );
 }

@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 ai = ["dep:ureq"]
+cleanup = ["dep:trash"]
 
 [dependencies]
 jwalk = "0.8"
@@ -19,6 +20,7 @@ flate2 = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 bincode = "1"
 ureq = { version = "3", features = ["json"], optional = true }
+trash = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -22,6 +22,7 @@
 | 07 | [安全设计](07-safety.md) | 系统黑名单、风险分级、废纸篓机制、审计日志 |
 | 08 | [数据模型与算法](08-data-model.md) | FileNode 结构、SQLite 存储模型、IPC 协议 |
 | 09 | [迭代路线图](09-roadmap.md) | Phase 1-5 完整演进规划 |
+| 10 | [磁盘清理模块设计](10-cleaner.md) | Cleaner 模块架构、清理分类、安全设计、实施计划 |
 | 11 | [日志系统设计](11-logging.md) | 等级规范、JSON 结构、Span 定义、AI Agent 调试 |
 | 12 | [AI 路径分析交互设计](12-ai-ux.md) | AI 分析路径用途与删除建议的交互流程与 UI 设计 |
 | — | [Phase 3 Daemon 设计](../plans/phase3-daemon-design.md) | 守护进程、delta 存储、IPC 协议、TUI 服务模式 |

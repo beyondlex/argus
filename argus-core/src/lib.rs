@@ -5,6 +5,9 @@ pub mod ipc;
 pub mod model;
 pub mod scanner;
 
+#[cfg(feature = "cleanup")]
+pub mod cleaner;
+
 pub use ai::{
     build_prompt, estimate_tokens, try_parse_json, AiConfig, AiContext, AiError, AiLanguage,
     AiResponse,
@@ -12,6 +15,17 @@ pub use ai::{
 
 #[cfg(feature = "ai")]
 pub use ai::{analyze, call_ai_api};
+
+#[cfg(feature = "cleanup")]
+pub use cleaner::{
+    audit::{log_operation, read_audit_log, AuditEntry, AuditOp},
+    categories::{default_clean_targets, scan_target_size, CleanTarget, TargetCategory},
+    cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},
+    purge::{find_artifacts, remove_artifacts, Artifact, ArtifactKind},
+    safety::{check_deletion_allowed, classify_risk, is_protected, RiskLevel},
+    uninstaller::{find_installed_apps, find_leftovers, uninstall_app, AppInfo, AppLeftovers},
+};
+
 pub use db::{
     clear_all_events, consolidate_events, default_db_path, delete_ai_analysis, get_ai_analysis,
     has_ai_analysis, has_ai_analysis_batch, init_db, insert_events, load_all_ai_analyzed_paths,
