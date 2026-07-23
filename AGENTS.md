@@ -113,7 +113,26 @@ TUI-specific rule:
 - Core algorithms (e.g. `compare_trees`) need ASCII diagram or pseudocode comment.
 - Run `cargo test && cargo clippy && cargo fmt --check` after every commit.
 
-### 4.5 Clean Code Principles
+### 4.5 Ratatui Layout Convention
+
+All new TUI panels must use ratatui flex layout for responsive spacing:
+
+- **Header/Content/StatusBar**: `Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])`
+- **Side panel**: `Layout::horizontal([Constraint::Fill(1), Constraint::Length(right_total)]).flex(Flex::SpaceBetween)`
+- **Label-value pairs**: `Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)]).flex(Flex::Start)`
+- Use `Constraint::Fill(1)` / `Constraint::Min(0)` for flexible expansion, never hard-coded percentages for dynamic areas
+- `Flex::SpaceBetween` pushes left content left and right content right without gaps
+- `Flex::Start` keeps label-value pairs left-aligned without stretching the value
+- Prefer `Constraint::Length(n)` for fixed-height rows (status bar, header), `Constraint::Min(n)` for scrollable content
+
+```rust
+// Correct pattern — label-value with flex
+let [l, v] = Layout::horizontal([Constraint::Length(label_w), Constraint::Min(0)])
+    .flex(Flex::Start)
+    .areas(inner);
+```
+
+### 4.6 Clean Code Principles
 
 - **DRY**: Don't duplicate business logic, constants, parsing rules, or error mapping. Extract a helper only after real duplication appears.
 - **KISS**: Prefer straightforward concrete code over clever generic abstractions.
