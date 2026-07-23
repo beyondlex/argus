@@ -52,34 +52,37 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(ref mut s) = app.cleanup_state {
                 s.dry_run = false;
+                s.cursor = s.cursor.saturating_add(1).min(item_count.saturating_sub(1));
             }
-            let cursor = app.cursor.saturating_add(1).min(item_count.saturating_sub(1));
-            app.cursor = cursor;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if let Some(ref mut s) = app.cleanup_state {
                 s.dry_run = false;
+                s.cursor = s.cursor.saturating_sub(1);
             }
-            app.cursor = app.cursor.saturating_sub(1);
         }
         KeyCode::Char('g') => {
             if app.pending_gg {
-                app.cursor = 0;
+                if let Some(ref mut s) = app.cleanup_state {
+                    s.cursor = 0;
+                }
                 app.pending_gg = false;
             } else {
                 app.pending_gg = true;
             }
         }
         KeyCode::Char('G') => {
-            app.cursor = item_count.saturating_sub(1);
+            if let Some(ref mut s) = app.cleanup_state {
+                s.cursor = item_count.saturating_sub(1);
+            }
             app.pending_gg = false;
         }
         KeyCode::Char(' ') => {
             if let Some(ref mut s) = app.cleanup_state {
-                if s.selected.contains(&app.cursor) {
-                    s.selected.remove(&app.cursor);
+                if s.selected.contains(&s.cursor) {
+                    s.selected.remove(&s.cursor);
                 } else {
-                    s.selected.insert(app.cursor);
+                    s.selected.insert(s.cursor);
                 }
             }
         }
@@ -157,28 +160,35 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            app.cursor = app.cursor.saturating_add(1).min(item_count.saturating_sub(1));
+            if let Some(ref mut s) = app.uninstall_state {
+                s.cursor = s.cursor.saturating_add(1).min(item_count.saturating_sub(1));
+            }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.cursor = app.cursor.saturating_sub(1);
+            if let Some(ref mut s) = app.uninstall_state {
+                s.cursor = s.cursor.saturating_sub(1);
+            }
         }
         KeyCode::Char('g') => {
             if app.pending_gg {
-                app.cursor = 0;
+                if let Some(ref mut s) = app.uninstall_state {
+                    s.cursor = 0;
+                }
                 app.pending_gg = false;
             } else {
                 app.pending_gg = true;
             }
         }
         KeyCode::Char('G') => {
-            app.cursor = item_count.saturating_sub(1);
+            if let Some(ref mut s) = app.uninstall_state {
+                s.cursor = item_count.saturating_sub(1);
+            }
             app.pending_gg = false;
         }
         KeyCode::Char('/') => {
             // Search input mode - could add, but for now simple filter
         }
         KeyCode::Char(c) => {
-            // Simple incremental filter
             if let Some(ref mut s) = app.uninstall_state {
                 s.search_word.push(c);
                 s.filtered = s
@@ -191,7 +201,6 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                     .map(|(i, _)| i)
                     .collect();
                 s.cursor = 0;
-                app.cursor = 0;
             }
         }
         KeyCode::Backspace => {
@@ -207,13 +216,12 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                     .map(|(i, _)| i)
                     .collect();
                 s.cursor = 0;
-                app.cursor = 0;
             }
         }
         KeyCode::Enter => {
-            let selected_idx = {
+            let (selected_idx, _search_word) = {
                 let s = app.uninstall_state.as_ref().unwrap();
-                s.filtered.get(app.cursor).copied()
+                (s.filtered.get(s.cursor).copied(), s.search_word.clone())
             };
             if let Some(idx) = selected_idx {
                 if let Some(ref mut s) = app.uninstall_state {
@@ -221,9 +229,7 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                     s.phase = UninstallPhase::Confirm;
                     s.scanning = true;
                     s.cursor = 0;
-                    app.cursor = 0;
                 }
-                // Spawn leftover scan
                 let app_info = app.uninstall_state.as_ref().unwrap().apps[idx].clone();
                 let tx = app.tx.clone();
                 std::thread::spawn(move || {
@@ -253,17 +259,21 @@ fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
-            app.cursor = app.cursor.saturating_add(1).min(leftover_count.saturating_sub(1));
+            if let Some(ref mut s) = app.uninstall_state {
+                s.cursor = s.cursor.saturating_add(1).min(leftover_count.saturating_sub(1));
+            }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.cursor = app.cursor.saturating_sub(1);
+            if let Some(ref mut s) = app.uninstall_state {
+                s.cursor = s.cursor.saturating_sub(1);
+            }
         }
         KeyCode::Char(' ') => {
             if let Some(ref mut s) = app.uninstall_state {
-                if s.selected_leftovers.contains(&app.cursor) {
-                    s.selected_leftovers.remove(&app.cursor);
+                if s.selected_leftovers.contains(&s.cursor) {
+                    s.selected_leftovers.remove(&s.cursor);
                 } else {
-                    s.selected_leftovers.insert(app.cursor);
+                    s.selected_leftovers.insert(s.cursor);
                 }
             }
         }
@@ -282,7 +292,6 @@ fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {
                 s.phase = UninstallPhase::SelectApp;
                 s.leftovers = None;
                 s.cursor = 0;
-                app.cursor = 0;
             }
         }
         _ => {}

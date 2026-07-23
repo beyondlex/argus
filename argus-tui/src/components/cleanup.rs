@@ -144,10 +144,10 @@ fn render_cleanup_summary(f: &mut Frame, area: Rect, state: &CleanupState, theme
     );
 }
 
-fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, app: &App, theme: &ColorTheme) {
+fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, _app: &App, theme: &ColorTheme) {
     let visible_count = state.items.len();
     let max_scroll = visible_count.saturating_sub(area.height as usize);
-    let scroll = app.scroll_offset.min(max_scroll);
+    let scroll = state.scroll_offset.min(max_scroll);
 
     let items: Vec<Line> = state
         .items
@@ -157,7 +157,7 @@ fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, app: &Ap
         .take(area.height as usize)
         .map(|(i, item)| {
             let is_selected = state.selected.contains(&i);
-            let is_cursor = i == app.cursor;
+            let is_cursor = i == state.cursor;
             let checkbox = if is_selected { "[x]" } else { "[ ]" };
             let prefix = if is_cursor { ">" } else { " " };
             let name = item.path.file_name()
@@ -274,7 +274,7 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, app: &App, theme: &ColorTheme) {
+fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _app: &App, theme: &ColorTheme) {
     let [search_area, list_area, footer_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
 
@@ -291,9 +291,7 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, ap
         search_area,
     );
 
-    let visible_count = state.filtered.len();
-    let max_scroll = visible_count.saturating_sub(list_area.height as usize);
-    let scroll = app.scroll_offset.min(max_scroll);
+    let scroll = state.cursor.saturating_sub(area.height as usize / 2);
 
     let items: Vec<Line> = state
         .filtered
@@ -303,7 +301,7 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, ap
         .take(list_area.height as usize)
         .map(|(display_i, &app_i)| {
             let app_info = &state.apps[app_i];
-            let is_cursor = display_i == app.cursor;
+            let is_cursor = display_i == state.cursor;
             let prefix = if is_cursor { ">" } else { " " };
             let size_str = format_size(app_info.size);
 
@@ -336,7 +334,7 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, ap
     );
 }
 
-fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, app: &App, theme: &ColorTheme) {
+fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _app: &App, theme: &ColorTheme) {
     let Some(app_idx) = state.selected_app else { return };
     let Some(ref app_info) = state.apps.get(app_idx) else { return };
 
@@ -363,7 +361,6 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, a
         detail_area,
     );
 
-    // Leftovers label
     if let Some(ref leftovers) = state.leftovers {
         let leftover_size = format_size(leftovers.total_leftover_bytes);
         f.render_widget(
@@ -374,7 +371,7 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, a
             leftover_label_area,
         );
 
-        let scroll = app.scroll_offset;
+        let scroll = state.cursor.saturating_sub(leftover_list_area.height as usize / 2);
         let items: Vec<Line> = leftovers
             .leftover_paths
             .iter()
@@ -383,7 +380,7 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, a
             .take(leftover_list_area.height as usize)
             .map(|(i, path)| {
                 let is_selected = state.selected_leftovers.contains(&i);
-                let is_cursor = i == app.cursor;
+                let is_cursor = i == state.cursor;
                 let checkbox = if is_selected { "[x]" } else { "[ ]" };
                 let prefix = if is_cursor { ">" } else { " " };
 

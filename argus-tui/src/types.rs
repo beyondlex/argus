@@ -308,6 +308,8 @@ pub struct CleanupState {
     pub items: Vec<argus_core::CleanItem>,
     pub total_bytes: u64,
     pub selected: HashSet<usize>,
+    pub cursor: usize,
+    pub scroll_offset: usize,
     pub dry_run: bool,
     pub confirm_pending: bool,
     pub report: Option<argus_core::CleanReport>,
