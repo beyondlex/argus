@@ -1,8 +1,22 @@
 use crate::app::{App, AppMessage};
 use crate::types::UninstallPhase;
 use crossterm::event::{KeyCode, KeyEvent};
+use std::path::Path;
 
 pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
+    if app.cleanup_state.as_ref().is_some_and(|s| s.detail_pending) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
+                if let Some(ref mut s) = app.cleanup_state {
+                    s.detail_pending = false;
+                    s.detail_items = None;
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.cleanup_state.as_ref().is_some_and(|s| s.confirm_pending) {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -91,6 +105,20 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
                 s.dry_run = !s.dry_run;
             }
         }
+        KeyCode::Char('i') => {
+            let path = {
+                let s = app.cleanup_state.as_ref().unwrap();
+                s.items.get(s.cursor).map(|item| item.path.clone())
+            };
+            if let Some(path) = path {
+                app.cleanup_state.as_mut().unwrap().detail_pending = true;
+                let tx = app.tx.clone();
+                std::thread::spawn(move || {
+                    let details = scan_dir_details(&path);
+                    let _ = tx.blocking_send(AppMessage::CleanupDetailReady(details));
+                });
+            }
+        }
         KeyCode::Enter => {
             if let Some(ref mut s) = app.cleanup_state {
                 if !s.selected.is_empty() {
@@ -98,7 +126,7 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
                 }
             }
         }
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             app.exit_cleanup();
         }
         _ => {}
@@ -153,6 +181,50 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
 }
 
 fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
+    let is_filter_mode = app.uninstall_state.as_ref().is_some_and(|s| s.filter_mode);
+
+    if is_filter_mode {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(ref mut s) = app.uninstall_state {
+                    s.filter_mode = false;
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(ref mut s) = app.uninstall_state {
+                    s.search_word.push(c);
+                    s.filtered = s
+                        .apps
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| {
+                            a.name.to_lowercase().contains(&s.search_word.to_lowercase())
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    s.cursor = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut s) = app.uninstall_state {
+                    s.search_word.pop();
+                    s.filtered = s
+                        .apps
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| {
+                            a.name.to_lowercase().contains(&s.search_word.to_lowercase())
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    s.cursor = 0;
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     let item_count = {
         let s = app.uninstall_state.as_ref().unwrap();
         s.filtered.len()
@@ -186,20 +258,23 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
             app.pending_gg = false;
         }
         KeyCode::Char('/') => {
-            // Search input mode - could add, but for now simple filter
-        }
-        KeyCode::Char(c) => {
             if let Some(ref mut s) = app.uninstall_state {
-                s.search_word.push(c);
-                s.filtered = s
-                    .apps
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, a)| {
-                        a.name.to_lowercase().contains(&s.search_word.to_lowercase())
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
+                s.filter_mode = true;
+            }
+        }
+        KeyCode::Char('o') => {
+            if let Some(ref mut s) = app.uninstall_state {
+                s.sort_mode = (s.sort_mode + 1) % 3;
+                match s.sort_mode {
+                    0 => s.apps.sort_by(|a, b| b.size.cmp(&a.size)),
+                    1 => s.apps.sort_by(|a, b| {
+                        let a_t = a.last_used.unwrap_or_default();
+                        let b_t = b.last_used.unwrap_or_default();
+                        b_t.cmp(&a_t)
+                    }),
+                    _ => s.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                }
+                s.filtered = (0..s.apps.len()).collect();
                 s.cursor = 0;
             }
         }
@@ -244,7 +319,7 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                 });
             }
         }
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             app.exit_uninstall();
         }
         _ => {}
@@ -296,4 +371,87 @@ fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {
         }
         _ => {}
     }
+}
+
+fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
+    let mut entries = Vec::new();
+    if !path.is_dir() {
+        if let Ok(meta) = path.metadata() {
+            entries.push((
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                meta.len(),
+            ));
+        }
+        return entries;
+    }
+    let mut dirs = vec![path.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                let size = dir_total_size(&p);
+                entries.push((
+                    p.strip_prefix(path)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .to_string(),
+                    size,
+                ));
+            } else if ft.is_file() {
+                let size = match entry.metadata() {
+                    Ok(m) => m.len(),
+                    Err(_) => 0,
+                };
+                entries.push((
+                    p.strip_prefix(path)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .to_string(),
+                    size,
+                ));
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.truncate(200);
+    entries
+}
+
+fn dir_total_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut dirs = vec![path.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read_dir.flatten() {
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                dirs.push(entry.path());
+            } else if ft.is_file() {
+                total += match entry.metadata() {
+                    Ok(m) => m.len(),
+                    Err(_) => 0,
+                };
+            }
+        }
+    }
+    total
 }

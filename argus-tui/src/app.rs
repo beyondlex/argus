@@ -120,6 +120,7 @@ pub struct App {
     pub command_input: String,
     pub command_matches: Vec<&'static str>,
     pub command_selected: usize,
+    pub command_scroll: usize,
     pub command_history: Vec<String>,
     pub command_history_idx: Option<usize>,
 
@@ -239,6 +240,7 @@ impl App {
             command_input: String::new(),
             command_matches: Vec::new(),
             command_selected: 0,
+            command_scroll: 0,
             command_history: Vec::new(),
             command_history_idx: None,
             rx,
@@ -520,6 +522,11 @@ impl App {
             AppMessage::CleanupScanProgress(path) => {
                 if let Some(ref mut state) = self.cleanup_state {
                     state.scan_current_path = Some(path);
+                }
+            }
+            AppMessage::CleanupDetailReady(details) => {
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.detail_items = Some(details);
                 }
             }
             AppMessage::AppListReady(apps) => {
@@ -1361,6 +1368,8 @@ impl App {
             dry_run: false,
             confirm_pending: false,
             report: None,
+            detail_pending: false,
+            detail_items: None,
         });
         self.mode = AppMode::Cleanup;
         self.scanning = true;
@@ -1416,6 +1425,8 @@ impl App {
             apps: Vec::new(),
             filtered: Vec::new(),
             search_word: String::new(),
+            filter_mode: false,
+            sort_mode: 0,
             cursor: 0,
             phase: UninstallPhase::SelectApp,
             selected_app: None,

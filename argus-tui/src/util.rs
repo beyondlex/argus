@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chrono::Utc;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
@@ -102,6 +103,12 @@ pub fn format_count(count: u64) -> String {
 /// Format a duration as seconds with two decimal places.
 pub fn format_duration(duration: Duration) -> String {
     format!("{:.2}s", duration.as_secs_f64())
+}
+
+/// Format a timestamp as "YYYY-MM-DD HH:MM" or "—" if unknown
+pub fn format_relative_time(dt: Option<chrono::DateTime<Utc>>) -> String {
+    let Some(dt) = dt else { return "                     —".to_string() };
+    dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
 /// Display a path relative to $HOME when possible.

@@ -39,6 +39,7 @@ pub enum AppMessage {
     },
     CleanupExecComplete(argus_core::CleanReport),
     CleanupScanProgress(String),
+    CleanupDetailReady(Vec<(String, u64)>),
     AppListReady(Vec<argus_core::AppInfo>),
     UninstallScanProgress(String),
     UninstallLeftoversReady(argus_core::AppLeftovers),
@@ -316,6 +317,8 @@ pub struct CleanupState {
     pub dry_run: bool,
     pub confirm_pending: bool,
     pub report: Option<argus_core::CleanReport>,
+    pub detail_pending: bool,
+    pub detail_items: Option<Vec<(String, u64)>>,
 }
 
 /// Uninstall phase
@@ -331,6 +334,8 @@ pub struct UninstallState {
     pub apps: Vec<argus_core::AppInfo>,
     pub filtered: Vec<usize>,
     pub search_word: String,
+    pub filter_mode: bool,
+    pub sort_mode: u8,
     pub cursor: usize,
     pub phase: UninstallPhase,
     pub selected_app: Option<usize>,
