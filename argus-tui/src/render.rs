@@ -217,6 +217,7 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
             &app.command_input,
             &app.command_matches,
             app.command_selected,
+            app.command_scroll,
             &app.theme,
         ),
         AppMode::Browsing => {}

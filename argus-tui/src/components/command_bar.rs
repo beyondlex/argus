@@ -15,12 +15,13 @@ pub fn render(
     input: &str,
     matches: &[&str],
     selected: usize,
+    scroll: usize,
     theme: &ColorTheme,
 ) {
     let input_y = area.y + area.height - 1;
 
     if !matches.is_empty() {
-        let max_popup = matches.len().min(8) as u16;
+        let max_popup = 8u16;
         let popup_h = max_popup + 2;
         let popup_y = input_y.saturating_sub(popup_h);
         let popup_area = Rect {
@@ -41,15 +42,39 @@ pub fn render(
 
         let inner_w = inner.width as usize;
         let mut lines = Vec::new();
-        for (i, m) in matches.iter().enumerate().take(8) {
+        let visible = max_popup as usize;
+        let total = matches.len();
+        let scroll = scroll.min(total.saturating_sub(visible));
+        for (i, m) in matches.iter().enumerate().skip(scroll).take(visible) {
             let style = if i == selected {
                 Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
             } else {
                 Style::default().fg(theme.text).bg(theme.popup_bg)
             };
+            let marker = if i == selected { ">" } else { " " };
             lines.push(Line::from(Span::styled(
-                format!("{:<width$}", m, width = inner_w),
+                format!("{}{:<width$}", marker, m, width = inner_w - 1),
                 style,
+            )));
+        }
+        if total > visible {
+            let at_top = scroll == 0;
+            let at_bot = scroll + visible >= total;
+            let scrollbar = if at_top {
+                " ↓"
+            } else if at_bot {
+                " ↑"
+            } else {
+                " ↕"
+            };
+            let pct = if total > 0 {
+                (scroll + visible) * 100 / total
+            } else {
+                100
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{scrollbar} {pct}%"),
+                Style::default().fg(theme.text_tertiary),
             )));
         }
         f.render_widget(Paragraph::new(lines), inner);

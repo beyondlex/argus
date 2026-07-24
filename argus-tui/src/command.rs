@@ -38,6 +38,7 @@ impl App {
         self.command_input.clear();
         self.command_matches.clear();
         self.command_selected = 0;
+        self.command_scroll = 0;
     }
 
     pub fn push_command_history(&mut self, cmd: &str) {
