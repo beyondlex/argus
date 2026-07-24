@@ -11,7 +11,13 @@ use tokio::net::UnixStream;
 #[cfg(feature = "cleanup")]
 use argus_core::{
     default_clean_targets, dry_clean, exec_clean, find_artifacts, find_installed_apps,
-    find_leftovers, remove_artifacts, uninstall_app, CleanReport,
+    find_leftovers, find_orphaned_data, remove_artifacts, uninstall_app, CleanItem, CleanReport,
+    CleanTarget, TargetCategory,
+};
+
+#[cfg(feature = "shell-cmds")]
+use argus_core::{
+    default_shell_cmd_targets, try_exec_shell_cmd,
 };
 use argus_core::{
     default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
@@ -434,25 +440,130 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
         return Ok(0);
     }
 
-    println!("{}", "Cleanup Plan".bold().cyan().underline());
-    println!(
-        "{} {}\n",
-        "total reclaimable:".bold(),
-        format_size(plan.total_bytes).yellow().bold()
-    );
+    let target_map: std::collections::HashMap<&str, &CleanTarget> = targets
+        .iter()
+        .map(|t| (t.id.as_str(), t))
+        .collect();
 
+    let mut grouped: Vec<(TargetCategory, Vec<&CleanItem>)> = Vec::new();
     for item in &plan.items {
-        let risk_l = item.risk.label();
-        let colored_risk = risk_color(risk_l);
-        let size_s = format_size(item.size).green().bold();
-        println!(
-            "  [{colored_risk:>6}] {size_s}  {}",
-            item.path.display().to_string().white()
-        );
+        let cat = target_map
+            .get(item.target_id.as_str())
+            .map(|t| t.category)
+            .unwrap_or(TargetCategory::TempFiles);
+        if let Some(pos) = grouped.iter().position(|(g, _)| *g == cat) {
+            grouped[pos].1.push(item);
+        } else {
+            grouped.push((cat, vec![item]));
+        }
+    }
+    grouped.sort_by_key(|(g, _)| *g);
+
+    println!("{}", "Clean Your Mac".bold().cyan());
+    println!();
+    if dry_run {
+        println!("{}", "☻ First time? Run mo clean --dry-run first to preview changes".yellow());
+    }
+    println!(
+        "{} {}",
+        "Free space:".bold(),
+        format_size(free_space_macos()).cyan()
+    );
+    println!();
+
+    for (cat, items) in &grouped {
+        let label = match cat {
+            TargetCategory::AppCache => "App Cache",
+            TargetCategory::BrowserCache => "Browser Cache",
+            TargetCategory::DevTools => "Developer Tools",
+            TargetCategory::DevApps => "Development Applications",
+            TargetCategory::SystemLogs => "System Logs",
+            TargetCategory::SystemCache => "macOS System Caches",
+            TargetCategory::TempFiles => "Temp Files",
+            TargetCategory::Trash => "Trash",
+            TargetCategory::UserData => "User Essentials",
+            TargetCategory::CloudStorage => "Cloud Storage",
+            TargetCategory::Office => "Office Applications",
+            TargetCategory::VMTools => "Virtual Machine Tools",
+            TargetCategory::AppSupport => "Application Support",
+            TargetCategory::UninstalledData => "Uninstalled App Data",
+            TargetCategory::IosBackup => "iOS Device Backups",
+            TargetCategory::TimeMachine => "Time Machine",
+        };
+        println!("➤ {}", label.bold());
+        for item in items {
+            let risk_l = item.risk.label();
+            let colored_risk = risk_color(risk_l);
+            let size_s = format_size(item.size).green().bold();
+            let label = target_map
+                .get(item.target_id.as_str())
+                .map(|t| t.label.as_str())
+                .unwrap_or(&item.target_id);
+            println!(
+                "  ✓ {} {} ({})",
+                label.white(),
+                if item.size > 0 {
+                    format!("({})", size_s)
+                } else {
+                    String::new()
+                },
+                colored_risk
+            );
+        }
+        println!();
+    }
+
+    // ── Uninstalled app data ──────────────────────────────────────────────────
+    println!("➤ {}", "Uninstalled App Data".bold());
+    match find_orphaned_data() {
+        Ok(orphaned) => {
+            let apps = find_installed_apps(None).unwrap_or_default();
+            println!("  ✓ Found {} active/installed apps", apps.len().to_string().cyan());
+            if orphaned.item_count > 0 {
+                println!(
+                    "  ✓ {} {} items ({})",
+                    orphaned.item_count.to_string().white(),
+                    "orphaned paths".white(),
+                    format_size(orphaned.total_bytes).green().bold(),
+                );
+            } else {
+                println!("  ✓ {}", "Nothing to clean".green());
+            }
+        }
+        Err(e) => {
+            println!("  ! {}", format!("scan failed: {e}").red());
+        }
+    }
+    println!();
+
+    // ── Shell commands (brew, docker) ────────────────────────────────────────
+    #[cfg(feature = "shell-cmds")]
+    {
+        let shell_cmds = default_shell_cmd_targets();
+        println!("➤ {}", "Shell Commands".bold());
+        for cmd in &shell_cmds {
+            if dry_run {
+                println!("  ☻ {} (dry-run, skipped)", cmd.label.white());
+            } else {
+                let result = try_exec_shell_cmd(cmd);
+                if result.success {
+                    let output = if result.output.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", result.output.dimmed())
+                    };
+                    println!("  ✓ {}{}", cmd.label.white(), output);
+                } else {
+                    let err = result.error.unwrap_or_else(|| "unknown error".into());
+                    println!("  ☻ {} ({})", cmd.label.white(), err.yellow());
+                }
+            }
+        }
+        println!();
     }
 
     if dry_run {
-        println!("\n{}", "[dry-run] no files were deleted".yellow().bold());
+        println!("{}", "[dry-run] no files were deleted".yellow().bold());
         return Ok(0);
     }
 
@@ -469,6 +580,33 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     let report = exec_clean(&plan.items, false).map_err(|e| anyhow::anyhow!("exec clean: {e}"))?;
     print_clean_report(&report);
     Ok(0)
+}
+
+#[cfg(target_os = "macos")]
+fn free_space_macos() -> u64 {
+    let path = std::path::Path::new("/");
+    if !path.exists() {
+        return 0;
+    }
+    match std::process::Command::new("df")
+        .arg("-k")
+        .arg("/")
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    if let Ok(blocks) = parts[3].parse::<u64>() {
+                        return blocks * 1024;
+                    }
+                }
+            }
+            0
+        }
+        Err(_) => 0,
+    }
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────

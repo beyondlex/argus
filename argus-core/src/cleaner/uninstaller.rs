@@ -92,6 +92,37 @@ fn app_size(app_path: &Path) -> u64 {
     total
 }
 
+fn last_used_date(app_path: &Path) -> Option<DateTime<Utc>> {
+    // Try Spotlight metadata first (macOS)
+    let output = std::process::Command::new("mdls")
+        .arg("-name")
+        .arg("kMDItemLastUsedDate")
+        .arg("-raw")
+        .arg(app_path)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let trimmed = stdout.trim();
+        if !trimmed.is_empty() && trimmed != "(null)" {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+                return Some(dt.with_timezone(&Utc));
+            }
+        }
+    }
+    // Fallback: app bundle mtime
+    let meta = std::fs::metadata(app_path).ok()?;
+    if let Ok(mtime) = meta.modified() {
+        let duration = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(
+            DateTime::from_timestamp(duration.as_secs() as i64, 0)
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    }
+}
+
 pub fn find_installed_apps(
     progress: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<Vec<AppInfo>, String> {
@@ -116,12 +147,13 @@ pub fn find_installed_apps(
             }
             let size = app_size(&path);
             let id = bundle_id_for_app(&path).unwrap_or_else(|| format!("unknown.{}", name));
+            let last_used = last_used_date(&path);
             apps.push(AppInfo {
                 id,
                 name,
                 path,
                 size,
-                last_used: None,
+                last_used,
                 is_from_app_store: false,
             });
         }
@@ -215,6 +247,73 @@ fn dir_size(path: &Path) -> u64 {
         }
     }
     total
+}
+
+#[derive(Debug, Clone)]
+pub struct OrphanedData {
+    pub paths: Vec<PathBuf>,
+    pub total_bytes: u64,
+    pub item_count: usize,
+}
+
+pub fn find_orphaned_data() -> Result<OrphanedData, String> {
+    let home = home_dir().ok_or_else(|| "HOME not set".to_string())?;
+    let apps = find_installed_apps(None)?;
+
+    let known_names: Vec<String> = apps
+        .iter()
+        .flat_map(|a| {
+            let mut names = Vec::new();
+            names.push(a.name.to_lowercase());
+            let id_clean = a.id.to_lowercase().replace('.', "");
+            names.push(id_clean);
+            names
+        })
+        .collect();
+
+    let mut orphaned = Vec::new();
+    let mut total = 0u64;
+
+    for rel in LEFTOVER_RELATIVE_PATHS {
+        let base = home.join(rel);
+        if !base.exists() {
+            continue;
+        }
+        let read_dir = match std::fs::read_dir(&base) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            let fname = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+            if fname.starts_with('.') {
+                continue;
+            }
+
+            let is_known = known_names.iter().any(|k| {
+                let kc = k.to_lowercase();
+                let fc = fname.to_lowercase();
+                fc == kc || fc.contains(&kc) || kc.contains(&fc)
+            });
+
+            if !is_known {
+                let size = dir_size(&p);
+                orphaned.push(p);
+                total += size;
+            }
+        }
+    }
+
+    let count = orphaned.len();
+    Ok(OrphanedData {
+        paths: orphaned,
+        total_bytes: total,
+        item_count: count,
+    })
 }
 
 pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanReport, String> {
@@ -320,5 +419,13 @@ mod tests {
         let leftovers = find_leftovers(&app).unwrap();
         assert!(leftovers.leftover_paths.is_empty());
         assert_eq!(leftovers.total_leftover_bytes, 0);
+    }
+
+    #[test]
+    fn test_find_orphaned_data_returns_ok() {
+        let result = find_orphaned_data();
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert!(data.item_count == 0 || data.total_bytes > 0);
     }
 }

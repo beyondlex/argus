@@ -6,9 +6,10 @@ edition = "2021"
 [features]
 default = ["cleanup"]
 cleanup = ["argus-core/cleanup"]
+shell-cmds = ["cleanup", "argus-core/shell-cmds"]
 
 [dependencies]
-argus-core = { path = "../argus-core", features = ["cleanup"] }
+argus-core = { path = "../argus-core" }
 clap = { version = "4.4", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"

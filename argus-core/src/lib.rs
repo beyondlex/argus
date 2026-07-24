@@ -23,7 +23,13 @@ pub use cleaner::{
     cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},
     purge::{find_artifacts, remove_artifacts, Artifact, ArtifactKind},
     safety::{check_deletion_allowed, classify_risk, is_protected, RiskLevel},
-    uninstaller::{find_installed_apps, find_leftovers, uninstall_app, AppInfo, AppLeftovers},
+    uninstaller::{find_installed_apps, find_leftovers, find_orphaned_data, uninstall_app, AppInfo, AppLeftovers, OrphanedData},
+};
+
+#[cfg(feature = "shell-cmds")]
+pub use cleaner::shell_cmd::{
+    default_shell_cmd_targets, exec_all_shell_cmds, try_exec_shell_cmd, ShellCmdResult,
+    ShellCmdTarget,
 };
 
 pub use db::{

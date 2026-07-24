@@ -7,6 +7,7 @@ edition = "2021"
 default = []
 ai = ["dep:ureq"]
 cleanup = ["dep:trash"]
+shell-cmds = ["cleanup"]
 
 [dependencies]
 jwalk = "0.8"
