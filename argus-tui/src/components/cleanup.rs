@@ -68,6 +68,16 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(block, area);
 
     if state.scanning {
+        if let Some(ref path) = state.scan_current_path {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" Scanning {} ", path),
+                    Style::default().fg(theme.text_secondary),
+                )))
+                .alignment(Alignment::Center),
+                inner,
+            );
+        }
         return;
     }
 
@@ -166,7 +176,7 @@ fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, _app: &A
             let size_str = format_size(item.size);
 
             let style = if is_cursor {
-                Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.text)
             };
@@ -180,9 +190,12 @@ fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, _app: &A
                 Span::styled(format!("{} ", prefix), style),
                 Span::styled(checkbox, checkbox_style),
                 Span::raw(" "),
-                Span::styled(name, style),
+                Span::styled(
+                    format!("{:>10}", size_str),
+                    Style::default().fg(theme.text_highlight),
+                ),
                 Span::raw("  "),
-                Span::styled(size_str, Style::default().fg(theme.text_highlight)),
+                Span::styled(name, style),
             ])
         })
         .collect();
@@ -233,6 +246,16 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(block, area);
 
     if state.scanning {
+        if let Some(ref path) = state.scan_current_path {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" Scanning {} ", path),
+                    Style::default().fg(theme.text_secondary),
+                )))
+                .alignment(Alignment::Center),
+                inner,
+            );
+        }
         return;
     }
 
@@ -306,16 +329,19 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _a
             let size_str = format_size(app_info.size);
 
             let style = if is_cursor {
-                Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.text)
             };
 
             Line::from(vec![
                 Span::styled(format!("{} ", prefix), style),
-                Span::styled(app_info.name.clone(), style),
+                Span::styled(
+                    format!("{:>10}", size_str),
+                    Style::default().fg(theme.text_highlight),
+                ),
                 Span::raw("  "),
-                Span::styled(size_str, Style::default().fg(theme.text_highlight)),
+                Span::styled(app_info.name.clone(), style),
                 Span::raw("  "),
                 Span::styled(
                     app_info.id.clone(),
@@ -385,7 +411,7 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _
                 let prefix = if is_cursor { ">" } else { " " };
 
                 let style = if is_cursor {
-                    Style::default().fg(theme.focus_fg).bg(theme.focus_bg)
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.text)
                 };

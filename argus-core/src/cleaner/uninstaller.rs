@@ -92,7 +92,9 @@ fn app_size(app_path: &Path) -> u64 {
     total
 }
 
-pub fn find_installed_apps() -> Result<Vec<AppInfo>, String> {
+pub fn find_installed_apps(
+    progress: Option<std::sync::mpsc::Sender<String>>,
+) -> Result<Vec<AppInfo>, String> {
     let mut apps = Vec::new();
     for dir_str in APP_DIRS {
         let dir = Path::new(dir_str);
@@ -109,6 +111,9 @@ pub fn find_installed_apps() -> Result<Vec<AppInfo>, String> {
                 continue;
             }
             let name = app_name_from_path(&path);
+            if let Some(ref tx) = progress {
+                let _ = tx.send(path.display().to_string());
+            }
             let size = app_size(&path);
             let id = bundle_id_for_app(&path).unwrap_or_else(|| format!("unknown.{}", name));
             apps.push(AppInfo {
@@ -284,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_find_apps_returns_list() {
-        let apps = find_installed_apps().unwrap();
+        let apps = find_installed_apps(None).unwrap();
         for app in &apps {
             assert!(!app.name.is_empty());
             assert!(app.path.to_string_lossy().ends_with(".app"));

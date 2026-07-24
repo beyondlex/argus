@@ -200,7 +200,7 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.scanning {
+    if app.scanning && !matches!(app.mode, AppMode::Cleanup | AppMode::Uninstall) {
         render_scan_popup(f, area, app);
         return;
     }

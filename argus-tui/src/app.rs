@@ -496,9 +496,11 @@ impl App {
                     state.status = AiStatus::Error(msg);
                 }
             }
-            AppMessage::CleanupScanComplete { items, total_bytes } => {
+            AppMessage::CleanupScanComplete { mut items, total_bytes } => {
+                self.scanning = false;
                 if let Some(ref mut state) = self.cleanup_state {
                     state.scanning = false;
+                    items.sort_by(|a, b| b.size.cmp(&a.size));
                     state.items = items;
                     state.total_bytes = total_bytes;
                     // Pre-select items over 1GB
@@ -515,11 +517,22 @@ impl App {
                     state.report = Some(report);
                 }
             }
+            AppMessage::CleanupScanProgress(path) => {
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.scan_current_path = Some(path);
+                }
+            }
             AppMessage::AppListReady(apps) => {
+                self.scanning = false;
                 if let Some(ref mut state) = self.uninstall_state {
                     state.scanning = false;
                     state.apps = apps;
                     state.filtered = (0..state.apps.len()).collect();
+                }
+            }
+            AppMessage::UninstallScanProgress(path) => {
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.scan_current_path = Some(path);
                 }
             }
             AppMessage::UninstallLeftoversReady(leftovers) => {
@@ -1339,6 +1352,7 @@ impl App {
         self.cleanup_state = Some(CleanupState {
             mode,
             scanning: true,
+            scan_current_path: None,
             items: Vec::new(),
             total_bytes: 0,
             selected: HashSet::new(),
@@ -1349,12 +1363,16 @@ impl App {
             report: None,
         });
         self.mode = AppMode::Cleanup;
+        self.scanning = true;
+        self.scan_spinner = 0;
+        self.scan_spinner_tick = Instant::now();
         self.spawn_cleanup_scan(mode);
     }
 
     pub fn exit_cleanup(&mut self) {
         self.cleanup_state = None;
         self.mode = AppMode::Browsing;
+        self.scanning = false;
     }
 
     fn spawn_cleanup_scan(&self, mode: CleanupMode) {
@@ -1405,22 +1423,36 @@ impl App {
             selected_leftovers: HashSet::new(),
             remove_leftovers: true,
             scanning: true,
+            scan_current_path: None,
             confirm_pending: false,
             report: None,
         });
         self.mode = AppMode::Uninstall;
+        self.scanning = true;
+        self.scan_spinner = 0;
+        self.scan_spinner_tick = Instant::now();
         self.spawn_app_list_scan();
     }
 
     pub fn exit_uninstall(&mut self) {
         self.uninstall_state = None;
         self.mode = AppMode::Browsing;
+        self.scanning = false;
     }
 
     fn spawn_app_list_scan(&self) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            match argus_core::find_installed_apps() {
+            let (prog_tx, prog_rx) = std::sync::mpsc::channel::<String>();
+            let tx2 = tx.clone();
+            std::thread::spawn(move || {
+                while let Ok(path) = prog_rx.recv() {
+                    if tx2.blocking_send(AppMessage::UninstallScanProgress(path)).is_err() {
+                        break;
+                    }
+                }
+            });
+            match argus_core::find_installed_apps(Some(prog_tx)) {
                 Ok(apps) => {
                     let _ = tx.blocking_send(AppMessage::AppListReady(apps));
                 }

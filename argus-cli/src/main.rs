@@ -475,7 +475,7 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
 
 #[cfg(feature = "cleanup")]
 fn cmd_uninstall(dry_run: bool) -> Result<i32> {
-    let apps = find_installed_apps().map_err(|e| anyhow::anyhow!("find apps: {e}"))?;
+    let apps = find_installed_apps(None).map_err(|e| anyhow::anyhow!("find apps: {e}"))?;
     if apps.is_empty() {
         println!("{}", "no apps found".yellow());
         return Ok(0);
