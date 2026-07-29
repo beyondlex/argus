@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod brew;
 pub mod categories;
 #[allow(clippy::module_inception)]
 pub mod cleaner;

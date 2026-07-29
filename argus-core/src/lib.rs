@@ -19,11 +19,19 @@ pub use ai::{analyze, call_ai_api};
 #[cfg(feature = "cleanup")]
 pub use cleaner::{
     audit::{log_operation, read_audit_log, AuditEntry, AuditOp},
+    brew::{
+        brew_cache_size, brew_dependents_of, clean_brew_cache, is_brew_available,
+        list_brew_packages, uninstall_brew_package, BrewFilterType, BrewPackage,
+        BrewPackageType, BrewSortMode,
+    },
     categories::{default_clean_targets, scan_target_size, CleanTarget, TargetCategory},
     cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},
     purge::{find_artifacts, remove_artifacts, Artifact, ArtifactKind},
     safety::{check_deletion_allowed, classify_risk, is_protected, RiskLevel},
-    uninstaller::{find_installed_apps, find_leftovers, find_orphaned_data, uninstall_app, AppInfo, AppLeftovers, OrphanedData},
+    uninstaller::{
+        find_installed_apps, find_leftovers, find_orphaned_data, uninstall_app, AppInfo,
+        AppLeftovers, OrphanedData,
+    },
 };
 
 #[cfg(feature = "shell-cmds")]

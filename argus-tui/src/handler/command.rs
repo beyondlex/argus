@@ -113,6 +113,12 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
         return;
     }
 
+    if cmd.eq_ignore_ascii_case("Brew") {
+        app.clear_command_state();
+        app.enter_brew();
+        return;
+    }
+
     if cmd.eq_ignore_ascii_case("Scan") {
         app.clear_command_state();
         crate::handler::start_scan(app);

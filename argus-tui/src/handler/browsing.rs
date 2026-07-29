@@ -156,6 +156,12 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             }
             app.enter_uninstall();
         }
+        KeyCode::Char('B') => {
+            if app.multi_select {
+                app.exit_multi_select();
+            }
+            app.enter_brew();
+        }
         KeyCode::Char('q') => {
             app.mode = AppMode::QuitConfirm;
         }

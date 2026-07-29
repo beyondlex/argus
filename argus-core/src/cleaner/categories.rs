@@ -18,7 +18,7 @@ pub enum TargetCategory {
     VMTools,
     AppSupport,
     UninstalledData,
-IosBackup,
+    IosBackup,
     TimeMachine,
 }
 
@@ -163,9 +163,7 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
         targets.push(CleanTarget {
             id: "dev-rust-doc".into(),
             label: "Rust Documentation Cache".into(),
-            paths: vec![
-                home.join(".cargo/registry/doc"),
-            ],
+            paths: vec![home.join(".cargo/registry/doc")],
             risk: RiskLevel::Low,
             category: TargetCategory::DevTools,
         });
@@ -173,10 +171,7 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
         targets.push(CleanTarget {
             id: "dev-pip".into(),
             label: "pip Cache".into(),
-            paths: vec![
-                home.join("Library/Caches/pip"),
-                home.join(".cache/pip"),
-            ],
+            paths: vec![home.join("Library/Caches/pip"), home.join(".cache/pip")],
             risk: RiskLevel::Low,
             category: TargetCategory::DevTools,
         });
@@ -184,10 +179,7 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
         targets.push(CleanTarget {
             id: "dev-uv".into(),
             label: "uv Cache".into(),
-            paths: vec![
-                home.join(".cache/uv"),
-                home.join("Library/Caches/uv"),
-            ],
+            paths: vec![home.join(".cache/uv"), home.join("Library/Caches/uv")],
             risk: RiskLevel::Low,
             category: TargetCategory::DevTools,
         });
@@ -195,10 +187,7 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
         targets.push(CleanTarget {
             id: "dev-go".into(),
             label: "Go Cache".into(),
-            paths: vec![
-                home.join("Library/Caches/go"),
-                home.join(".cache/go"),
-            ],
+            paths: vec![home.join("Library/Caches/go"), home.join(".cache/go")],
             risk: RiskLevel::Low,
             category: TargetCategory::DevTools,
         });

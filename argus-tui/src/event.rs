@@ -120,7 +120,12 @@ fn advance_timers(
 ) -> bool {
     let mut dirty = false;
 
-    if app.scanning && app.scan_spinner_tick.elapsed() >= spinner_rate {
+    let brew_uninstalling = matches!(app.mode, AppMode::Brew)
+        && app
+            .brew_state
+            .as_ref()
+            .is_some_and(|s| s.uninstalling);
+    if (app.scanning || brew_uninstalling) && app.scan_spinner_tick.elapsed() >= spinner_rate {
         app.scan_spinner = (app.scan_spinner + 1) % 10;
         app.scan_spinner_tick = Instant::now();
         dirty = true;

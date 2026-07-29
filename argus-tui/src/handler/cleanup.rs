@@ -17,7 +17,11 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    if app.cleanup_state.as_ref().is_some_and(|s| s.confirm_pending) {
+    if app
+        .cleanup_state
+        .as_ref()
+        .is_some_and(|s| s.confirm_pending)
+    {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let (items, selected, dry_run) = {
@@ -39,7 +43,8 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
                             let _ = tx.blocking_send(AppMessage::CleanupExecComplete(r));
                         }
                         Err(e) => {
-                            let _ = tx.blocking_send(AppMessage::Error(format!("clean failed: {e}")));
+                            let _ =
+                                tx.blocking_send(AppMessage::Error(format!("clean failed: {e}")));
                         }
                     }
                 });
@@ -54,7 +59,9 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    let Some(ref state) = app.cleanup_state else { return };
+    let Some(ref state) = app.cleanup_state else {
+        return;
+    };
 
     if state.scanning {
         return;
@@ -134,7 +141,11 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
 }
 
 pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
-    if app.uninstall_state.as_ref().is_some_and(|s| s.confirm_pending) {
+    if app
+        .uninstall_state
+        .as_ref()
+        .is_some_and(|s| s.confirm_pending)
+    {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let (app_info, remove_leftovers) = {
@@ -153,7 +164,8 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
                             let _ = tx.blocking_send(AppMessage::UninstallComplete(r));
                         }
                         Err(e) => {
-                            let _ = tx.blocking_send(AppMessage::Error(format!("uninstall failed: {e}")));
+                            let _ = tx
+                                .blocking_send(AppMessage::Error(format!("uninstall failed: {e}")));
                         }
                     }
                 });
@@ -168,7 +180,9 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
         return;
     }
 
-    let Some(ref state) = app.uninstall_state else { return };
+    let Some(ref state) = app.uninstall_state else {
+        return;
+    };
 
     if state.scanning {
         return;
@@ -198,7 +212,9 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                         .iter()
                         .enumerate()
                         .filter(|(_, a)| {
-                            a.name.to_lowercase().contains(&s.search_word.to_lowercase())
+                            a.name
+                                .to_lowercase()
+                                .contains(&s.search_word.to_lowercase())
                         })
                         .map(|(i, _)| i)
                         .collect();
@@ -213,7 +229,9 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                         .iter()
                         .enumerate()
                         .filter(|(_, a)| {
-                            a.name.to_lowercase().contains(&s.search_word.to_lowercase())
+                            a.name
+                                .to_lowercase()
+                                .contains(&s.search_word.to_lowercase())
                         })
                         .map(|(i, _)| i)
                         .collect();
@@ -272,7 +290,9 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                         let b_t = b.last_used.unwrap_or_default();
                         b_t.cmp(&a_t)
                     }),
-                    _ => s.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                    _ => s
+                        .apps
+                        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
                 }
                 s.filtered = (0..s.apps.len()).collect();
                 s.cursor = 0;
@@ -286,7 +306,9 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                     .iter()
                     .enumerate()
                     .filter(|(_, a)| {
-                        a.name.to_lowercase().contains(&s.search_word.to_lowercase())
+                        a.name
+                            .to_lowercase()
+                            .contains(&s.search_word.to_lowercase())
                     })
                     .map(|(i, _)| i)
                     .collect();
@@ -307,14 +329,13 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                 }
                 let app_info = app.uninstall_state.as_ref().unwrap().apps[idx].clone();
                 let tx = app.tx.clone();
-                std::thread::spawn(move || {
-                    match argus_core::find_leftovers(&app_info) {
-                        Ok(leftovers) => {
-                            let _ = tx.blocking_send(AppMessage::UninstallLeftoversReady(leftovers));
-                        }
-                        Err(e) => {
-                            let _ = tx.blocking_send(AppMessage::Error(format!("leftover scan failed: {e}")));
-                        }
+                std::thread::spawn(move || match argus_core::find_leftovers(&app_info) {
+                    Ok(leftovers) => {
+                        let _ = tx.blocking_send(AppMessage::UninstallLeftoversReady(leftovers));
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .blocking_send(AppMessage::Error(format!("leftover scan failed: {e}")));
                     }
                 });
             }
@@ -329,13 +350,19 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
 fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {
     let leftover_count = {
         let s = app.uninstall_state.as_ref().unwrap();
-        s.leftovers.as_ref().map(|l| l.leftover_paths.len()).unwrap_or(0)
+        s.leftovers
+            .as_ref()
+            .map(|l| l.leftover_paths.len())
+            .unwrap_or(0)
     };
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(ref mut s) = app.uninstall_state {
-                s.cursor = s.cursor.saturating_add(1).min(leftover_count.saturating_sub(1));
+                s.cursor = s
+                    .cursor
+                    .saturating_add(1)
+                    .min(leftover_count.saturating_sub(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {

@@ -6,6 +6,7 @@ use ratatui_finder::{FinderColors, FinderConfig, FinderMode, FinderState};
 
 impl App {
     pub const COMMANDS: &'static [&'static str] = &[
+        "Brew",
         "Clean",
         "Consolidate",
         "Delta",

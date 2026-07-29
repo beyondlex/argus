@@ -12,7 +12,9 @@ use ratatui::{
 };
 
 pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(ref state) = app.cleanup_state.clone() else { return };
+    let Some(ref state) = app.cleanup_state.clone() else {
+        return;
+    };
     let theme = &app.theme;
 
     let mode_label = match state.mode {
@@ -21,7 +23,11 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let title = if state.scanning {
-        format!(" Argus {} [{}] ", mode_label, SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()])
+        format!(
+            " Argus {} [{}] ",
+            mode_label,
+            SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()]
+        )
     } else if state.report.is_some() {
         format!(" Argus {} (complete) ", mode_label)
     } else {
@@ -32,7 +38,11 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.popup_border_normal))
         .style(Style::default().bg(theme.popup_bg))
-        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_alignment(Alignment::Center)
         .title(title);
 
@@ -44,21 +54,40 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
     } else if state.report.is_some() {
         let r = state.report.as_ref().unwrap();
         let status = if r.total_failed > 0 {
-            format!(" {} succeeded, {} failed, {} freed ",
-                r.total_succeeded, r.total_failed, format_size(r.freed_bytes))
+            format!(
+                " {} succeeded, {} failed, {} freed ",
+                r.total_succeeded,
+                r.total_failed,
+                format_size(r.freed_bytes)
+            )
         } else {
-            format!(" {} succeeded, {} freed ",
-                r.total_succeeded, format_size(r.freed_bytes))
+            format!(
+                " {} succeeded, {} freed ",
+                r.total_succeeded,
+                format_size(r.freed_bytes)
+            )
         };
-        Line::from(Span::styled(status, Style::default().fg(if r.total_failed > 0 { theme.danger } else { theme.success })))
-            .alignment(Alignment::Center)
+        Line::from(Span::styled(
+            status,
+            Style::default().fg(if r.total_failed > 0 {
+                theme.danger
+            } else {
+                theme.success
+            }),
+        ))
+        .alignment(Alignment::Center)
     } else {
-        Line::from(
-            key_hints(
-                &[("j/k", "Move"), ("Space", "Toggle"), ("i", "Details"), ("Enter", "Execute"), ("d", "Dry-run"), ("Esc", "Back")],
-                theme,
-            ),
-        )
+        Line::from(key_hints(
+            &[
+                ("j/k", "Move"),
+                ("Space", "Toggle"),
+                ("i", "Details"),
+                ("Enter", "Execute"),
+                ("d", "Dry-run"),
+                ("Esc", "Back"),
+            ],
+            theme,
+        ))
         .alignment(Alignment::Center)
     };
     let block = block.title_bottom(footer);
@@ -72,13 +101,19 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
         let mut scan_lines = vec![
             Line::from(Span::styled(
                 format!(" {} Scanning... ", spinner),
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-            )).alignment(Alignment::Center),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
             Line::from(""),
         ];
         if let Some(ref path) = state.scan_current_path {
             let display_path = path.replacen(
-                &std::path::Path::new("/Users").join(whoami()).to_string_lossy().to_string(),
+                &std::path::Path::new("/Users")
+                    .join(whoami())
+                    .to_string_lossy()
+                    .to_string(),
                 "~",
                 1,
             );
@@ -86,14 +121,16 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
                 Line::from(Span::styled(
                     format!(" {}", display_path),
                     Style::default().fg(theme.text_secondary),
-                )).alignment(Alignment::Center),
+                ))
+                .alignment(Alignment::Center),
             );
         } else {
             scan_lines.push(
                 Line::from(Span::styled(
                     " discovering targets... ",
                     Style::default().fg(theme.text_tertiary),
-                )).alignment(Alignment::Center),
+                ))
+                .alignment(Alignment::Center),
             );
         }
         scan_lines.push(Line::from(""));
@@ -101,7 +138,8 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(Span::styled(
                 " This may take a moment depending on the size of your caches ",
                 Style::default().fg(theme.text_tertiary),
-            )).alignment(Alignment::Center),
+            ))
+            .alignment(Alignment::Center),
         );
         f.render_widget(
             Paragraph::new(scan_lines).alignment(Alignment::Center),
@@ -118,7 +156,10 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
     if state.detail_pending {
         let detail_items = state.detail_items.as_deref().unwrap_or(&[]);
         let item = state.items.get(state.cursor);
-        let home = std::path::Path::new("/Users").join(whoami()).to_string_lossy().to_string();
+        let home = std::path::Path::new("/Users")
+            .join(whoami())
+            .to_string_lossy()
+            .to_string();
         let full_path = item
             .map(|i| i.path.to_string_lossy().to_string().replacen(&home, "~", 1))
             .unwrap_or_default();
@@ -139,7 +180,11 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    format!(" {} total, {} items ", format_size(total_size), detail_items.len()),
+                    format!(
+                        " {} total, {} items ",
+                        format_size(total_size),
+                        detail_items.len()
+                    ),
                     Style::default().fg(theme.text_tertiary),
                 )),
                 Line::from(""),
@@ -173,12 +218,12 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
             .style(Style::default().bg(theme.popup_bg))
             .title(" Preview ")
             .title_alignment(Alignment::Center)
-            .title_bottom(
-                Line::from(key_hints(&[("Esc", "Close")], theme)).centered(),
-            );
+            .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme)).centered());
         f.render_widget(Clear, popup_area);
         f.render_widget(
-            Paragraph::new(lines).block(detail_block).wrap(Wrap { trim: false }),
+            Paragraph::new(lines)
+                .block(detail_block)
+                .wrap(Wrap { trim: false }),
             popup_area,
         );
         return;
@@ -193,10 +238,18 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
             .filter(|(i, _)| state.selected.contains(i))
             .map(|(_, item)| item.size)
             .sum();
-        let home = std::path::Path::new("/Users").join(whoami()).to_string_lossy().to_string();
+        let home = std::path::Path::new("/Users")
+            .join(whoami())
+            .to_string_lossy()
+            .to_string();
         let mut confirm_lines = vec![
             Line::from(Span::styled(
-                format!("Delete {} item(s) ({} {})?", selected_count, format_size(selected_total), if state.dry_run { "dry-run" } else { "to trash" }),
+                format!(
+                    "Delete {} item(s) ({} {})?",
+                    selected_count,
+                    format_size(selected_total),
+                    if state.dry_run { "dry-run" } else { "to trash" }
+                ),
                 Style::default().fg(theme.text),
             )),
             Line::from(""),
@@ -208,7 +261,11 @@ pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
             .filter(|(i, _)| state.selected.contains(i))
             .collect();
         for (_, item) in selected_items.iter().take(3) {
-            let path_str = item.path.to_string_lossy().to_string().replacen(&home, "~", 1);
+            let path_str = item
+                .path
+                .to_string_lossy()
+                .to_string()
+                .replacen(&home, "~", 1);
             confirm_lines.push(Line::from(vec![
                 Span::styled(
                     format!("{:>10}", format_size(item.size)),
@@ -269,12 +326,21 @@ fn render_cleanup_summary(f: &mut Frame, area: Rect, state: &CleanupState, theme
         state.items.len(),
     );
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, Style::default().fg(theme.text_secondary)))),
+        Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.text_secondary),
+        ))),
         area,
     );
 }
 
-fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, _app: &App, theme: &ColorTheme) {
+fn render_cleanup_list(
+    f: &mut Frame,
+    area: Rect,
+    state: &CleanupState,
+    _app: &App,
+    theme: &ColorTheme,
+) {
     let visible_count = state.items.len();
     let max_scroll = visible_count.saturating_sub(area.height as usize);
     let scroll = state.scroll_offset.min(max_scroll);
@@ -300,7 +366,9 @@ fn render_cleanup_list(f: &mut Frame, area: Rect, state: &CleanupState, _app: &A
             let size_str = format_size(item.size);
 
             let style = if is_cursor {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.text)
             };
@@ -331,7 +399,12 @@ fn whoami() -> String {
     std::env::var("USER").unwrap_or_else(|_| "user".to_string())
 }
 
-fn render_cleanup_report(f: &mut Frame, area: Rect, report: &argus_core::CleanReport, _theme: &ColorTheme) {
+fn render_cleanup_report(
+    f: &mut Frame,
+    area: Rect,
+    report: &argus_core::CleanReport,
+    _theme: &ColorTheme,
+) {
     let text = format!(
         "Clean complete!\n\nAttempted: {}\nSucceeded: {}\nFailed: {}\nFreed: {}",
         report.total_attempted,
@@ -350,11 +423,16 @@ fn render_cleanup_report(f: &mut Frame, area: Rect, report: &argus_core::CleanRe
 // ── Uninstall Panel ─────────────────────────────────────────────────
 
 pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(ref state) = app.uninstall_state.clone() else { return };
+    let Some(ref state) = app.uninstall_state.clone() else {
+        return;
+    };
     let theme = &app.theme;
 
     let title = if state.scanning {
-        format!(" Argus Uninstall [{}] ", SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()])
+        format!(
+            " Argus Uninstall [{}] ",
+            SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()]
+        )
     } else if state.report.is_some() {
         " Argus Uninstall (complete) ".to_string()
     } else {
@@ -365,7 +443,11 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.popup_border_normal))
         .style(Style::default().bg(theme.popup_bg))
-        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .title_alignment(Alignment::Center)
         .title(title);
 
@@ -394,7 +476,11 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
 
     if state.confirm_pending {
         let app_idx = state.selected_app.unwrap_or(0);
-        let app_name = state.apps.get(app_idx).map(|a| a.name.as_str()).unwrap_or("?");
+        let app_name = state
+            .apps
+            .get(app_idx)
+            .map(|a| a.name.as_str())
+            .unwrap_or("?");
         let confirm_text = format!("Uninstall {} and remove leftovers?", app_name);
         let confirm_block = Block::default()
             .borders(Borders::ALL)
@@ -425,9 +511,19 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _app: &App, theme: &ColorTheme) {
-    let [search_area, list_area, footer_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
+fn render_uninstall_select(
+    f: &mut Frame,
+    area: Rect,
+    state: &UninstallState,
+    _app: &App,
+    theme: &ColorTheme,
+) {
+    let [search_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     let search_text = if state.filter_mode {
         format!(" /{} ", state.search_word)
@@ -437,7 +533,9 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _a
         format!(" Search: {} ", state.search_word)
     };
     let search_style = if state.filter_mode {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else if !state.search_word.is_empty() {
         Style::default().fg(theme.accent)
     } else {
@@ -465,7 +563,9 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _a
             let time_str = format_relative_time(app_info.last_used);
 
             let style = if is_cursor {
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.text)
             };
@@ -518,14 +618,27 @@ fn render_uninstall_select(f: &mut Frame, area: Rect, state: &UninstallState, _a
         sort_label,
     );
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(footer_text, Style::default().fg(theme.text_tertiary)))),
+        Paragraph::new(Line::from(Span::styled(
+            footer_text,
+            Style::default().fg(theme.text_tertiary),
+        ))),
         footer_area,
     );
 }
 
-fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _app: &App, theme: &ColorTheme) {
-    let Some(app_idx) = state.selected_app else { return };
-    let Some(ref app_info) = state.apps.get(app_idx) else { return };
+fn render_uninstall_confirm(
+    f: &mut Frame,
+    area: Rect,
+    state: &UninstallState,
+    _app: &App,
+    theme: &ColorTheme,
+) {
+    let Some(app_idx) = state.selected_app else {
+        return;
+    };
+    let Some(ref app_info) = state.apps.get(app_idx) else {
+        return;
+    };
 
     let [detail_area, leftover_label_area, leftover_list_area, toggle_area, footer_area] =
         Layout::vertical([
@@ -560,7 +673,9 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _
             leftover_label_area,
         );
 
-        let scroll = state.cursor.saturating_sub(leftover_list_area.height as usize / 2);
+        let scroll = state
+            .cursor
+            .saturating_sub(leftover_list_area.height as usize / 2);
         let items: Vec<Line> = leftovers
             .leftover_paths
             .iter()
@@ -574,18 +689,23 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _
                 let prefix = if is_cursor { ">" } else { " " };
 
                 let style = if is_cursor {
-                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.text)
                 };
 
                 Line::from(vec![
                     Span::styled(format!("{} ", prefix), style),
-                    Span::styled(checkbox, if is_selected {
-                        Style::default().fg(theme.success)
-                    } else {
-                        Style::default().fg(theme.text_tertiary)
-                    }),
+                    Span::styled(
+                        checkbox,
+                        if is_selected {
+                            Style::default().fg(theme.success)
+                        } else {
+                            Style::default().fg(theme.text_tertiary)
+                        },
+                    ),
                     Span::raw(" "),
                     Span::styled(path.to_string_lossy(), style),
                 ])
@@ -602,7 +722,6 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _
         );
     }
 
-
     // Remove leftovers toggle
     let toggle_label = if state.remove_leftovers {
         "[x] Remove leftovers (recommended)"
@@ -612,14 +731,23 @@ fn render_uninstall_confirm(f: &mut Frame, area: Rect, state: &UninstallState, _
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             toggle_label,
-            Style::default().fg(if state.remove_leftovers { theme.success } else { theme.text }),
+            Style::default().fg(if state.remove_leftovers {
+                theme.success
+            } else {
+                theme.text
+            }),
         ))),
         toggle_area,
     );
 
     // Footer
     let footer_hints = key_hints(
-        &[("j/k", "Move"), ("Space", "Toggle"), ("Enter", "Uninstall"), ("Esc", "Back")],
+        &[
+            ("j/k", "Move"),
+            ("Space", "Toggle"),
+            ("Enter", "Uninstall"),
+            ("Esc", "Back"),
+        ],
         theme,
     );
     f.render_widget(

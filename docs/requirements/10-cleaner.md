@@ -346,7 +346,90 @@ pub enum UninstallPhase {
 - 退回时可选择重新扫描当前目录（类似 `scan_cache` 失效后自动刷新）
 - 清理操作记录到审计日志（`audit.rs`），可在 TUI 通过 `:Audit` 查看（未来）
 
-### 4.3 与安全文档对齐
+### 4.3 Brew 包管理
+
+#### 4.3.1 功能描述
+
+管理 Homebrew 安装的 formula 和 cask，展示最后使用时间，按未使用时间排序（越久没用越靠前），支持一键卸载。
+
+#### 4.3.2 Core 模块：`cleaner/brew.rs`
+
+```rust
+pub struct BrewPackage {
+    pub name: String,
+    pub package_type: BrewPackageType,  // Formula | Cask
+    pub version: String,
+    pub size: u64,
+    pub installed_date: Option<DateTime<Utc>>,
+    pub last_used: Option<DateTime<Utc>>,  // 核心指标
+    pub description: String,
+    pub dependents: usize,
+}
+
+pub enum BrewPackageType { Formula, Cask }
+pub enum BrewSortMode { Time, Size, Name, Type }
+pub enum BrewFilterType { All, Formula, Cask }
+
+pub fn list_brew_packages(progress: Option<Sender<String>>) -> Vec<BrewPackage>;
+pub fn uninstall_brew_package(pkg: &BrewPackage) -> Result<CleanReport, String>;
+pub fn brew_cache_size() -> u64;
+pub fn clean_brew_cache() -> Result<u64, String>;
+pub fn is_brew_available() -> bool;
+```
+
+#### 4.3.3 最后使用时间判定策略
+
+三层级判定，按优先级：
+
+1. **Shell 历史** — 解析 `~/.zsh_history` / `~/.bash_history`，查找包名作为命令的最后调用时间
+2. **文件访问时间** — 检查 `$(brew --prefix)/opt/<name>/bin/` 下二进制文件的 atime
+3. **Spotlight** — 对 cask 类型的 GUI 应用，通过 `mdls` 查询 `kMDItemLastUsedDate`
+
+排序：`last_used` 升序，`None` 视为最早（排最前）。
+
+#### 4.3.4 CLI 子命令
+
+```
+argus brew                      # 列出所有 brew 包 (按最后使用时间排序)
+argus brew --formula            # 仅显示 formula
+argus brew --cask               # 仅显示 cask
+argus brew --dry-run            # 预览模式，不卸载
+argus brew -y                   # 跳过确认
+```
+
+#### 4.3.5 TUI 面板
+
+入口：`:Brew` 命令 或 `B` (Shift+b) 快捷键
+
+```
+┌ Argus Brew ────────────────────────────────────────────┐
+│ Search: [________________]  Cache: 2.3 GB              │
+│ Sort: time  Type: All                                  │
+│                                                         │
+│  last_used    size      type  name  desc               │
+│ >       never  14.2 MB  [F]   libomp  LLVM OpenMP...   │
+│          never   8.1 MB  [F]   pkg-conf  pkg-config... │
+│     12d ago   12.5 MB  [F]   sqlite  SQLite database  │
+│     3mo ago    3.2 MB  [F]   tree  Directory listing   │
+│      1y ago   45.8 MB  [F]   python@3.11  Python...   │
+│                                                         │
+│  60 packages  |  j/k move  Enter select  o sort        │
+│  t type  / filter  Esc back                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+交互：
+
+| 按键 | 功能 |
+|------|------|
+| `j/k` | 上下移动 |
+| `o` | 循环排序: time→size→name→type |
+| `t` | 征环过滤: all→formula→cask |
+| `/` | 进入搜索过滤模式 |
+| `Enter` | 选中包 → 确认卸载 |
+| `Esc` | 返回浏览模式 |
+
+### 4.4 与安全文档对齐
 
 - `cleaner/safety.rs` 是 `07-safety.md` §2.1/§2.2 的代码化
 - 所有清理触发前先过 `check_deletion_allowed()`
@@ -362,8 +445,9 @@ pub enum UninstallPhase {
 | 4 | `audit.rs` | 审计日志读写 |
 | 5 | `uninstaller.rs` | App 发现 + 残留扫描 + 卸载 |
 | 6 | `purge.rs` | 构建产物扫描 |
-| 7 | CLI | 子命令接入 |
-| 8 | TUI | 清理面板 |
+| 7 | `brew.rs` | Brew 包管理 + 最后使用时间 + 卸载 |
+| 8 | CLI | 子命令接入 (clean/uninstall/purge/brew) |
+| 9 | TUI | 清理/卸载/Brew 面板 |
 
 ## 6. 错误处理
 

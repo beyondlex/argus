@@ -44,6 +44,12 @@ pub enum AppMessage {
     UninstallScanProgress(String),
     UninstallLeftoversReady(argus_core::AppLeftovers),
     UninstallComplete(argus_core::CleanReport),
+    BrewScanComplete {
+        packages: Vec<argus_core::BrewPackage>,
+        cache_size: u64,
+    },
+    BrewScanProgress(String),
+    BrewUninstallComplete(argus_core::CleanReport),
     Error(String),
     Info(String),
 }
@@ -71,6 +77,7 @@ pub enum AppMode {
     MultiSelectExitConfirm,
     Cleanup,
     Uninstall,
+    Brew,
 }
 
 /// Tree search mode
@@ -346,6 +353,44 @@ pub struct UninstallState {
     pub scan_current_path: Option<String>,
     pub confirm_pending: bool,
     pub report: Option<argus_core::CleanReport>,
+}
+
+/// Brew sort mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrewSortMode {
+    Time,
+    Size,
+    Name,
+    Type,
+}
+
+/// Brew filter type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrewFilterType {
+    All,
+    Formula,
+    Cask,
+}
+
+/// State for the Brew panel
+#[derive(Debug, Clone)]
+pub struct BrewState {
+    pub packages: Vec<argus_core::BrewPackage>,
+    pub filtered: Vec<usize>,
+    pub search_word: String,
+    pub filter_mode: bool,
+    pub sort_mode: BrewSortMode,
+    pub filter_type: BrewFilterType,
+    pub cursor: usize,
+    pub scanning: bool,
+    pub current_scan_target: String,
+    pub scan_progress_total: usize,
+    pub scan_progress_current: usize,
+    pub confirm_pending: bool,
+    pub uninstalling: bool,
+    pub selected_pkg: Option<usize>,
+    pub report: Option<argus_core::CleanReport>,
+    pub cache_size: u64,
 }
 
 /// State for the AI review popup

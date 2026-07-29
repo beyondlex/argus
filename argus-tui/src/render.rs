@@ -1,6 +1,7 @@
 use crate::app::{App, AppMode};
 use crate::components::{
-    ai_review, cleanup, command_bar, flat_tree, help_popup, metadata, popup, status_bar, time_help,
+    ai_review, brew, cleanup, command_bar, flat_tree, help_popup, metadata, popup, status_bar,
+    time_help,
 };
 use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
 use ratatui::{
@@ -200,7 +201,7 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.scanning && !matches!(app.mode, AppMode::Cleanup | AppMode::Uninstall) {
+    if app.scanning && !matches!(app.mode, AppMode::Cleanup | AppMode::Uninstall | AppMode::Brew) {
         render_scan_popup(f, area, app);
         return;
     }
@@ -244,6 +245,9 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
         }
         AppMode::Uninstall => {
             cleanup::render_uninstall(f, area, app);
+        }
+        AppMode::Brew => {
+            brew::render_brew(f, area, app);
         }
         AppMode::QuitConfirm => render_quit_confirm(f, area, app),
         AppMode::MultiSelectExitConfirm => render_multi_select_exit_confirm(f, area, app),

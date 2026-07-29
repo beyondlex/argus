@@ -114,10 +114,7 @@ fn last_used_date(app_path: &Path) -> Option<DateTime<Utc>> {
     let meta = std::fs::metadata(app_path).ok()?;
     if let Ok(mtime) = meta.modified() {
         let duration = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-        Some(
-            DateTime::from_timestamp(duration.as_secs() as i64, 0)
-                .unwrap_or_default(),
-        )
+        Some(DateTime::from_timestamp(duration.as_secs() as i64, 0).unwrap_or_default())
     } else {
         None
     }

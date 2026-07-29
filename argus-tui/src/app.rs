@@ -139,9 +139,10 @@ pub struct App {
     pub ai_cache: HashMap<PathBuf, AiPathVerdict>,
     pub ai_analyzed: HashMap<PathBuf, RiskLevel>,
 
-    // Cleanup / Uninstall
+    // Cleanup / Uninstall / Brew
     pub cleanup_state: Option<CleanupState>,
     pub uninstall_state: Option<UninstallState>,
+    pub brew_state: Option<BrewState>,
 
     // Hidden files
     pub show_hidden: bool,
@@ -275,6 +276,7 @@ impl App {
             },
             cleanup_state: None,
             uninstall_state: None,
+            brew_state: None,
             show_hidden: false,
             current_children: Vec::new(),
             current_filtered: Vec::new(),
@@ -410,6 +412,27 @@ impl App {
                 self.scanning = false;
                 self.scan_current_path = None;
                 self.scan_started_at = None;
+                if let Some(ref mut state) = self.brew_state {
+                    if state.uninstalling {
+                        state.uninstalling = false;
+                        let pkg_name = state
+                            .selected_pkg
+                            .and_then(|i| state.filtered.get(i).copied())
+                            .and_then(|i| state.packages.get(i))
+                            .map(|p| p.name.clone())
+                            .unwrap_or_else(|| "?".into());
+                        state.report = Some(argus_core::CleanReport {
+                            total_attempted: 1,
+                            total_succeeded: 0,
+                            total_failed: 1,
+                            freed_bytes: 0,
+                            errors: vec![(
+                                std::path::PathBuf::from(format!("brew:{pkg_name}")),
+                                e.clone(),
+                            )],
+                        });
+                    }
+                }
                 self.set_error(e, 5);
             }
             AppMessage::DaemonConnected(client) => {
@@ -498,7 +521,10 @@ impl App {
                     state.status = AiStatus::Error(msg);
                 }
             }
-            AppMessage::CleanupScanComplete { mut items, total_bytes } => {
+            AppMessage::CleanupScanComplete {
+                mut items,
+                total_bytes,
+            } => {
                 self.scanning = false;
                 if let Some(ref mut state) = self.cleanup_state {
                     state.scanning = false;
@@ -553,6 +579,43 @@ impl App {
             AppMessage::UninstallComplete(report) => {
                 if let Some(ref mut state) = self.uninstall_state {
                     state.confirm_pending = false;
+                    state.report = Some(report);
+                }
+            }
+            AppMessage::BrewScanComplete {
+                packages,
+                cache_size,
+            } => {
+                self.scanning = false;
+                if let Some(ref mut state) = self.brew_state {
+                    state.scanning = false;
+                    state.cache_size = cache_size;
+                    let len = packages.len();
+                    state.packages = packages;
+                    state.filtered = (0..len).collect();
+                }
+            }
+            AppMessage::BrewScanProgress(path) => {
+                if let Some(ref mut state) = self.brew_state {
+                    // Parse "count/total name"
+                    if let Some((left, name)) = path.split_once(' ') {
+                        if let Some((count_str, total_str)) = left.split_once('/') {
+                            if let (Ok(c), Ok(t)) = (count_str.parse(), total_str.parse()) {
+                                state.scan_progress_current = c;
+                                state.scan_progress_total = t;
+                            }
+                        }
+                        state.current_scan_target = name.to_string();
+                    } else {
+                        state.current_scan_target = path;
+                    }
+                }
+            }
+            AppMessage::BrewUninstallComplete(report) => {
+                if let Some(ref mut state) = self.brew_state {
+                    state.confirm_pending = false;
+                    state.uninstalling = false;
+                    state.selected_pkg = None;
                     state.report = Some(report);
                 }
             }
@@ -1393,7 +1456,9 @@ impl App {
                     match argus_core::dry_clean(&targets) {
                         Ok(plan) => plan.items,
                         Err(e) => {
-                            let _ = tx.blocking_send(AppMessage::Error(format!("clean scan failed: {e}")));
+                            let _ = tx.blocking_send(AppMessage::Error(format!(
+                                "clean scan failed: {e}"
+                            )));
                             return;
                         }
                     }
@@ -1402,14 +1467,19 @@ impl App {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                     let roots = vec![std::path::PathBuf::from(&home)];
                     match argus_core::find_artifacts(&roots) {
-                        Ok(artifacts) => artifacts.into_iter().map(|a| argus_core::CleanItem {
-                            path: a.path,
-                            size: a.size,
-                            risk: argus_core::RiskLevel::Safe,
-                            target_id: format!("{:?}", a.kind),
-                        }).collect(),
+                        Ok(artifacts) => artifacts
+                            .into_iter()
+                            .map(|a| argus_core::CleanItem {
+                                path: a.path,
+                                size: a.size,
+                                risk: argus_core::RiskLevel::Safe,
+                                target_id: format!("{:?}", a.kind),
+                            })
+                            .collect(),
                         Err(e) => {
-                            let _ = tx.blocking_send(AppMessage::Error(format!("purge scan failed: {e}")));
+                            let _ = tx.blocking_send(AppMessage::Error(format!(
+                                "purge scan failed: {e}"
+                            )));
                             return;
                         }
                     }
@@ -1451,6 +1521,57 @@ impl App {
         self.scanning = false;
     }
 
+    pub fn enter_brew(&mut self) {
+        self.brew_state = Some(BrewState {
+            packages: Vec::new(),
+            filtered: Vec::new(),
+            search_word: String::new(),
+            filter_mode: false,
+            sort_mode: BrewSortMode::Time,
+            filter_type: BrewFilterType::All,
+            cursor: 0,
+            scanning: true,
+            current_scan_target: String::new(),
+            scan_progress_total: 0,
+            scan_progress_current: 0,
+            confirm_pending: false,
+            uninstalling: false,
+            selected_pkg: None,
+            report: None,
+            cache_size: 0,
+        });
+        self.mode = AppMode::Brew;
+        self.scanning = true;
+        self.scan_spinner = 0;
+        self.scan_spinner_tick = Instant::now();
+        self.spawn_brew_scan();
+    }
+
+    pub fn exit_brew(&mut self) {
+        self.brew_state = None;
+        self.mode = AppMode::Browsing;
+        self.scanning = false;
+    }
+
+    fn spawn_brew_scan(&self) {
+        let tx = self.tx.clone();
+        let (prog_tx, prog_rx) = std::sync::mpsc::channel::<String>();
+        let tx2 = tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(path) = prog_rx.recv() {
+                let _ = tx2.blocking_send(AppMessage::BrewScanProgress(path));
+            }
+        });
+        std::thread::spawn(move || {
+            let packages = argus_core::list_brew_packages(Some(prog_tx));
+            let cache_size = argus_core::brew_cache_size();
+            let _ = tx.blocking_send(AppMessage::BrewScanComplete {
+                packages,
+                cache_size,
+            });
+        });
+    }
+
     fn spawn_app_list_scan(&self) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -1458,7 +1579,10 @@ impl App {
             let tx2 = tx.clone();
             std::thread::spawn(move || {
                 while let Ok(path) = prog_rx.recv() {
-                    if tx2.blocking_send(AppMessage::UninstallScanProgress(path)).is_err() {
+                    if tx2
+                        .blocking_send(AppMessage::UninstallScanProgress(path))
+                        .is_err()
+                    {
                         break;
                     }
                 }

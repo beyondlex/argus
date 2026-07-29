@@ -10,19 +10,18 @@ use tokio::net::UnixStream;
 
 #[cfg(feature = "cleanup")]
 use argus_core::{
-    default_clean_targets, dry_clean, exec_clean, find_artifacts, find_installed_apps,
-    find_leftovers, find_orphaned_data, remove_artifacts, uninstall_app, CleanItem, CleanReport,
-    CleanTarget, TargetCategory,
+    brew_cache_size, default_clean_targets, dry_clean, exec_clean, find_artifacts,
+    find_installed_apps, find_leftovers, find_orphaned_data, is_brew_available, list_brew_packages,
+    remove_artifacts, uninstall_app, uninstall_brew_package, BrewFilterType, BrewPackageType,
+    CleanItem, CleanReport, CleanTarget, TargetCategory,
 };
 
-#[cfg(feature = "shell-cmds")]
-use argus_core::{
-    default_shell_cmd_targets, try_exec_shell_cmd,
-};
 use argus_core::{
     default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
     DeltaSummary, NodeIndex, ROOT_NODE,
 };
+#[cfg(feature = "shell-cmds")]
+use argus_core::{default_shell_cmd_targets, try_exec_shell_cmd};
 
 fn main() {
     let cli = Cli::parse();
@@ -44,6 +43,13 @@ fn main() {
         Commands::Uninstall { dry_run } => cmd_uninstall(*dry_run),
         #[cfg(feature = "cleanup")]
         Commands::Purge { paths, dry_run } => cmd_purge(paths.as_deref(), *dry_run),
+        #[cfg(feature = "cleanup")]
+        Commands::Brew {
+            formula,
+            cask,
+            dry_run,
+            yes,
+        } => cmd_brew(*formula, *cask, *dry_run, *yes),
     };
 
     match result {
@@ -108,6 +114,18 @@ enum Commands {
         paths: Option<Vec<PathBuf>>,
         #[arg(long, help = "Preview only, don't delete anything")]
         dry_run: bool,
+    },
+    /// List and uninstall Homebrew packages, sorted by last used time.
+    #[cfg(feature = "cleanup")]
+    Brew {
+        #[arg(long, help = "Show only formula")]
+        formula: bool,
+        #[arg(long, help = "Show only casks")]
+        cask: bool,
+        #[arg(long, help = "Preview only, don't uninstall")]
+        dry_run: bool,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
     },
 }
 
@@ -185,6 +203,11 @@ fn cmd_help() -> Result<i32> {
             "  {:34}  {}",
             "purge [--paths <DIR>] [--dry-run]".green(),
             "Find and remove build artifacts"
+        );
+        println!(
+            "  {:34}  {}",
+            "brew [--formula] [--cask] [--dry-run] [-y]".green(),
+            "List/uninstall brew packages by last used"
         );
     }
     println!();
@@ -440,10 +463,8 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
         return Ok(0);
     }
 
-    let target_map: std::collections::HashMap<&str, &CleanTarget> = targets
-        .iter()
-        .map(|t| (t.id.as_str(), t))
-        .collect();
+    let target_map: std::collections::HashMap<&str, &CleanTarget> =
+        targets.iter().map(|t| (t.id.as_str(), t)).collect();
 
     let mut grouped: Vec<(TargetCategory, Vec<&CleanItem>)> = Vec::new();
     for item in &plan.items {
@@ -462,7 +483,10 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     println!("{}", "Clean Your Mac".bold().cyan());
     println!();
     if dry_run {
-        println!("{}", "☻ First time? Run mo clean --dry-run first to preview changes".yellow());
+        println!(
+            "{}",
+            "☻ First time? Run mo clean --dry-run first to preview changes".yellow()
+        );
     }
     println!(
         "{} {}",
@@ -518,7 +542,10 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     match find_orphaned_data() {
         Ok(orphaned) => {
             let apps = find_installed_apps(None).unwrap_or_default();
-            println!("  ✓ Found {} active/installed apps", apps.len().to_string().cyan());
+            println!(
+                "  ✓ Found {} active/installed apps",
+                apps.len().to_string().cyan()
+            );
             if orphaned.item_count > 0 {
                 println!(
                     "  ✓ {} {} items ({})",
@@ -588,11 +615,7 @@ fn free_space_macos() -> u64 {
     if !path.exists() {
         return 0;
     }
-    match std::process::Command::new("df")
-        .arg("-k")
-        .arg("/")
-        .output()
-    {
+    match std::process::Command::new("df").arg("-k").arg("/").output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -752,6 +775,255 @@ fn cmd_purge(paths: Option<&[PathBuf]>, dry_run: bool) -> Result<i32> {
         remove_artifacts(&artifacts).map_err(|e| anyhow::anyhow!("remove artifacts: {e}"))?;
     print_clean_report(&report);
     Ok(0)
+}
+
+// ── Brew ────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "cleanup")]
+fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> {
+    if !is_brew_available() {
+        println!("{}", "brew is not installed or not in PATH".yellow());
+        return Ok(1);
+    }
+
+    println!("{}", "Brew Packages".bold().cyan().underline());
+    println!();
+    println!(
+        "{} {}",
+        "Cache size:".bold(),
+        format_size(brew_cache_size()).cyan()
+    );
+    println!();
+
+    let filter = if formula && !cask {
+        Some(BrewFilterType::Formula)
+    } else if cask && !formula {
+        Some(BrewFilterType::Cask)
+    } else {
+        None
+    };
+
+    let all_packages = list_brew_packages(None);
+    if all_packages.is_empty() {
+        println!("{}", "no brew packages found".yellow());
+        return Ok(0);
+    }
+
+    let packages: Vec<_> = match filter {
+        Some(BrewFilterType::All) | None => all_packages,
+        Some(BrewFilterType::Formula) => all_packages
+            .into_iter()
+            .filter(|p| p.package_type == BrewPackageType::Formula)
+            .collect(),
+        Some(BrewFilterType::Cask) => all_packages
+            .into_iter()
+            .filter(|p| p.package_type == BrewPackageType::Cask)
+            .collect(),
+    };
+
+    // 按 last_used 升序 (None 排最前 = 最久没用)
+    let mut sorted = packages;
+    sorted.sort_by(|a, b| match (&a.last_used, &b.last_used) {
+        (None, None) => b.size.cmp(&a.size),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
+    });
+
+    println!(
+        "{} {} packages (sorted by last used, oldest first)\n",
+        "Found".bold(),
+        sorted.len().to_string().cyan()
+    );
+
+    // 分组: formula 和 cask 分别打印
+    let formulae: Vec<_> = sorted
+        .iter()
+        .filter(|p| p.package_type == BrewPackageType::Formula)
+        .collect();
+    let casks: Vec<_> = sorted
+        .iter()
+        .filter(|p| p.package_type == BrewPackageType::Cask)
+        .collect();
+
+    if !formulae.is_empty() && filter.is_none() {
+        println!("  {} ({})", "Formula".bold(), formulae.len());
+        print_brew_list(&formulae);
+        println!();
+    } else if !formulae.is_empty() {
+        print_brew_list(&formulae);
+        println!();
+    }
+
+    if !casks.is_empty() && filter.is_none() {
+        println!("  {} ({})", "Cask".bold(), casks.len());
+        print_brew_list(&casks);
+        println!();
+    } else if !casks.is_empty() {
+        print_brew_list(&casks);
+        println!();
+    }
+
+    if dry_run {
+        println!(
+            "{}",
+            "[dry-run] no packages were uninstalled".yellow().bold()
+        );
+        return Ok(0);
+    }
+
+    // 交互式选择要卸载的包
+    let selections: Vec<String> = sorted
+        .iter()
+        .map(|p| {
+            let time_str = format_brew_last_used(p.last_used);
+            let size = format_size(p.size);
+            let deps = if p.dependents > 0 {
+                format!(" deps:{}", p.dependents)
+            } else {
+                String::new()
+            };
+            format!(
+                "{:<30} {:>9}  {:>5}  {}{}",
+                p.name,
+                size,
+                p.package_type.label(),
+                time_str,
+                deps
+            )
+        })
+        .collect();
+
+    let sel = inquire::Select::new(
+        "Select package to uninstall (↑↓/j/k to move, type to filter, Esc to cancel):",
+        selections,
+    )
+    .with_page_size(15)
+    .with_vim_mode(true)
+    .with_help_message("↑↓ navigate • type to filter • Enter confirm • Esc cancel")
+    .prompt();
+
+    let idx = match sel {
+        Ok(chosen) => sorted.iter().position(|p| {
+            let time_str = format_brew_last_used(p.last_used);
+            let size = format_size(p.size);
+            let deps = if p.dependents > 0 {
+                format!(" deps:{}", p.dependents)
+            } else {
+                String::new()
+            };
+            format!(
+                "{:<30} {:>9}  {:>5}  {}{}",
+                p.name,
+                size,
+                p.package_type.label(),
+                time_str,
+                deps
+            ) == chosen
+        }),
+        Err(_) => None,
+    };
+
+    let pkg = match idx {
+        Some(i) => &sorted[i],
+        None => {
+            println!("{}", "cancelled".yellow());
+            return Ok(0);
+        }
+    };
+
+    println!("\n{} {}", "Selected:".bold(), pkg.name.cyan().bold());
+    println!("  {}  {}", "type:".bold(), pkg.package_type.label());
+    println!("  {}  {}", "version:".bold(), pkg.version);
+    println!("  {}  {}", "size:".bold(), format_size(pkg.size).green());
+    println!(
+        "  {}  {}",
+        "last used:".bold(),
+        format_brew_last_used(pkg.last_used)
+    );
+    if !pkg.description.is_empty() {
+        println!("  {}  {}", "desc:".bold(), pkg.description);
+    }
+    if pkg.dependents > 0 {
+        println!(
+            "  {}  {} other packages depend on this",
+            "dependents:".bold(),
+            pkg.dependents.to_string().yellow()
+        );
+    }
+
+    if !yes {
+        let proceed = inquire::Confirm::new(&format!("Uninstall {}?", pkg.name))
+            .with_default(false)
+            .prompt()?;
+        if !proceed {
+            println!("{}", "cancelled".yellow());
+            return Ok(0);
+        }
+    }
+
+    let report = uninstall_brew_package(pkg).map_err(|e| anyhow::anyhow!("uninstall: {e}"))?;
+    print_clean_report(&report);
+    Ok(0)
+}
+
+#[cfg(feature = "cleanup")]
+fn print_brew_list(packages: &[&argus_core::BrewPackage]) {
+    for pkg in packages {
+        let time_str = format_brew_last_used(pkg.last_used);
+        let size = format_size(pkg.size);
+        let deps = if pkg.dependents > 0 {
+            format!(" deps:{}", pkg.dependents)
+        } else {
+            String::new()
+        };
+        println!(
+            "    {:>12}  {:>9}  {:>5}  {}{}  {}",
+            time_str,
+            size,
+            pkg.package_type.label(),
+            pkg.name,
+            deps,
+            pkg.description.truncate_ellipsis(40),
+        );
+    }
+}
+
+#[cfg(feature = "cleanup")]
+fn format_brew_last_used(dt: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    match dt {
+        None => "never".to_string(),
+        Some(dt) => {
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(dt);
+            let days = duration.num_days();
+            if days == 0 {
+                "today".to_string()
+            } else if days == 1 {
+                "yesterday".to_string()
+            } else if days < 30 {
+                format!("{}d ago", days)
+            } else if days < 365 {
+                format!("{}mo ago", days / 30)
+            } else {
+                format!("{}y ago", days / 365)
+            }
+        }
+    }
+}
+
+trait TruncateEllipsis {
+    fn truncate_ellipsis(&self, max_len: usize) -> String;
+}
+
+impl TruncateEllipsis for str {
+    fn truncate_ellipsis(&self, max_len: usize) -> String {
+        if self.len() <= max_len {
+            self.to_string()
+        } else {
+            format!("{}...", &self[..max_len.saturating_sub(3)])
+        }
+    }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

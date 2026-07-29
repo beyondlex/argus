@@ -1,4 +1,5 @@
 mod ai_review;
+pub(crate) mod brew;
 mod browsing;
 mod cleanup;
 mod command;
@@ -29,6 +30,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::DeltaDetail => delta_detail::handle_delta_detail_key(key, app),
         AppMode::Cleanup => cleanup::handle_cleanup_key(key, app),
         AppMode::Uninstall => cleanup::handle_uninstall_key(key, app),
+        AppMode::Brew => brew::handle_brew_key(key, app),
         AppMode::QuitConfirm => prompt::handle_quit_confirm_key(key, app),
         AppMode::MultiSelectExitConfirm => prompt::handle_multi_select_exit_confirm_key(key, app),
     }

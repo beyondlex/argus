@@ -107,7 +107,9 @@ pub fn format_duration(duration: Duration) -> String {
 
 /// Format a timestamp as "YYYY-MM-DD HH:MM" or "—" if unknown
 pub fn format_relative_time(dt: Option<chrono::DateTime<Utc>>) -> String {
-    let Some(dt) = dt else { return "                     —".to_string() };
+    let Some(dt) = dt else {
+        return "                     —".to_string();
+    };
     dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
