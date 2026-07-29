@@ -218,42 +218,6 @@ struct BrewDetailedInfo {
     installed_bottle_size: u64,
 }
 
-/// Batch query: run `brew deps --installed` once, return map pkg -> list of dependents.
-fn brew_dependents_map() -> std::collections::HashMap<String, Vec<String>> {
-    let mut dependents: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-
-    for subcmd in &["deps --installed --formula", "deps --installed --cask"] {
-        let out = Command::new(brew_bin())
-            .args(subcmd.split_whitespace())
-            .output()
-            .ok()
-            .filter(|o| o.status.success());
-        let Some(output) = out else {
-            continue;
-        };
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            // format: "pkgname: dep1 dep2"
-            let Some((pkg, deps_part)) = line.split_once(':') else {
-                continue;
-            };
-            let pkg = pkg.trim();
-            if pkg.is_empty() {
-                continue;
-            }
-            for dep in deps_part.split_whitespace() {
-                let dep = dep.trim();
-                if !dep.is_empty() {
-                    dependents.entry(dep.to_string()).or_default().push(pkg.to_string());
-                }
-            }
-        }
-    }
-
-    dependents
-}
-
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
     if path.is_file() {
@@ -470,22 +434,6 @@ fn keg_size(prefix: &Path, name: &str, ptype: &BrewPackageType) -> u64 {
 }
 
 /// 获取所有已安装的 brew 包，按 last_used 升序排列
-fn lookup_dependents(name: &str, map: &std::collections::HashMap<String, Vec<String>>) -> Vec<String> {
-    let mut deps = map.get(name).cloned().unwrap_or_default();
-    if let Some(base) = name.split('@').next() {
-        if base != name {
-            if let Some(extra) = map.get(base) {
-                for n in extra {
-                    if !deps.contains(n) {
-                        deps.push(n.clone());
-                    }
-                }
-            }
-        }
-    }
-    deps
-}
-
 pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> Vec<BrewPackage> {
     let mut packages = Vec::new();
 
@@ -498,11 +446,6 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
     let casks = brew_list_json("cask");
 
     let total = formulae.len() + casks.len();
-    if let Some(ref tx) = progress {
-        let _ = tx.send(format!("0/{} Resolving dependencies...", total));
-    }
-    let dependents_map = brew_dependents_map();
-
     let mut count = 0;
 
     for info in &formulae {
@@ -514,7 +457,7 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
         let ptype = BrewPackageType::Formula;
         let size = keg_size(&prefix, &info.name, &ptype);
         let last_used = determine_last_used(&info.name, &ptype);
-        let dep_names = lookup_dependents(&info.name, &dependents_map);
+        let dep_names = brew_dependents_of(&info.name);
         let dependents = dep_names.len();
 
         packages.push(BrewPackage {
@@ -539,7 +482,7 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
         let ptype = BrewPackageType::Cask;
         let size = keg_size(&prefix, &info.name, &ptype);
         let last_used = determine_last_used(&info.name, &ptype);
-        let dep_names = lookup_dependents(&info.name, &dependents_map);
+        let dep_names = brew_dependents_of(&info.name);
         let dependents = dep_names.len();
 
         packages.push(BrewPackage {
