@@ -111,14 +111,18 @@ fn parse_brew_list_json(json_str: &str, package_type: &str) -> Vec<BrewInfo> {
             continue;
         }
 
-        let versions = item.get("versions").and_then(|v| v.as_object());
+        let versions = item.get("versions");
         let version = versions
-            .and_then(|m| {
-                m.values()
-                    .next()
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                versions
+                    .and_then(|v| v.as_object())
+                    .and_then(|m| m.values().next())
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
             })
+            .map(|s| s.to_string())
             .unwrap_or_default();
 
         let installed_on = item
