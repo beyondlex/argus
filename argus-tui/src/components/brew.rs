@@ -244,6 +244,13 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             let is_cursor = display_i == state.cursor;
             let prefix = if is_cursor { ">" } else { " " };
             let is_selected = state.multi_select && state.selected_pkgs.contains(&pkg_i);
+            let style = if is_cursor {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text)
+            };
             let prefix_span = if state.multi_select {
                 Span::styled(
                     if is_selected { "● " } else { "○ " },
@@ -264,14 +271,6 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 0 | 1 => Style::default().fg(theme.success),
                 2 => Style::default().fg(theme.warning),
                 _ => Style::default().fg(theme.danger),
-            };
-
-            let style = if is_cursor {
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text)
             };
 
             // Color code the time: never = red, old = yellow, recent = green
@@ -365,7 +364,6 @@ fn render_brew_footer(f: &mut Frame, area: Rect, state: &BrewState, theme: &Colo
             theme,
         ));
     }
-    ));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
