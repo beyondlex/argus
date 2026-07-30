@@ -585,11 +585,13 @@ impl App {
             AppMessage::BrewScanComplete {
                 packages,
                 cache_size,
+                reverse_dep_map,
             } => {
                 self.scanning = false;
                 if let Some(ref mut state) = self.brew_state {
                     state.scanning = false;
                     state.cache_size = cache_size;
+                    state.reverse_dep_map = reverse_dep_map;
                     let len = packages.len();
                     state.packages = packages;
                     state.filtered = (0..len).collect();
@@ -617,12 +619,6 @@ impl App {
                     state.uninstalling = false;
                     state.selected_pkg = None;
                     state.report = Some(report);
-                }
-            }
-            AppMessage::BrewDepsResult { name: _, deps } => {
-                if let Some(ref mut state) = self.brew_state {
-                    state.checking_deps = false;
-                    state.deps_check_result = if deps.is_empty() { None } else { Some(deps) };
                 }
             }
         }
@@ -1543,8 +1539,7 @@ impl App {
             confirm_pending: false,
             uninstalling: false,
             selected_pkg: None,
-            checking_deps: false,
-            deps_check_result: None,
+            reverse_dep_map: std::collections::HashMap::new(),
             report: None,
             cache_size: 0,
         });
@@ -1573,9 +1568,11 @@ impl App {
         std::thread::spawn(move || {
             let packages = argus_core::list_brew_packages(Some(prog_tx));
             let cache_size = argus_core::brew_cache_size();
+            let reverse_dep_map = argus_core::build_reverse_dep_map();
             let _ = tx.blocking_send(AppMessage::BrewScanComplete {
                 packages,
                 cache_size,
+                reverse_dep_map,
             });
         });
     }

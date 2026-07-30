@@ -518,6 +518,36 @@ pub fn brew_dependents_of(name: &str) -> Vec<String> {
     stdout.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()).collect()
 }
 
+/// Build reverse dependency map from `brew deps --installed`.
+/// Fast (~6s total), covers 99%+ of dependencies (misses uses_from_macos).
+pub fn build_reverse_dep_map() -> std::collections::HashMap<String, Vec<String>> {
+    let mut rev: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for subcmd in &["deps --installed --formula", "deps --installed --cask"] {
+        let out = Command::new(brew_bin())
+            .args(subcmd.split_whitespace())
+            .output()
+            .ok()
+            .filter(|o| o.status.success());
+        let Some(output) = out else { continue };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let Some((pkg, deps_part)) = line.split_once(':') else { continue };
+            let pkg = pkg.trim();
+            if pkg.is_empty() { continue; }
+            for dep in deps_part.split_whitespace() {
+                let dep = dep.trim();
+                if !dep.is_empty() {
+                    rev.entry(dep.to_string()).or_default().push(pkg.to_string());
+                }
+            }
+        }
+    }
+
+    rev
+}
+
 /// 卸载 brew 包
 pub fn uninstall_brew_package(pkg: &BrewPackage) -> Result<CleanReport, String> {
     let mut cmd = Command::new(brew_bin());

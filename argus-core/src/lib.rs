@@ -20,9 +20,9 @@ pub use ai::{analyze, call_ai_api};
 pub use cleaner::{
     audit::{log_operation, read_audit_log, AuditEntry, AuditOp},
     brew::{
-        brew_cache_size, brew_dependents_of, clean_brew_cache, is_brew_available,
-        list_brew_packages, uninstall_brew_package, BrewFilterType, BrewPackage,
-        BrewPackageType, BrewSortMode,
+        brew_cache_size, brew_dependents_of, build_reverse_dep_map, clean_brew_cache,
+        is_brew_available, list_brew_packages, uninstall_brew_package, BrewFilterType,
+        BrewPackage, BrewPackageType, BrewSortMode,
     },
     categories::{default_clean_targets, scan_target_size, CleanTarget, TargetCategory},
     cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},

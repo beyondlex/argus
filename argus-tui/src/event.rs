@@ -71,7 +71,7 @@ fn next_poll_timeout(
         && app
             .brew_state
             .as_ref()
-            .is_some_and(|s| s.uninstalling || s.checking_deps)
+            .is_some_and(|s| s.uninstalling)
     {
         spinner_rate.saturating_sub(app.scan_spinner_tick.elapsed())
     } else {
@@ -131,12 +131,7 @@ let brew_uninstalling = matches!(app.mode, AppMode::Brew)
             .brew_state
             .as_ref()
             .is_some_and(|s| s.uninstalling);
-    let brew_checking_deps = matches!(app.mode, AppMode::Brew)
-        && app
-            .brew_state
-            .as_ref()
-            .is_some_and(|s| s.checking_deps);
-    if (app.scanning || brew_uninstalling || brew_checking_deps)
+    if (app.scanning || brew_uninstalling)
         && app.scan_spinner_tick.elapsed() >= spinner_rate
     {
         app.scan_spinner = (app.scan_spinner + 1) % 10;

@@ -117,25 +117,37 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
 
     if state.confirm_pending {
         let pkg_idx = state.selected_pkg.unwrap_or(0);
-        let pkg = state
+        let pkg_name = state
             .filtered
             .get(pkg_idx)
-            .and_then(|&i| state.packages.get(i));
-        let pkg_name = pkg.map(|p| p.name.as_str()).unwrap_or("?");
+            .and_then(|&i| state.packages.get(i))
+            .map(|p| p.name.as_str())
+            .unwrap_or("?");
         let confirm_text = format!("Uninstall {}?", pkg_name);
 
         let mut lines = vec![
             Line::from(Span::styled(confirm_text, Style::default().fg(theme.text))),
         ];
 
-        if state.checking_deps {
-            let spinner = SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()];
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!("{} Checking dependencies...", spinner),
-                Style::default().fg(theme.text_tertiary),
-            )));
-        } else if let Some(ref deps) = state.deps_check_result {
+        // Look up dependents from the cached reverse dep map
+        let pkg = state
+            .filtered
+            .get(pkg_idx)
+            .and_then(|&i| state.packages.get(i));
+        if let Some(pkg) = pkg {
+            let mut deps = state.reverse_dep_map.get(&pkg.name).cloned().unwrap_or_default();
+            // Also check base name for versioned packages (e.g. python@3.12 → python)
+            if let Some(base) = pkg.name.split('@').next() {
+                if base != pkg.name {
+                    if let Some(extra) = state.reverse_dep_map.get(base) {
+                        for n in extra {
+                            if !deps.contains(n) {
+                                deps.push(n.clone());
+                            }
+                        }
+                    }
+                }
+            }
             if !deps.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
@@ -143,7 +155,7 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme.warning),
                 )));
                 let mut dep_line = String::new();
-                for name in deps {
+                for name in &deps {
                     if !dep_line.is_empty() {
                         dep_line.push(' ');
                     }
