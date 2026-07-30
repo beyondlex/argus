@@ -457,8 +457,6 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
         let ptype = BrewPackageType::Formula;
         let size = keg_size(&prefix, &info.name, &ptype);
         let last_used = determine_last_used(&info.name, &ptype);
-        let dep_names = brew_dependents_of(&info.name);
-        let dependents = dep_names.len();
 
         packages.push(BrewPackage {
             name: info.name.clone(),
@@ -468,8 +466,8 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
             installed_date: info.installed_date,
             last_used,
             description: String::new(),
-            dependents,
-            dependents_names: dep_names,
+            dependents: 0,
+            dependents_names: Vec::new(),
         });
     }
 
@@ -482,8 +480,6 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
         let ptype = BrewPackageType::Cask;
         let size = keg_size(&prefix, &info.name, &ptype);
         let last_used = determine_last_used(&info.name, &ptype);
-        let dep_names = brew_dependents_of(&info.name);
-        let dependents = dep_names.len();
 
         packages.push(BrewPackage {
             name: info.name.clone(),
@@ -493,8 +489,8 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
             installed_date: info.installed_date,
             last_used,
             description: String::new(),
-            dependents,
-            dependents_names: dep_names,
+            dependents: 0,
+            dependents_names: Vec::new(),
         });
     }
 

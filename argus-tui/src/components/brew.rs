@@ -269,14 +269,9 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             let is_cursor = display_i == state.cursor;
             let prefix = if is_cursor { ">" } else { " " };
 
+            let type_label = pkg.package_type.label();
             let time_str = format_brew_time(pkg.last_used);
             let size_str = format_size(pkg.size);
-            let type_label = pkg.package_type.label();
-            let deps_str = if pkg.dependents > 0 {
-                format!(" deps:{}", pkg.dependents)
-            } else {
-                String::new()
-            };
 
             let style = if is_cursor {
                 Style::default()
@@ -322,7 +317,6 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 ),
                 Span::raw(" "),
                 Span::styled(pkg.name.clone(), style),
-                Span::styled(deps_str, Style::default().fg(theme.text_tertiary)),
                 Span::raw("  "),
                 Span::styled(desc_display, Style::default().fg(theme.text_tertiary)),
             ])
