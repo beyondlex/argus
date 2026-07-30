@@ -128,18 +128,22 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
             Line::from(Span::styled(confirm_text, Style::default().fg(theme.text))),
         ];
 
-        if let Some(pkg) = pkg {
-            if !pkg.dependents_names.is_empty() {
+        if state.checking_deps {
+            let spinner = SPINNER_FRAMES[app.scan_spinner as usize % SPINNER_FRAMES.len()];
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("{} Checking dependencies...", spinner),
+                Style::default().fg(theme.text_tertiary),
+            )));
+        } else if let Some(ref deps) = state.deps_check_result {
+            if !deps.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!(
-                        " ⚠ {} other pkg(s) depend on this:",
-                        pkg.dependents_names.len()
-                    ),
+                    format!(" ⚠ {} other pkg(s) depend on this:", deps.len()),
                     Style::default().fg(theme.warning),
                 )));
                 let mut dep_line = String::new();
-                for name in &pkg.dependents_names {
+                for name in deps {
                     if !dep_line.is_empty() {
                         dep_line.push(' ');
                     }

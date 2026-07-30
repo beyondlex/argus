@@ -36,6 +36,8 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
                 if let Some(ref mut s) = app.brew_state {
                     s.confirm_pending = false;
                     s.selected_pkg = None;
+                    s.checking_deps = false;
+                    s.deps_check_result = None;
                 }
             }
             _ => {}
@@ -132,7 +134,23 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
             if let Some(ref mut s) = app.brew_state {
                 if !s.filtered.is_empty() {
                     s.selected_pkg = Some(s.cursor);
+                    s.checking_deps = true;
+                    s.deps_check_result = None;
                     s.confirm_pending = true;
+                    let pkg_name = s
+                        .filtered
+                        .get(s.cursor)
+                        .and_then(|&i| s.packages.get(i))
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default();
+                    let tx = app.tx.clone();
+                    std::thread::spawn(move || {
+                        let deps = argus_core::brew_dependents_of(&pkg_name);
+                        let _ = tx.blocking_send(AppMessage::BrewDepsResult {
+                            name: pkg_name,
+                            deps,
+                        });
+                    });
                 }
             }
         }

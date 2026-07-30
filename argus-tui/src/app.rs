@@ -619,6 +619,12 @@ impl App {
                     state.report = Some(report);
                 }
             }
+            AppMessage::BrewDepsResult { name: _, deps } => {
+                if let Some(ref mut state) = self.brew_state {
+                    state.checking_deps = false;
+                    state.deps_check_result = if deps.is_empty() { None } else { Some(deps) };
+                }
+            }
         }
     }
 
@@ -1537,6 +1543,8 @@ impl App {
             confirm_pending: false,
             uninstalling: false,
             selected_pkg: None,
+            checking_deps: false,
+            deps_check_result: None,
             report: None,
             cache_size: 0,
         });
