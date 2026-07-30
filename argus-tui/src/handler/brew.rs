@@ -132,16 +132,6 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
             if let Some(ref mut s) = app.brew_state {
                 if !s.filtered.is_empty() {
                     s.selected_pkg = Some(s.cursor);
-                    // Fetch accurate dependents for this package
-                    if let Some(&pkg_i) = s.filtered.get(s.cursor) {
-                        if let Some(pkg) = s.packages.get_mut(pkg_i) {
-                            if pkg.dependents_names.is_empty() {
-                                let real_deps = argus_core::brew_dependents_of(&pkg.name);
-                                pkg.dependents = real_deps.len();
-                                pkg.dependents_names = real_deps;
-                            }
-                        }
-                    }
                     s.confirm_pending = true;
                 }
             }

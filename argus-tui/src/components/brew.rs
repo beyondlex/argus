@@ -161,7 +161,6 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
             .title_bottom(
                 Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], theme)).centered(),
             );
-        let confirm_height = lines.len() as u16 + 2;
         let confirm_area = centered_rect(inner, 70, 50);
         f.render_widget(Clear, confirm_area);
         f.render_widget(
