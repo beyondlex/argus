@@ -312,7 +312,10 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     format!("{:>2}", if has_ai { "⚡" } else { "" }),
                     Style::default().fg(theme.warning),
                 ),
-                Span::styled(deps_str, Style::default().fg(theme.text_tertiary)),
+                Span::styled(
+                    format!("{:>9}", deps_str),
+                    Style::default().fg(theme.text_tertiary),
+                ),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", type_label),
