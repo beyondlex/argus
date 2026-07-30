@@ -294,6 +294,11 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 pkg.description.clone()
             };
             let has_ai = state.analyzed.contains(&pkg_i);
+            let deps_str = if pkg.dependents > 0 {
+                format!(" deps:{}", pkg.dependents)
+            } else {
+                String::new()
+            };
 
             Line::from(vec![
                 prefix_span,
@@ -307,6 +312,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     format!("{:>2}", if has_ai { "⚡" } else { "" }),
                     Style::default().fg(theme.warning),
                 ),
+                Span::styled(deps_str, Style::default().fg(theme.text_tertiary)),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", type_label),

@@ -417,12 +417,35 @@ impl App {
                 if let Some(ref mut state) = self.brew_state {
                     if state.uninstalling {
                         state.uninstalling = false;
+                        state.confirm_pending = false;
                         let pkg_name = state
                             .selected_pkg
                             .and_then(|i| state.filtered.get(i).copied())
                             .and_then(|i| state.packages.get(i))
                             .map(|p| p.name.clone())
                             .unwrap_or_else(|| "?".into());
+                        // Parse "required by X, Y and Z" from error message
+                        if let Some(deps_part) = e.split("required by ").nth(1) {
+                            let deps: Vec<String> = deps_part
+                                .trim_end_matches('.')
+                                .split(',')
+                                .flat_map(|s| s.split(" and "))
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            if !deps.is_empty() {
+                                let count = deps.len();
+                                if let Some(&pkg_idx) = state
+                                    .selected_pkg
+                                    .and_then(|i| state.filtered.get(i))
+                                {
+                                    if let Some(pkg) = state.packages.get_mut(pkg_idx) {
+                                        pkg.dependents = count;
+                                        pkg.dependents_names = deps;
+                                    }
+                                }
+                            }
+                        }
                         state.report = Some(argus_core::CleanReport {
                             total_attempted: 1,
                             total_succeeded: 0,
