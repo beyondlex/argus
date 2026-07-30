@@ -117,56 +117,16 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
 
     if state.confirm_pending {
         let pkg_idx = state.selected_pkg.unwrap_or(0);
-        let pkg_name = state
+        let pkg = state
             .filtered
             .get(pkg_idx)
-            .and_then(|&i| state.packages.get(i))
-            .map(|p| p.name.as_str())
-            .unwrap_or("?");
+            .and_then(|&i| state.packages.get(i));
+        let pkg_name = pkg.map(|p| p.name.as_str()).unwrap_or("?");
         let confirm_text = format!("Uninstall {}?", pkg_name);
 
         let mut lines = vec![
             Line::from(Span::styled(confirm_text, Style::default().fg(theme.text))),
         ];
-
-        // Look up dependents from the cached reverse dep map
-        let pkg = state
-            .filtered
-            .get(pkg_idx)
-            .and_then(|&i| state.packages.get(i));
-        if let Some(pkg) = pkg {
-            let mut deps = state.reverse_dep_map.get(&pkg.name).cloned().unwrap_or_default();
-            // Also check base name for versioned packages (e.g. python@3.12 → python)
-            if let Some(base) = pkg.name.split('@').next() {
-                if base != pkg.name {
-                    if let Some(extra) = state.reverse_dep_map.get(base) {
-                        for n in extra {
-                            if !deps.contains(n) {
-                                deps.push(n.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            if !deps.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    format!(" ⚠ {} other pkg(s) depend on this:", deps.len()),
-                    Style::default().fg(theme.warning),
-                )));
-                let mut dep_line = String::new();
-                for name in &deps {
-                    if !dep_line.is_empty() {
-                        dep_line.push(' ');
-                    }
-                    dep_line.push_str(name);
-                }
-                lines.push(Line::from(Span::styled(
-                    dep_line,
-                    Style::default().fg(theme.text_tertiary),
-                )));
-            }
-        }
 
         let confirm_block = Block::default()
             .borders(Borders::ALL)
@@ -317,25 +277,6 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 pkg.description.clone()
             };
 
-            // Look up dependents count from reverse dep map
-            let dep_count = state.reverse_dep_map.get(&pkg.name).map(|v| v.len()).unwrap_or(0);
-            let dep_count = if dep_count > 0 {
-                dep_count
-            } else if let Some(base) = pkg.name.split('@').next() {
-                if base != pkg.name {
-                    state.reverse_dep_map.get(base).map(|v| v.len()).unwrap_or(0)
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            let deps_str = if dep_count > 0 {
-                format!(" deps:{}", dep_count)
-            } else {
-                String::new()
-            };
-
             Line::from(vec![
                 Span::styled(format!("{} ", prefix), style),
                 Span::styled(format!("{:>12}", time_str), time_style),
@@ -344,7 +285,6 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     format!("{:>9}", size_str),
                     Style::default().fg(theme.text_highlight),
                 ),
-                Span::styled(deps_str, Style::default().fg(theme.text_tertiary)),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", type_label),

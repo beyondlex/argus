@@ -585,13 +585,11 @@ impl App {
             AppMessage::BrewScanComplete {
                 packages,
                 cache_size,
-                reverse_dep_map,
             } => {
                 self.scanning = false;
                 if let Some(ref mut state) = self.brew_state {
                     state.scanning = false;
                     state.cache_size = cache_size;
-                    state.reverse_dep_map = reverse_dep_map;
                     let len = packages.len();
                     state.packages = packages;
                     state.filtered = (0..len).collect();
@@ -1539,7 +1537,6 @@ impl App {
             confirm_pending: false,
             uninstalling: false,
             selected_pkg: None,
-            reverse_dep_map: std::collections::HashMap::new(),
             report: None,
             cache_size: 0,
         });
@@ -1568,19 +1565,9 @@ impl App {
         std::thread::spawn(move || {
             let packages = argus_core::list_brew_packages(Some(prog_tx));
             let cache_size = argus_core::brew_cache_size();
-            let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
-            let (dep_tx, dep_rx) = std::sync::mpsc::channel::<String>();
-            let tx2 = tx.clone();
-            std::thread::spawn(move || {
-                while let Ok(msg) = dep_rx.recv() {
-                    let _ = tx2.blocking_send(AppMessage::BrewScanProgress(msg));
-                }
-            });
-            let reverse_dep_map = argus_core::build_reverse_dep_map(&names, Some(dep_tx));
             let _ = tx.blocking_send(AppMessage::BrewScanComplete {
                 packages,
                 cache_size,
-                reverse_dep_map,
             });
         });
     }

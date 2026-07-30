@@ -518,64 +518,6 @@ pub fn brew_dependents_of(name: &str) -> Vec<String> {
     stdout.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()).collect()
 }
 
-/// Build reverse dependency map using `brew deps <pkg>` for each package in parallel.
-/// Accurate (includes uses_from_macos transitive deps). Takes ~3min for 360 pkgs with 8 threads.
-pub fn build_reverse_dep_map(
-    names: &[String],
-    progress: Option<std::sync::mpsc::Sender<String>>,
-) -> std::collections::HashMap<String, Vec<String>> {
-    use std::sync::{Arc, Mutex};
-    let rev = Arc::new(Mutex::new(std::collections::HashMap::<String, Vec<String>>::new()));
-    let total = names.len();
-    let count = Arc::new(Mutex::new(0usize));
-
-    let num_threads = 8;
-    let chunk_size = (names.len() + num_threads - 1) / num_threads;
-    let mut handles = Vec::new();
-
-    for chunk in names.chunks(chunk_size) {
-        let chunk = chunk.to_vec();
-        let rev = rev.clone();
-        let count = count.clone();
-        let tx = progress.clone();
-        handles.push(std::thread::spawn(move || {
-            let mut local: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
-            for name in &chunk {
-                let out = Command::new(brew_bin())
-                    .args(["deps", name])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success());
-                if let Some(output) = out {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    for dep in stdout.lines() {
-                        let dep = dep.trim();
-                        if !dep.is_empty() {
-                            local.entry(dep.to_string()).or_default().push(name.clone());
-                        }
-                    }
-                }
-                let mut c = count.lock().unwrap();
-                *c += 1;
-                if let Some(ref tx) = tx {
-                    let _ = tx.send(format!("{}/{} deps:{}", *c, total, name));
-                }
-            }
-            let mut g = rev.lock().unwrap();
-            for (dep, pkgs) in local {
-                g.entry(dep).or_default().extend(pkgs);
-            }
-        }));
-    }
-
-    for h in handles {
-        let _ = h.join();
-    }
-
-    Arc::try_unwrap(rev).unwrap().into_inner().unwrap()
-}
-
 /// 卸载 brew 包
 pub fn uninstall_brew_package(pkg: &BrewPackage) -> Result<CleanReport, String> {
     let mut cmd = Command::new(brew_bin());

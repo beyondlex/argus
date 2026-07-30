@@ -47,7 +47,6 @@ pub enum AppMessage {
     BrewScanComplete {
         packages: Vec<argus_core::BrewPackage>,
         cache_size: u64,
-        reverse_dep_map: std::collections::HashMap<String, Vec<String>>,
     },
     BrewScanProgress(String),
     BrewUninstallComplete(argus_core::CleanReport),
@@ -390,7 +389,6 @@ pub struct BrewState {
     pub confirm_pending: bool,
     pub uninstalling: bool,
     pub selected_pkg: Option<usize>,
-    pub reverse_dep_map: std::collections::HashMap<String, Vec<String>>,
     pub report: Option<argus_core::CleanReport>,
     pub cache_size: u64,
 }
