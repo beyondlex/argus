@@ -71,19 +71,55 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
 
     let filtered_len = state.filtered.len();
 
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let Some(ref mut s) = app.brew_state {
-                s.cursor = s
-                    .cursor
-                    .saturating_add(1)
-                    .min(filtered_len.saturating_sub(1));
+    // Multi-select mode key handling
+    if state.multi_select {
+        match key.code {
+            KeyCode::Char(' ') => {
+                if let Some(ref mut s) = app.brew_state {
+                    let pkg_idx = s.filtered.get(s.cursor).copied();
+                    if let Some(idx) = pkg_idx {
+                        if s.selected_pkgs.contains(&idx) {
+                            s.selected_pkgs.remove(&idx);
+                        } else {
+                            s.selected_pkgs.insert(idx);
+                        }
+                    }
+                    s.cursor = s.cursor.saturating_add(1).min(filtered_len.saturating_sub(1));
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Some(ref s) = app.brew_state {
+                    if s.selected_pkgs.is_empty() {
+                        app.set_info("no packages selected".into(), 3);
+                    } else {
+                        app.enter_brew_ai_review();
+                    }
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(ref mut s) = app.brew_state {
+                    if s.selected_pkgs.is_empty() {
+                        s.multi_select = false;
+                    } else {
+                        s.multi_select = false;
+                        s.selected_pkgs.clear();
+                    }
+                }
+            }
+            _ => {
+                // Fall through to normal movement keys
+                handle_brew_navigation(key, app, filtered_len);
             }
         }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            handle_brew_navigation(key, app, filtered_len);
+        }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let Some(ref mut s) = app.brew_state {
-                s.cursor = s.cursor.saturating_sub(1);
-            }
+            handle_brew_navigation(key, app, filtered_len);
         }
         KeyCode::Char('g') => {
             if app.pending_gg {
@@ -100,6 +136,16 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
                 s.cursor = filtered_len.saturating_sub(1);
             }
             app.pending_gg = false;
+        }
+        KeyCode::Char(' ') => {
+            if let Some(ref mut s) = app.brew_state {
+                s.multi_select = true;
+                let pkg_idx = s.filtered.get(s.cursor).copied();
+                if let Some(idx) = pkg_idx {
+                    s.selected_pkgs.insert(idx);
+                }
+                s.cursor = s.cursor.saturating_add(1).min(filtered_len.saturating_sub(1));
+            }
         }
         KeyCode::Char('/') => {
             if let Some(ref mut s) = app.brew_state {
@@ -144,6 +190,25 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.exit_brew();
+        }
+        _ => {}
+    }
+}
+
+fn handle_brew_navigation(_key: KeyEvent, app: &mut App, filtered_len: usize) {
+    match _key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(ref mut s) = app.brew_state {
+                s.cursor = s
+                    .cursor
+                    .saturating_add(1)
+                    .min(filtered_len.saturating_sub(1));
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(ref mut s) = app.brew_state {
+                s.cursor = s.cursor.saturating_sub(1);
+            }
         }
         _ => {}
     }

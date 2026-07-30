@@ -1549,6 +1549,8 @@ impl App {
             confirm_pending: false,
             uninstalling: false,
             selected_pkg: None,
+            multi_select: false,
+            selected_pkgs: std::collections::HashSet::new(),
             report: None,
             cache_size: 0,
         });
@@ -1563,6 +1565,44 @@ impl App {
         self.brew_state = None;
         self.mode = AppMode::Browsing;
         self.scanning = false;
+    }
+
+    pub fn enter_brew_ai_review(&mut self) {
+        let Some(ref state) = self.brew_state else { return };
+        let prefix = argus_core::brew_prefix();
+        let mut paths: Vec<std::path::PathBuf> = state
+            .selected_pkgs
+            .iter()
+            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
+            .map(|pkg| {
+                let keg = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type);
+                keg.join(&pkg.version)
+            })
+            .collect();
+        if paths.is_empty() {
+            self.set_info("no packages selected".into(), 3);
+            return;
+        }
+        paths.sort();
+        let total: u64 = state
+            .selected_pkgs
+            .iter()
+            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
+            .map(|p| p.size)
+            .sum();
+        self.ai_state = Some(crate::types::AiReviewState {
+            results: Vec::new(),
+            pending_paths: paths.clone(),
+            pending_total_size: total,
+            cursor: 0,
+            scroll_offset: 0,
+            mark_for_delete: std::collections::HashSet::new(),
+            status: crate::types::AiStatus::Loading,
+            delete_confirm: None,
+            info_item: None,
+        });
+        self.mode = AppMode::AiReview;
+        self.spawn_ai_analysis(paths);
     }
 
     fn spawn_brew_scan(&self) {

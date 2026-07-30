@@ -243,6 +243,19 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             let pkg = &state.packages[pkg_i];
             let is_cursor = display_i == state.cursor;
             let prefix = if is_cursor { ">" } else { " " };
+            let is_selected = state.multi_select && state.selected_pkgs.contains(&pkg_i);
+            let prefix_span = if state.multi_select {
+                Span::styled(
+                    if is_selected { "● " } else { "○ " },
+                    if is_selected {
+                        Style::default().fg(theme.success)
+                    } else {
+                        Style::default().fg(theme.text_tertiary)
+                    },
+                )
+            } else {
+                Span::styled(format!("{} ", prefix), style)
+            };
 
             let type_label = pkg.package_type.label();
             let time_str = format_brew_time(pkg.last_used);
@@ -283,7 +296,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             };
 
             Line::from(vec![
-                Span::styled(format!("{} ", prefix), style),
+                prefix_span,
                 Span::styled(format!("{:>12}", time_str), time_style),
                 Span::raw(" "),
                 Span::styled(
@@ -316,16 +329,42 @@ fn render_brew_footer(f: &mut Frame, area: Rect, state: &BrewState, theme: &Colo
         ),
         Style::default().fg(theme.text_tertiary),
     )];
-    spans.extend(key_hints(
-        &[
-            ("j/k", "Move"),
-            ("Enter", "Uninstall"),
-            ("o", "Sort"),
-            ("t", "Type"),
-            ("/", "Filter"),
-            ("Esc", "Back"),
-        ],
-        theme,
+    if state.multi_select {
+        let sel_count = state.selected_pkgs.len();
+        let sel_size: u64 = state
+            .selected_pkgs
+            .iter()
+            .filter_map(|&i| state.packages.get(i))
+            .map(|p| p.size)
+            .sum();
+        spans.push(Span::styled(
+            format!(" ● {}({})  |  ", sel_count, format_size(sel_size)),
+            Style::default()
+                .fg(theme.text_highlight)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.extend(key_hints(
+            &[
+                ("Space", "Select"),
+                ("a", "AI"),
+                ("Esc", "Exit"),
+            ],
+            theme,
+        ));
+    } else {
+        spans.extend(key_hints(
+            &[
+                ("j/k", "Move"),
+                ("Space", "M-Select"),
+                ("Enter", "Uninstall"),
+                ("o", "Sort"),
+                ("t", "Type"),
+                ("/", "Filter"),
+                ("Esc", "Back"),
+            ],
+            theme,
+        ));
+    }
     ));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

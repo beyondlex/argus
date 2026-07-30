@@ -389,6 +389,8 @@ pub struct BrewState {
     pub confirm_pending: bool,
     pub uninstalling: bool,
     pub selected_pkg: Option<usize>,
+    pub multi_select: bool,
+    pub selected_pkgs: std::collections::HashSet<usize>,
     pub report: Option<argus_core::CleanReport>,
     pub cache_size: u64,
 }

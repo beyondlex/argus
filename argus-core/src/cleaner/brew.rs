@@ -61,7 +61,7 @@ fn brew_bin() -> PathBuf {
     PathBuf::from("brew")
 }
 
-fn brew_prefix() -> PathBuf {
+pub fn brew_prefix() -> PathBuf {
     let out = Command::new(brew_bin())
         .arg("--prefix")
         .output()
@@ -426,11 +426,16 @@ fn determine_last_used(pkg_name: &str, package_type: &BrewPackageType) -> Option
 
 /// 获取 brew 包的 keg 目录大小
 fn keg_size(prefix: &Path, name: &str, ptype: &BrewPackageType) -> u64 {
-    let keg_dir = match ptype {
+    let keg_dir = keg_path(prefix, name, ptype);
+    dir_size(&keg_dir)
+}
+
+/// 获取 brew 包的 keg 目录路径
+pub fn keg_path(prefix: &Path, name: &str, ptype: &BrewPackageType) -> PathBuf {
+    match ptype {
         BrewPackageType::Formula => prefix.join("Cellar").join(name),
         BrewPackageType::Cask => prefix.join("Caskroom").join(name),
-    };
-    dir_size(&keg_dir)
+    }
 }
 
 /// 获取所有已安装的 brew 包，按 last_used 升序排列
