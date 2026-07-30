@@ -304,7 +304,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     size_style,
                 ),
                 Span::styled(
-                    if has_ai { " ⚡" } else { "" },
+                    format!("{:>2}", if has_ai { "⚡" } else { "" }),
                     Style::default().fg(theme.warning),
                 ),
                 Span::raw("  "),
