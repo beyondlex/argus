@@ -309,10 +309,10 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     size_style,
                 ),
                 Span::styled(
-                    format!("{:>3}", if has_ai { "⚡" } else { "" }),
+                    if has_ai { " ⚡" } else { "   " },
                     Style::default().fg(theme.warning),
                 ),
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(
                     format!("[{}]", type_label),
                     Style::default().fg(theme.text_tertiary),
