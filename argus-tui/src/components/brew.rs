@@ -295,9 +295,9 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             };
             let has_ai = state.analyzed.contains_key(&pkg_i);
             let ai_color = state.analyzed.get(&pkg_i).map(|risk| match risk {
-                argus_core::RiskLevel::Safe | argus_core::RiskLevel::Low => theme.success,
-                argus_core::RiskLevel::Medium => theme.warning,
-                argus_core::RiskLevel::High => theme.danger,
+                crate::types::RiskLevel::Safe | crate::types::RiskLevel::Low => theme.success,
+                crate::types::RiskLevel::Medium => theme.warning,
+                crate::types::RiskLevel::High => theme.danger,
             });
             let lightning = if has_ai { " ⚡" } else { "   " };
             let deps_str = if pkg.dependents > 0 {
