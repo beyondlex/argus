@@ -247,6 +247,11 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             let type_label = pkg.package_type.label();
             let time_str = format_brew_time(pkg.last_used);
             let size_str = format_size(pkg.size);
+            let size_style = match crate::util::size_unit_index(pkg.size) {
+                0 | 1 => Style::default().fg(theme.success),
+                2 => Style::default().fg(theme.warning),
+                _ => Style::default().fg(theme.danger),
+            };
 
             let style = if is_cursor {
                 Style::default()
@@ -283,7 +288,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 Span::raw(" "),
                 Span::styled(
                     format!("{:>9}", size_str),
-                    Style::default().fg(theme.text_highlight),
+                    size_style,
                 ),
                 Span::raw("  "),
                 Span::styled(

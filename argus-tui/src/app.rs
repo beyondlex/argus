@@ -615,8 +615,20 @@ impl App {
                 if let Some(ref mut state) = self.brew_state {
                     state.confirm_pending = false;
                     state.uninstalling = false;
+                    let pkg_name = state
+                        .selected_pkg
+                        .and_then(|i| state.filtered.get(i).copied())
+                        .and_then(|i| state.packages.get(i))
+                        .map(|p| p.name.clone());
                     state.selected_pkg = None;
                     state.report = Some(report);
+                    // Remove the uninstalled package from the list
+                    if let Some(ref name) = pkg_name {
+                        state.packages.retain(|p| p.name != *name);
+                        let len = state.packages.len();
+                        state.filtered = (0..len).collect();
+                        state.cursor = state.cursor.min(len.saturating_sub(1));
+                    }
                 }
             }
         }

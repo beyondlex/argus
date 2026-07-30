@@ -47,20 +47,29 @@ pub fn key_hints(hints: &[(&'static str, &str)], theme: &ColorTheme) -> Vec<Span
 
 /// Format bytes into human-readable string (e.g., "1.5 GB", "800 KB")
 pub fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
+    let (size, unit_idx) = scale_size(bytes);
     if unit_idx == 0 {
         format!("{} {}", bytes, UNITS[unit_idx])
     } else {
         format!("{:.2} {}", size, UNITS[unit_idx])
     }
+}
+
+const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+
+pub fn size_unit_index(bytes: u64) -> usize {
+    let (_, unit_idx) = scale_size(bytes);
+    unit_idx
+}
+
+fn scale_size(bytes: u64) -> (f64, usize) {
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    (size, unit_idx)
 }
 
 /// Format delta as signed human-readable string
