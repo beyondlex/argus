@@ -1,5 +1,5 @@
 use crate::app::{App, AppMessage};
-use crate::types::{BrewFilterType, BrewSortMode};
+use crate::types::{AppMode, BrewFilterType, BrewSortMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
@@ -191,6 +191,9 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.exit_brew();
         }
+        KeyCode::Char('i') => {
+            handle_brew_info_popup(app);
+        }
         _ => {}
     }
 }
@@ -283,5 +286,31 @@ pub(crate) fn format_brew_time(dt: Option<chrono::DateTime<chrono::Utc>>) -> Str
                 format!("{}y ago", days / 365)
             }
         }
+    }
+}
+
+fn handle_brew_info_popup(app: &mut App) {
+    let Some(ref state) = app.brew_state else { return };
+    let Some(&pkg_idx) = state.filtered.get(state.cursor) else { return };
+    let Some(pkg) = state.packages.get(pkg_idx) else { return };
+    let prefix = argus_core::brew_prefix();
+    let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type).join(&pkg.version);
+    match std::fs::metadata(&path) {
+        Ok(meta) => {
+            app.info_data = Some((path.clone(), meta));
+            app.info_ai = app.ai_cache.get(&path).cloned().or_else(|| {
+                let path_str = path.to_string_lossy();
+                if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
+                    if let Ok(Some(data)) = argus_core::get_ai_analysis(&conn, &path_str) {
+                        if let Ok(verdict) = serde_json::from_slice(&data) {
+                            return Some(verdict);
+                        }
+                    }
+                }
+                None
+            });
+            app.mode = AppMode::Info;
+        }
+        Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }
 }

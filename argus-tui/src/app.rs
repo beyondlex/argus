@@ -1466,6 +1466,7 @@ impl App {
             delete_confirm: None,
             info_item: None,
         });
+        self.prev_mode = self.mode;
         self.mode = AppMode::AiReview;
         self.spawn_ai_analysis(paths);
     }
