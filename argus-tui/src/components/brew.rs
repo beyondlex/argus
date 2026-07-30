@@ -293,7 +293,13 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             } else {
                 pkg.description.clone()
             };
-            let has_ai = state.analyzed.contains(&pkg_i);
+            let has_ai = state.analyzed.contains_key(&pkg_i);
+            let ai_color = state.analyzed.get(&pkg_i).map(|risk| match risk {
+                argus_core::RiskLevel::Safe | argus_core::RiskLevel::Low => theme.success,
+                argus_core::RiskLevel::Medium => theme.warning,
+                argus_core::RiskLevel::High => theme.danger,
+            });
+            let lightning = if has_ai { " ⚡" } else { "   " };
             let deps_str = if pkg.dependents > 0 {
                 format!("deps:{}", pkg.dependents)
             } else {
@@ -309,8 +315,8 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     size_style,
                 ),
                 Span::styled(
-                    if has_ai { " ⚡" } else { "   " },
-                    Style::default().fg(theme.warning),
+                    lightning,
+                    Style::default().fg(ai_color.unwrap_or(theme.warning)),
                 ),
                 Span::raw(" "),
                 Span::styled(

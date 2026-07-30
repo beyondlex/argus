@@ -624,12 +624,13 @@ impl App {
                         .packages
                         .iter()
                         .enumerate()
-                        .filter(|(_, pkg)| {
+                        .filter_map(|(i, pkg)| {
                             let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type)
                                 .join(&pkg.version);
-                            self.ai_analyzed.contains_key(&path)
+                            self.ai_analyzed
+                                .get(&path)
+                                .map(|&risk| (i, risk))
                         })
-                        .map(|(i, _)| i)
                         .collect();
                 }
             }
@@ -1644,7 +1645,7 @@ impl App {
             selected_pkg: None,
             multi_select: false,
             selected_pkgs: std::collections::HashSet::new(),
-            analyzed: std::collections::HashSet::new(),
+            analyzed: std::collections::HashMap::new(),
             report: None,
             cache_size: 0,
         });

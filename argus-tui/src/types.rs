@@ -391,7 +391,7 @@ pub struct BrewState {
     pub selected_pkg: Option<usize>,
     pub multi_select: bool,
     pub selected_pkgs: std::collections::HashSet<usize>,
-    pub analyzed: std::collections::HashSet<usize>,
+    pub analyzed: std::collections::HashMap<usize, argus_core::RiskLevel>,
     pub report: Option<argus_core::CleanReport>,
     pub cache_size: u64,
 }
