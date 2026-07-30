@@ -295,7 +295,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
             };
             let has_ai = state.analyzed.contains(&pkg_i);
             let deps_str = if pkg.dependents > 0 {
-                format!(" deps:{}", pkg.dependents)
+                format!("deps:{}", pkg.dependents)
             } else {
                 String::new()
             };
@@ -309,12 +309,8 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     size_style,
                 ),
                 Span::styled(
-                    format!("{:>2}", if has_ai { "⚡" } else { "" }),
+                    format!("{:>3}", if has_ai { "⚡" } else { "" }),
                     Style::default().fg(theme.warning),
-                ),
-                Span::styled(
-                    format!("{:>9}", deps_str),
-                    Style::default().fg(theme.text_tertiary),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -323,6 +319,10 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 ),
                 Span::raw(" "),
                 Span::styled(pkg.name.clone(), style),
+                Span::styled(
+                    format!(" {:>8}", deps_str),
+                    Style::default().fg(theme.text_tertiary),
+                ),
                 Span::raw("  "),
                 Span::styled(desc_display, Style::default().fg(theme.text_tertiary)),
             ])
