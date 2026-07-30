@@ -317,6 +317,25 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 pkg.description.clone()
             };
 
+            // Look up dependents count from reverse dep map
+            let dep_count = state.reverse_dep_map.get(&pkg.name).map(|v| v.len()).unwrap_or(0);
+            let dep_count = if dep_count > 0 {
+                dep_count
+            } else if let Some(base) = pkg.name.split('@').next() {
+                if base != pkg.name {
+                    state.reverse_dep_map.get(base).map(|v| v.len()).unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let deps_str = if dep_count > 0 {
+                format!(" deps:{}", dep_count)
+            } else {
+                String::new()
+            };
+
             Line::from(vec![
                 Span::styled(format!("{} ", prefix), style),
                 Span::styled(format!("{:>12}", time_str), time_style),
@@ -325,6 +344,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                     format!("{:>9}", size_str),
                     Style::default().fg(theme.text_highlight),
                 ),
+                Span::styled(deps_str, Style::default().fg(theme.text_tertiary)),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", type_label),
