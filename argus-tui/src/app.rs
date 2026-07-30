@@ -31,6 +31,7 @@ pub struct App {
     pub config: crate::config::TuiConfig,
     pub theme: ColorTheme,
     pub mode: AppMode,
+    pub prev_mode: AppMode,
     pub sort_mode: SortMode,
 
     // View root (always set, initialized to cwd)
@@ -194,6 +195,7 @@ impl App {
             theme,
             tx,
             mode: AppMode::Browsing,
+            prev_mode: AppMode::Browsing,
             sort_mode: SortMode::Size,
             view_root_path,
             tree_root: None,
@@ -1214,6 +1216,7 @@ impl App {
             delete_confirm: None,
             info_item: None,
         });
+        self.prev_mode = self.mode;
         self.mode = AppMode::AiReview;
         self.spawn_ai_analysis(paths);
     }
@@ -1238,6 +1241,7 @@ impl App {
             delete_confirm: None,
             info_item: None,
         });
+        self.prev_mode = self.mode;
         self.mode = AppMode::AiReview;
         self.spawn_ai_analysis(paths);
     }
@@ -1425,7 +1429,45 @@ impl App {
     /// Exit AI review mode and clear state.
     pub fn exit_ai_review(&mut self) {
         self.ai_state = None;
-        self.mode = AppMode::Browsing;
+        self.mode = self.prev_mode;
+    }
+
+    pub fn enter_brew_ai_review(&mut self) {
+        let Some(ref state) = self.brew_state else { return };
+        let prefix = argus_core::brew_prefix();
+        let mut paths: Vec<std::path::PathBuf> = state
+            .selected_pkgs
+            .iter()
+            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
+            .map(|pkg| {
+                let keg = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type);
+                keg.join(&pkg.version)
+            })
+            .collect();
+        if paths.is_empty() {
+            self.set_info("no packages selected".into(), 3);
+            return;
+        }
+        paths.sort();
+        let total: u64 = state
+            .selected_pkgs
+            .iter()
+            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
+            .map(|p| p.size)
+            .sum();
+        self.ai_state = Some(crate::types::AiReviewState {
+            results: Vec::new(),
+            pending_paths: paths.clone(),
+            pending_total_size: total,
+            cursor: 0,
+            scroll_offset: 0,
+            mark_for_delete: std::collections::HashSet::new(),
+            status: crate::types::AiStatus::Loading,
+            delete_confirm: None,
+            info_item: None,
+        });
+        self.mode = AppMode::AiReview;
+        self.spawn_ai_analysis(paths);
     }
 
     // ── Cleanup / Uninstall ────────────────────────────────────────
@@ -1565,44 +1607,6 @@ impl App {
         self.brew_state = None;
         self.mode = AppMode::Browsing;
         self.scanning = false;
-    }
-
-    pub fn enter_brew_ai_review(&mut self) {
-        let Some(ref state) = self.brew_state else { return };
-        let prefix = argus_core::brew_prefix();
-        let mut paths: Vec<std::path::PathBuf> = state
-            .selected_pkgs
-            .iter()
-            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
-            .map(|pkg| {
-                let keg = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type);
-                keg.join(&pkg.version)
-            })
-            .collect();
-        if paths.is_empty() {
-            self.set_info("no packages selected".into(), 3);
-            return;
-        }
-        paths.sort();
-        let total: u64 = state
-            .selected_pkgs
-            .iter()
-            .filter_map(|&pkg_idx| state.packages.get(pkg_idx))
-            .map(|p| p.size)
-            .sum();
-        self.ai_state = Some(crate::types::AiReviewState {
-            results: Vec::new(),
-            pending_paths: paths.clone(),
-            pending_total_size: total,
-            cursor: 0,
-            scroll_offset: 0,
-            mark_for_delete: std::collections::HashSet::new(),
-            status: crate::types::AiStatus::Loading,
-            delete_confirm: None,
-            info_item: None,
-        });
-        self.mode = AppMode::AiReview;
-        self.spawn_ai_analysis(paths);
     }
 
     fn spawn_brew_scan(&self) {
