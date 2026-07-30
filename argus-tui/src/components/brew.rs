@@ -154,21 +154,8 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
     ])
     .areas(inner);
 
-    let prefix = argus_core::brew_prefix();
-    let analyzed: std::collections::HashSet<usize> = state
-        .packages
-        .iter()
-        .enumerate()
-        .filter(|(_, pkg)| {
-            let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type)
-                .join(&pkg.version);
-            app.ai_analyzed.contains_key(&path)
-        })
-        .map(|(i, _)| i)
-        .collect();
-
     render_brew_header(f, header_area, &state, theme);
-    render_brew_list(f, list_area, &state, theme, &analyzed);
+    render_brew_list(f, list_area, &state, theme);
     render_brew_footer(f, footer_area, &state, theme);
 }
 
@@ -226,13 +213,7 @@ fn render_brew_header(f: &mut Frame, area: Rect, state: &BrewState, theme: &Colo
     );
 }
 
-fn render_brew_list(
-    f: &mut Frame,
-    area: Rect,
-    state: &BrewState,
-    theme: &ColorTheme,
-    analyzed: &std::collections::HashSet<usize>,
-) {
+fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorTheme) {
     if state.filtered.is_empty() {
         let msg = if state.packages.is_empty() {
             " No brew packages found "
@@ -312,7 +293,7 @@ fn render_brew_list(
             } else {
                 pkg.description.clone()
             };
-            let has_ai = analyzed.contains(&pkg_i);
+            let has_ai = state.analyzed.contains(&pkg_i);
 
             Line::from(vec![
                 prefix_span,
@@ -322,6 +303,10 @@ fn render_brew_list(
                     format!("{:>9}", size_str),
                     size_style,
                 ),
+                Span::styled(
+                    if has_ai { " ⚡" } else { "" },
+                    Style::default().fg(theme.warning),
+                ),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}]", type_label),
@@ -329,11 +314,6 @@ fn render_brew_list(
                 ),
                 Span::raw(" "),
                 Span::styled(pkg.name.clone(), style),
-                Span::raw(" "),
-                Span::styled(
-                    if has_ai { "⚡" } else { "" },
-                    Style::default().fg(theme.warning),
-                ),
                 Span::raw("  "),
                 Span::styled(desc_display, Style::default().fg(theme.text_tertiary)),
             ])

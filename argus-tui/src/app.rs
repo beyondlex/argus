@@ -595,6 +595,19 @@ impl App {
                     let len = packages.len();
                     state.packages = packages;
                     state.filtered = (0..len).collect();
+                    // Compute analyzed set
+                    let prefix = argus_core::brew_prefix();
+                    state.analyzed = state
+                        .packages
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pkg)| {
+                            let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type)
+                                .join(&pkg.version);
+                            self.ai_analyzed.contains_key(&path)
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
                 }
             }
             AppMessage::BrewScanProgress(path) => {
@@ -1608,6 +1621,7 @@ impl App {
             selected_pkg: None,
             multi_select: false,
             selected_pkgs: std::collections::HashSet::new(),
+            analyzed: std::collections::HashSet::new(),
             report: None,
             cache_size: 0,
         });
