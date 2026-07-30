@@ -1576,6 +1576,20 @@ impl App {
     }
 
     pub fn enter_brew(&mut self) {
+        if let Some(ref mut state) = self.brew_state {
+            if !state.packages.is_empty() {
+                // Reuse cached scan results
+                state.report = None;
+                state.confirm_pending = false;
+                state.uninstalling = false;
+                state.selected_pkg = None;
+                state.multi_select = false;
+                state.selected_pkgs.clear();
+                state.cursor = 0;
+                self.mode = AppMode::Brew;
+                return;
+            }
+        }
         self.brew_state = Some(BrewState {
             packages: Vec::new(),
             filtered: Vec::new(),
@@ -1604,7 +1618,6 @@ impl App {
     }
 
     pub fn exit_brew(&mut self) {
-        self.brew_state = None;
         self.mode = AppMode::Browsing;
         self.scanning = false;
     }
