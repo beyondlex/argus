@@ -1568,7 +1568,15 @@ impl App {
         std::thread::spawn(move || {
             let packages = argus_core::list_brew_packages(Some(prog_tx));
             let cache_size = argus_core::brew_cache_size();
-            let reverse_dep_map = argus_core::build_reverse_dep_map();
+            let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+            let (dep_tx, dep_rx) = std::sync::mpsc::channel::<String>();
+            let tx2 = tx.clone();
+            std::thread::spawn(move || {
+                while let Ok(msg) = dep_rx.recv() {
+                    let _ = tx2.blocking_send(AppMessage::BrewScanProgress(msg));
+                }
+            });
+            let reverse_dep_map = argus_core::build_reverse_dep_map(&names, Some(dep_tx));
             let _ = tx.blocking_send(AppMessage::BrewScanComplete {
                 packages,
                 cache_size,
