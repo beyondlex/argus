@@ -309,6 +309,7 @@ fn handle_brew_info_popup(app: &mut App) {
                 }
                 None
             });
+            app.prev_mode = app.mode;
             app.mode = AppMode::Info;
         }
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
