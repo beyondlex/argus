@@ -225,6 +225,9 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
         KeyCode::Char('i') => {
             handle_brew_info_popup(app);
         }
+        KeyCode::Char('y') => {
+            handle_brew_copy_path(app);
+        }
         _ => {}
     }
 }
@@ -349,3 +352,25 @@ fn handle_brew_info_popup(app: &mut App) {
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }
 }
+
+fn handle_brew_copy_path(app: &mut App) {
+    let Some(ref state) = app.brew_state else { return };
+    let Some(&pkg_idx) = state.filtered.get(state.cursor) else { return };
+    let Some(pkg) = state.packages.get(pkg_idx) else { return };
+    let prefix = argus_core::brew_prefix();
+    let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type).join(&pkg.version);
+    let path_str = path.display().to_string();
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => {
+            if cb.set_text(path_str.clone()).is_ok() {
+                app.set_info(format!("copied: {}", path_str), 2);
+            } else {
+                app.set_error("clipboard write failed".into(), 3);
+            }
+        }
+        Err(_) => {
+            app.set_error("clipboard unavailable".into(), 3);
+        }
+    }
+}
+
