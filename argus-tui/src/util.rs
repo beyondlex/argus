@@ -165,7 +165,6 @@ pub fn is_protected_path(path: &Path) -> bool {
     let protected: &[&str] = if cfg!(target_os = "macos") {
         &[
             "/System",
-            "/System/Volumes",
             "/usr/bin",
             "/usr/lib",
             "/bin",

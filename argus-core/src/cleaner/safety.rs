@@ -36,7 +36,6 @@ impl RiskLevel {
 #[cfg(target_os = "macos")]
 static MACOS_PROTECTED_PREFIXES: &[&str] = &[
     "/System",
-    "/System/Volumes",
     "/usr/bin",
     "/usr/lib",
     "/bin",
