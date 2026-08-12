@@ -1,5 +1,5 @@
 use crate::app::{App, AppMessage};
-use crate::types::{AppMode, BrewFilterType, BrewSortMode};
+use crate::types::{BrewFilterType, BrewSortMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
@@ -69,6 +69,19 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
         }
     }
 
+    // If info popup is showing, only Esc/q dismiss it (modal)
+    if state.show_info {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            if let Some(ref mut s) = app.brew_state {
+                s.show_info = false;
+                s.info_path = None;
+                s.info_metadata = None;
+                s.info_ai = None;
+            }
+        }
+        return;
+    }
+
     let filtered_len = state.filtered.len();
 
     // Multi-select mode key handling
@@ -112,6 +125,24 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
             }
         }
         return;
+    }
+
+    // In filter mode: Esc/Enter exit filter mode; chars go to search; rest fall through
+    if let Some(ref mut s) = app.brew_state {
+        if s.filter_mode {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    s.filter_mode = false;
+                    return;
+                }
+                KeyCode::Char(c) => {
+                    s.search_word.push(c);
+                    apply_brew_sort_and_filter(s);
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 
     match key.code {
@@ -297,8 +328,7 @@ fn handle_brew_info_popup(app: &mut App) {
     let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type).join(&pkg.version);
     match std::fs::metadata(&path) {
         Ok(meta) => {
-            app.info_data = Some((path.clone(), meta));
-            app.info_ai = app.ai_cache.get(&path).cloned().or_else(|| {
+            let info_ai = app.ai_cache.get(&path).cloned().or_else(|| {
                 let path_str = path.to_string_lossy();
                 if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
                     if let Ok(Some(data)) = argus_core::get_ai_analysis(&conn, &path_str) {
@@ -309,8 +339,12 @@ fn handle_brew_info_popup(app: &mut App) {
                 }
                 None
             });
-            app.prev_mode = app.mode;
-            app.mode = AppMode::Info;
+            if let Some(ref mut s) = app.brew_state {
+                s.show_info = true;
+                s.info_path = Some(path);
+                s.info_metadata = Some(meta);
+                s.info_ai = info_ai;
+            }
         }
         Err(e) => app.set_error(format!("stat failed: {}", e), 3),
     }

@@ -232,7 +232,7 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
         }
         AppMode::Info => {
             if let Some((path, meta)) = &app.info_data {
-                metadata::render(f, area, path, meta, app.info_ai.as_ref(), &app.theme);
+                metadata::render(f, area, path, meta, app.info_ai.as_ref(), &app.theme, 60);
             }
         }
         AppMode::DeltaDetail => {

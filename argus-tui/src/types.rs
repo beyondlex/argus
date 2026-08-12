@@ -394,6 +394,11 @@ pub struct BrewState {
     pub analyzed: std::collections::HashMap<usize, RiskLevel>,
     pub report: Option<argus_core::CleanReport>,
     pub cache_size: u64,
+    /// Info popup overlay on top of the brew list
+    pub show_info: bool,
+    pub info_path: Option<std::path::PathBuf>,
+    pub info_metadata: Option<std::fs::Metadata>,
+    pub info_ai: Option<AiPathVerdict>,
 }
 
 /// State for the AI review popup

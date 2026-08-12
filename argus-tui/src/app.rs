@@ -1648,6 +1648,10 @@ impl App {
             analyzed: std::collections::HashMap::new(),
             report: None,
             cache_size: 0,
+            show_info: false,
+            info_path: None,
+            info_metadata: None,
+            info_ai: None,
         });
         self.mode = AppMode::Brew;
         self.scanning = true;

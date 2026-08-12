@@ -157,6 +157,13 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
     render_brew_header(f, header_area, &state, theme);
     render_brew_list(f, list_area, &state, theme);
     render_brew_footer(f, footer_area, &state, theme);
+
+    // Info popup overlays on top of the brew list, rendered inside the brew block
+    if state.show_info {
+        if let (Some(path), Some(meta)) = (&state.info_path, &state.info_metadata) {
+            crate::components::metadata::render(f, area, path, meta, state.info_ai.as_ref(), theme, 80);
+        }
+    }
 }
 
 fn render_brew_header(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorTheme) {

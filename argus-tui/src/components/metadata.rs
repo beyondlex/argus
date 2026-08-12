@@ -68,14 +68,59 @@ pub fn render(
     metadata: &std::fs::Metadata,
     ai: Option<&AiPathVerdict>,
     theme: &ColorTheme,
+    width_pct: u16,
 ) {
-    let height_pct = if ai.is_some() { 60 } else { 40 };
-    let popup_area = crate::components::popup::centered_rect(60, height_pct, area);
-
     let block = popup_block(" File Info ", PopupStyle::Normal, theme)
         .title_bottom(Line::from(key_hints(&[("Esc", "Close")], theme)))
         .title_alignment(Alignment::Right)
         .padding(Padding::horizontal(2));
+
+    // Compute popup width from percentage
+    let popup_width = area.width * width_pct / 100;
+
+    // Estimate val_w for text wrapping: inner.width = popup_width - 2 borders - 4 padding
+    // so val_w = inner.width - 13 = popup_width - 19
+    let val_w = popup_width.saturating_sub(19).max(1);
+
+    // Build rows BEFORE computing popup area so we know the content height
+    let mut rows = vec![
+        Constraint::Length(1), // Path
+        Constraint::Length(1), // Size
+        Constraint::Length(1), // Type
+        Constraint::Length(1), // Modified
+        Constraint::Length(1), // Created
+        Constraint::Length(1), // Perms
+    ];
+    if let Some(ref ai) = ai {
+        rows.push(Constraint::Length(1)); // blank
+        rows.push(Constraint::Length(1)); // AI header
+        rows.push(Constraint::Length(1)); // blank
+        rows.push(Constraint::Length(1)); // Label
+        rows.push(Constraint::Length(1)); // Risk
+        rows.push(Constraint::Length(1)); // Size
+        rows.push(Constraint::Length(text_lines(&ai.purpose, val_w))); // Purpose
+        rows.push(Constraint::Length(text_lines(&ai.suggestion, val_w))); // Suggestion
+        if !ai.background.is_empty() {
+            rows.push(Constraint::Length(text_lines(&ai.background, val_w))); // Background
+        }
+    }
+
+    let content_height: u16 = rows.iter().map(|c| {
+        if let Constraint::Length(n) = c {
+            *n
+        } else {
+            1
+        }
+    }).sum();
+
+    // +4 for top border, title, key hints, bottom border
+    let popup_height = (content_height + 4).max(10).min(area.height);
+    let popup_area = Rect {
+        x: area.x + (area.width - popup_width) / 2,
+        y: area.y + (area.height - popup_height) / 2,
+        width: popup_width,
+        height: popup_height,
+    };
 
     let type_str = if metadata.is_dir() {
         "Directory"
@@ -135,29 +180,6 @@ pub fn render(
     f.render_widget(Clear, popup_area);
     f.render_widget(&block, popup_area);
     let inner = block.inner(popup_area);
-
-    let mut rows = vec![
-        Constraint::Length(1), // Path
-        Constraint::Length(1), // Size
-        Constraint::Length(1), // Type
-        Constraint::Length(1), // Modified
-        Constraint::Length(1), // Created
-        Constraint::Length(1), // Perms
-    ];
-    if let Some(ref ai) = ai {
-        let val_w = inner.width.saturating_sub(13).max(1);
-        rows.push(Constraint::Length(1)); // blank
-        rows.push(Constraint::Length(1)); // AI header
-        rows.push(Constraint::Length(1)); // blank
-        rows.push(Constraint::Length(1)); // Label
-        rows.push(Constraint::Length(1)); // Risk
-        rows.push(Constraint::Length(1)); // Size
-        rows.push(Constraint::Length(text_lines(&ai.purpose, val_w))); // Purpose
-        rows.push(Constraint::Length(text_lines(&ai.suggestion, val_w))); // Suggestion
-        if !ai.background.is_empty() {
-            rows.push(Constraint::Length(text_lines(&ai.background, val_w))); // Background
-        }
-    }
 
     let row_areas = Layout::vertical(rows).split(inner);
     let label_w = 13;
