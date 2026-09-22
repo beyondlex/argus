@@ -713,6 +713,51 @@ fn test_cycle_match_backward() {
     assert_eq!(app.cursor, 2);
 }
 
+/// With a delta filter active, cursor and search matches live in different
+/// index spaces (filtered vs. all children). Searching must translate the
+/// jump through the filter or it lands on the wrong row.
+#[test]
+fn test_apply_search_jumps_within_filtered_view() {
+    let mut app = make_flat_app();
+    app.delta_filter_active = true;
+    app.delta_filter_value = 0; // strict mode: only entries with delta > 0
+    app.delta_cache
+        .insert(vec![String::from("test"), String::from("docs")], 100);
+    app.refresh_current_filtered();
+    // Only "docs" survives the filter
+    assert_eq!(app.current_filtered.len(), 1);
+
+    app.search_word = "docs".into();
+    app.apply_search();
+    // children index of "docs" is 1, but the filtered position is 0
+    assert_eq!(app.cursor, 0);
+    assert_eq!(
+        app.selected_entry().map(|e| e.node.name().to_string()),
+        Some(String::from("docs"))
+    );
+}
+
+/// A match hidden by the active filter must not be jumped to.
+#[test]
+fn test_apply_search_skips_matches_hidden_by_filter() {
+    let mut app = make_flat_app();
+    app.delta_filter_active = true;
+    app.delta_filter_value = 0;
+    app.delta_cache
+        .insert(vec![String::from("test"), String::from("docs")], 100);
+    app.refresh_current_filtered();
+    assert_eq!(app.current_filtered.len(), 1);
+
+    app.search_word = "readme".into();
+    app.apply_search();
+    assert_eq!(app.search_match_indices.len(), 1); // matched, but filtered out
+    assert_eq!(app.cursor, 0); // cursor unchanged, stays on visible row
+
+    // n/N with no visible match is a no-op
+    app.cycle_match(true);
+    assert_eq!(app.cursor, 0);
+}
+
 #[test]
 fn test_sort_by_name() {
     let mut app = make_flat_app();

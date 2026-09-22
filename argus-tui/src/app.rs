@@ -1203,9 +1203,13 @@ impl App {
 
         self.refresh_current_filtered();
 
-        // Jump cursor to first match if any
+        // Jump cursor to first match if any. search_match_indices hold
+        // current_children indices; the cursor addresses current_filtered,
+        // so translate through the filter (no-op when no filter is active).
         if let Some(&first) = self.search_match_indices.first() {
-            self.cursor = first;
+            if let Some(pos) = self.current_filtered.iter().position(|&i| i == first) {
+                self.cursor = pos;
+            }
         }
     }
 
@@ -1214,20 +1218,28 @@ impl App {
         if self.search_match_indices.is_empty() {
             return;
         }
-        // Find current cursor position in search_match_indices
-        let pos = self
+        // Cursor addresses the filtered view; matches hidden by an active
+        // filter must be skipped rather than jumped to.
+        let visible: Vec<usize> = self
             .search_match_indices
             .iter()
-            .position(|&i| i == self.cursor);
+            .filter_map(|&child_idx| {
+                self.current_filtered
+                    .iter()
+                    .position(|&filtered_idx| filtered_idx == child_idx)
+            })
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = visible.iter().position(|&p| p == self.cursor);
         let next = match (pos, forward) {
-            (Some(p), true) => (p + 1) % self.search_match_indices.len(),
-            (Some(p), false) => {
-                (p + self.search_match_indices.len() - 1) % self.search_match_indices.len()
-            }
+            (Some(p), true) => (p + 1) % visible.len(),
+            (Some(p), false) => (p + visible.len() - 1) % visible.len(),
             (None, true) => 0,
-            (None, false) => self.search_match_indices.len() - 1,
+            (None, false) => visible.len() - 1,
         };
-        self.cursor = self.search_match_indices[next];
+        self.cursor = visible[next];
     }
 
     // ── AI Review ────────────────────────────────────────────────────
