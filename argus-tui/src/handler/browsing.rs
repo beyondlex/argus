@@ -188,8 +188,10 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         return;
     }
     let mut paths = app.selected_paths_full();
+    let before_protected = paths.len();
     // Filter out protected paths
     paths.retain(|p| !crate::util::is_protected_path(p));
+    let protected_skipped = before_protected - paths.len();
     if paths.is_empty() {
         app.set_error("all selected paths are protected".into(), 3);
         return;
@@ -200,14 +202,22 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    let before_root = paths.len();
     paths.retain(|p| {
         p.file_name()
             .map(|n| n.to_string_lossy() != root_name)
             .unwrap_or(true)
     });
+    let root_skipped = before_root - paths.len();
     if paths.is_empty() {
         app.set_error("cannot delete root directory".into(), 3);
         return;
+    }
+    if protected_skipped > 0 || root_skipped > 0 {
+        app.set_info(
+            format!("skipping {protected_skipped} protected and {root_skipped} root-named item(s)"),
+            4,
+        );
     }
     app.delete_target_paths = paths;
     app.mode = if permanent {
