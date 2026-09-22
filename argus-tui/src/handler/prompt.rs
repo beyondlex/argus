@@ -112,11 +112,72 @@ fn collect_items(path: &Path, items: &mut Vec<PathBuf>) {
     }
 }
 
+/// Delete one filesystem item, distinguishing "already gone" (benign during
+/// progressive deletion) from real failures without locale-sensitive string
+/// matching on error text.
+fn delete_item(item: &Path, permanent: bool) -> Result<(), DeletionFailure> {
+    if permanent {
+        let is_symlink = std::fs::symlink_metadata(item)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        let result = if is_symlink || item.is_file() {
+            std::fs::remove_file(item)
+        } else {
+            std::fs::remove_dir(item)
+        };
+        result.map_err(|e| DeletionFailure::Io(e, item.to_path_buf()))
+    } else {
+        trash::delete(item).map_err(|e| DeletionFailure::Trash(e, item.to_path_buf()))
+    }
+}
+
+enum DeletionFailure {
+    Io(std::io::Error, PathBuf),
+    Trash(trash::Error, PathBuf),
+}
+
+impl DeletionFailure {
+    fn is_not_found(&self) -> bool {
+        match self {
+            DeletionFailure::Io(e, _) => e.kind() == std::io::ErrorKind::NotFound,
+            // trash maps errno failures to Error::Os; 2 is ENOENT on macOS/Linux
+            DeletionFailure::Trash(e, _) => matches!(e, trash::Error::Os { code: 2, .. }),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            DeletionFailure::Io(e, p) => format!("{}: {}", p.display(), e),
+            DeletionFailure::Trash(e, p) => format!("{}: trash: {}", p.display(), e),
+        }
+    }
+}
+
 fn delete_dir_progressive(
     path: &Path,
     permanent: bool,
     tx: &mpsc::Sender<AppMessage>,
 ) -> Vec<String> {
+    // Trashing moves the directory into the recycle bin as one unit: one
+    // operation, instantly restorable. Per-item deletion only pays off for
+    // permanent removal, where depth-first leaf-first ordering is required
+    // (a directory can only be removed after its contents).
+    if !permanent {
+        let _ = tx.blocking_send(AppMessage::DeleteProgress {
+            current: 0,
+            total: 1,
+        });
+        let errors = match delete_item(path, false) {
+            Ok(()) => Vec::new(),
+            Err(e) => vec![e.describe()],
+        };
+        let _ = tx.blocking_send(AppMessage::DeleteProgress {
+            current: 1,
+            total: 1,
+        });
+        return errors;
+    }
+
     let mut items = Vec::new();
     collect_items(path, &mut items);
 
@@ -139,26 +200,11 @@ fn delete_dir_progressive(
 
     let mut errors = Vec::new();
     for (i, item) in items.iter().enumerate() {
-        let is_symlink = std::fs::symlink_metadata(item)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        let result = if permanent {
-            if is_symlink {
-                std::fs::remove_file(item)
-            } else if item.is_dir() {
-                std::fs::remove_dir(item)
-            } else {
-                std::fs::remove_file(item)
-            }
-            .map_err(|e| e.to_string())
-        } else {
-            trash::delete(item).map_err(|e| e.to_string())
-        };
-        if let Err(e) = result {
-            // Skip "not found" errors — path may have been removed by a prior step
-            // (e.g. a parent symlink was deleted, or the file was already cleaned up)
-            if !e.contains("No such file or directory") {
-                errors.push(format!("{}: {}", item.display(), e));
+        if let Err(e) = delete_item(item, true) {
+            // Skip "not found" — the path may already have been removed by a
+            // prior step (e.g. an emptied parent directory).
+            if !e.is_not_found() {
+                errors.push(e.describe());
             }
         }
         let _ = tx.blocking_send(AppMessage::DeleteProgress {
