@@ -55,12 +55,19 @@ impl DebounceEngine {
                         timestamp: event.timestamp,
                         ..entry.event.clone()
                     },
-                    ("create", "delete") => {
+                    ("create", "delete") | ("modify", "delete")
+                        if entry.event.delta_size + event.delta_size == 0 =>
+                    {
+                        // Net-zero churn (e.g. grew then removed): drop entirely
                         self.pending.remove(&path);
                         return;
                     }
                     ("modify", "delete") => DeltaEntry {
-                        delta_size: -entry.event.delta_size.abs(),
+                        // Signed sum, not -abs(entry): the modify already
+                        // recorded part of the change (e.g. +100 growth then
+                        // a -150 delete nets -50). abs() would silently
+                        // discard the modify contribution.
+                        delta_size: entry.event.delta_size + event.delta_size,
                         event_type: "delete".into(),
                         timestamp: event.timestamp,
                         path: entry.event.path.clone(),
@@ -267,7 +274,7 @@ mod tests {
         let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
 
         engine.merge(entry("/tmp/d.txt", 100, "modify", 1000));
-        engine.merge(entry("/tmp/d.txt", -100, "delete", 2000));
+        engine.merge(entry("/tmp/d.txt", -150, "delete", 2000));
 
         let e = &engine
             .pending
@@ -275,6 +282,51 @@ mod tests {
             .unwrap()
             .event;
         assert_eq!(e.event_type, "delete");
+        assert_eq!(e.delta_size, -50);
+    }
+
+    /// A modify whose growth is fully negated by the delete cancels out,
+    /// same as create+delete.
+    #[test]
+    fn test_modify_then_zero_net_delete_cancels() {
+        let (_tx, rx) = mpsc::channel(16);
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
+
+        engine.merge(entry("/tmp/z.txt", 100, "modify", 1000));
+        engine.merge(entry("/tmp/z.txt", -100, "delete", 2000));
+
+        assert!(engine.pending.is_empty());
+    }
+
+    #[test]
+    fn test_modify_then_delete_sums_signed_deltas() {
+        let (_tx, rx) = mpsc::channel(16);
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
+
+        // File grew 50 -> 150 (+100), then was removed (-150): net -50.
+        engine.merge(entry("/tmp/d.txt", 100, "modify", 1000));
+        engine.merge(entry("/tmp/d.txt", -150, "delete", 2000));
+
+        let e = &engine
+            .pending
+            .get(&PathBuf::from("/tmp/d.txt"))
+            .unwrap()
+            .event;
+        assert_eq!(e.event_type, "delete");
+        assert_eq!(e.delta_size, -50);
+
+        // Shrink then delete: modify -50 (100 -> 50), delete -50: net -100.
+        engine.merge(entry("/tmp/e.txt", -50, "modify", 1000));
+        engine.merge(entry("/tmp/e.txt", -50, "delete", 2000));
+
+        let e = &engine
+            .pending
+            .get(&PathBuf::from("/tmp/e.txt"))
+            .unwrap()
+            .event;
+        assert_eq!(e.delta_size, -100);
     }
 
     #[test]
