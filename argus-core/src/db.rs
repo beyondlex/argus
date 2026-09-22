@@ -71,11 +71,18 @@ pub fn init_db(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-pub fn set_ai_analysis(conn: &Connection, path: &str, data: &[u8]) -> Result<(), DbError> {
+/// Stable hash of a path for the AI analysis cache key.
+/// `DefaultHasher::new()` uses fixed SipHash keys, so the value is
+/// consistent across process restarts (required for a persistent cache).
+fn path_hash(path: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
-    let path_hash = hasher.finish().to_string();
+    hasher.finish().to_string()
+}
+
+pub fn set_ai_analysis(conn: &Connection, path: &str, data: &[u8]) -> Result<(), DbError> {
+    let path_hash = path_hash(path);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -88,10 +95,7 @@ pub fn set_ai_analysis(conn: &Connection, path: &str, data: &[u8]) -> Result<(),
 }
 
 pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>, DbError> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let path_hash = hasher.finish().to_string();
+    let path_hash = path_hash(path);
     let mut stmt = conn.prepare("SELECT data FROM ai_analysis_cache WHERE path_hash = ?1")?;
     let mut rows = stmt.query(params![path_hash])?;
     match rows.next()? {
@@ -101,10 +105,7 @@ pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>,
 }
 
 pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let path_hash = hasher.finish().to_string();
+    let path_hash = path_hash(path);
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM ai_analysis_cache WHERE path_hash = ?1",
         params![path_hash],
@@ -114,13 +115,10 @@ pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
 }
 
 pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
-    use std::hash::{Hash, Hasher};
     let mut results = Vec::with_capacity(paths.len());
     let mut stmt = conn.prepare("SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 LIMIT 1")?;
     for path in paths {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        path.hash(&mut hasher);
-        let path_hash = hasher.finish().to_string();
+        let path_hash = path_hash(path);
         let exists: bool = stmt
             .query(params![path_hash])?
             .next()
@@ -132,10 +130,7 @@ pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<
 }
 
 pub fn delete_ai_analysis(conn: &Connection, path: &str) -> Result<(), DbError> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let path_hash = hasher.finish().to_string();
+    let path_hash = path_hash(path);
     conn.execute(
         "DELETE FROM ai_analysis_cache WHERE path_hash = ?1",
         params![path_hash],
@@ -175,6 +170,11 @@ pub fn query_delta_total(
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
                  AND agg.path <> delta_events.path
                  AND delta_events.path LIKE (agg.path || '/%')
+                 -- An aggregate row must only suppress descendants when the
+                 -- aggregate itself falls inside the queried window (agg
+                 -- timestamp = max consolidated child timestamp). Without this
+                 -- bound, a future-dated aggregate hides in-window events.
+                 AND agg.timestamp <= ?4
            )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
         |row| row.get(0),
@@ -203,6 +203,11 @@ pub fn query_delta_detail(
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
                  AND agg.path <> delta_events.path
                  AND delta_events.path LIKE (agg.path || '/%')
+                 -- An aggregate row must only suppress descendants when the
+                 -- aggregate itself falls inside the queried window (agg
+                 -- timestamp = max consolidated child timestamp). Without this
+                 -- bound, a future-dated aggregate hides in-window events.
+                 AND agg.timestamp <= ?4
            )
          ORDER BY timestamp ASC",
     )?;
@@ -858,5 +863,74 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].delta_size, 300);
         assert!(entries[0].is_agg);
+    }
+
+    /// An aggregate whose timestamp is beyond the queried window must not
+    /// suppress in-window descendant events: the agg itself is excluded by the
+    /// outer WHERE, so suppression would silently undercount the window.
+    #[test]
+    fn test_window_excluding_agg_still_counts_in_window_children() {
+        let (mut conn, _) = setup_db();
+
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
+            params!["/tmp/dir", 999, "agg", 5000],
+        )
+        .unwrap();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/a.bin"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/b.bin"),
+                delta_size: 50,
+                event_type: "create".into(),
+                timestamp: 2000,
+                is_agg: false,
+            },
+        ];
+        insert_events(&mut conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
+        assert_eq!(total, 150);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    /// Aggregate inside the window keeps suppressing descendants (no double
+    /// counting) even when descendants carry later timestamps than the agg.
+    #[test]
+    fn test_window_including_agg_suppresses_descendants() {
+        let (mut conn, _) = setup_db();
+
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
+            params!["/tmp/dir", 300, "agg", 1200],
+        )
+        .unwrap();
+
+        let events = vec![DeltaEntry {
+            path: PathBuf::from("/tmp/dir/a.bin"),
+            delta_size: 100,
+            event_type: "create".into(),
+            timestamp: 1000,
+            is_agg: false,
+        }];
+        insert_events(&mut conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
+        assert_eq!(total, 300);
+    }
+
+    #[test]
+    fn test_path_hash_is_stable() {
+        assert_eq!(path_hash("/tmp/a"), path_hash("/tmp/a"));
+        assert_ne!(path_hash("/tmp/a"), path_hash("/tmp/b"));
     }
 }
