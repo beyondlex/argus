@@ -83,11 +83,6 @@ impl WatcherState {
         self.size_cache.remove(path)
     }
 
-    pub fn update_size(&mut self, path: &Path, size: u64) {
-        self.size_cache.insert(path.to_path_buf(), size);
-        self.trim_caches_if_needed();
-    }
-
     pub fn last_known_size(&self, path: &Path) -> Option<u64> {
         self.size_cache.get(path).copied()
     }
@@ -142,10 +137,10 @@ fn event_to_delta(
             }
             EventKind::Modify(ModifyKind::Data(_)) => {
                 let old_size = state.last_known_size(path).unwrap_or(0);
+                // file_size() already refreshes the cache entry
                 state.file_size(path).and_then(|new_size| {
                     let delta = (new_size as i64) - (old_size as i64);
                     if delta != 0 {
-                        state.update_size(path, new_size);
                         Some(DeltaEvent {
                             path: path.clone(),
                             delta_size: delta,
@@ -221,8 +216,15 @@ pub fn start_watcher(
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
 
-        let mut watcher: RecommendedWatcher =
-            Watcher::new(tx, Config::default()).expect("failed to create watcher");
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            // A panic here would silently kill the watch thread for the whole
+            // daemon lifetime; degrade to a logged no-op watcher instead.
+            Err(e) => {
+                tracing::error!("failed to create watcher: {e}");
+                return;
+            }
+        };
 
         for wd in &watch_dirs {
             let dir = wd.path();
@@ -485,14 +487,20 @@ mod tests {
 
     #[test]
     fn test_size_cache_update() {
-        let mut state = WatcherState::new();
-        let path = PathBuf::from("/tmp/test.txt");
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sized.txt");
 
+        let mut state = WatcherState::new();
         assert!(state.last_known_size(&path).is_none());
-        state.update_size(&path, 100);
-        assert_eq!(state.last_known_size(&path), Some(100));
-        state.update_size(&path, 200);
-        assert_eq!(state.last_known_size(&path), Some(200));
+
+        fs::write(&path, b"100bytes!!").unwrap();
+        assert_eq!(state.file_size(&path), Some(10));
+        assert_eq!(state.last_known_size(&path), Some(10));
+
+        fs::write(&path, b"100bytes!! and more").unwrap();
+        assert_eq!(state.file_size(&path), Some(19));
+        assert_eq!(state.last_known_size(&path), Some(19));
+
         state.remove(&path);
         assert!(state.last_known_size(&path).is_none());
     }
