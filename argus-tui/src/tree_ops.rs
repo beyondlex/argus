@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use argus_core::{NodeIndex, Snapshot, ROOT_NODE};
+use argus_core::{FileNode, NodeIndex, Snapshot, ROOT_NODE};
 
 use crate::app::{App, TreeNode};
 
@@ -118,11 +118,7 @@ fn prune_file_node(
             false
         }
     } else if let Some(child_idx) = snap.child_idx(current_idx, &components[index]) {
-        let removed = prune_file_node(snap, child_idx, components, index + 1);
-        if removed {
-            recompute_file_node_size(snap, current_idx);
-        }
-        removed
+        prune_file_node(snap, child_idx, components, index + 1)
     } else {
         false
     };
@@ -194,11 +190,14 @@ pub(crate) fn enrich_snapshot_sizes(
     path.pop();
 }
 
-pub(crate) fn disk_usage_for_path(
+/// Resolve a size metric for `path_key` from the best-available source:
+/// an exact scan of the path itself wins, then the enclosing scan tree.
+pub(crate) fn metric_for_path(
     scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
     view_root_path: &Path,
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path_key: &[String],
+    metric: fn(&argus_core::FileNode) -> u64,
 ) -> Option<u64> {
     if path_key.is_empty() {
         return None;
@@ -210,12 +209,12 @@ pub(crate) fn disk_usage_for_path(
     }
 
     if let Some(snapshot) = scan_cache.get(&path) {
-        return Some(snapshot.node(ROOT_NODE).disk_usage());
+        return Some(metric(snapshot.node(ROOT_NODE)));
     }
 
     root_scan_tree.and_then(|(snap, idx)| {
         snap.find_node(idx, path_key)
-            .map(|found_idx| snap.node(found_idx).disk_usage())
+            .map(|found_idx| metric(snap.node(found_idx)))
     })
 }
 
@@ -225,23 +224,28 @@ pub(crate) fn size_for_path(
     root_scan_tree: Option<(&Snapshot, NodeIndex)>,
     path_key: &[String],
 ) -> Option<u64> {
-    if path_key.is_empty() {
-        return None;
-    }
+    metric_for_path(
+        scan_cache,
+        view_root_path,
+        root_scan_tree,
+        path_key,
+        FileNode::size,
+    )
+}
 
-    let mut path = view_root_path.to_path_buf();
-    for component in path_key.iter().skip(1) {
-        path.push(component);
-    }
-
-    if let Some(snapshot) = scan_cache.get(&path) {
-        return Some(snapshot.node(ROOT_NODE).size());
-    }
-
-    root_scan_tree.and_then(|(snap, idx)| {
-        snap.find_node(idx, path_key)
-            .map(|found_idx| snap.node(found_idx).size())
-    })
+pub(crate) fn disk_usage_for_path(
+    scan_cache: &HashMap<PathBuf, Arc<Snapshot>>,
+    view_root_path: &Path,
+    root_scan_tree: Option<(&Snapshot, NodeIndex)>,
+    path_key: &[String],
+) -> Option<u64> {
+    metric_for_path(
+        scan_cache,
+        view_root_path,
+        root_scan_tree,
+        path_key,
+        FileNode::disk_usage,
+    )
 }
 
 /// Find the best-available scan tree node for a view path.

@@ -1555,9 +1555,11 @@ impl App {
                     }
                 }
                 CleanupMode::Purge => {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                    let roots = vec![std::path::PathBuf::from(&home)];
-                    match argus_core::find_artifacts(&roots) {
+                    // Empty roots -> find_artifacts falls back to its default
+                    // search roots (~/Projects, ~/GitHub, ...); passing HOME
+                    // directly only scanned HOME's first level and missed
+                    // nested projects entirely.
+                    match argus_core::find_artifacts(&[]) {
                         Ok(artifacts) => artifacts
                             .into_iter()
                             .map(|a| argus_core::CleanItem {
