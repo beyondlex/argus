@@ -164,13 +164,7 @@ fn dirs_config_path() -> std::path::PathBuf {
 pub fn is_protected_path(path: &Path) -> bool {
     let protected: &[&str] = if cfg!(target_os = "macos") {
         &[
-            "/System",
-            "/usr/bin",
-            "/usr/lib",
-            "/bin",
-            "/sbin",
-            "/etc",
-            "/var/db",
+            "/System", "/usr/bin", "/usr/lib", "/bin", "/sbin", "/etc", "/var/db",
         ]
     } else {
         &[
@@ -188,7 +182,7 @@ pub fn is_protected_path(path: &Path) -> bool {
 
 /// Extract unit suffix from a formatted size string (e.g., "1.23 MB" -> "MB")
 pub fn extract_unit(s: &str) -> &str {
-    s.trim().split_whitespace().last().unwrap_or("B")
+    s.split_whitespace().last().unwrap_or("B")
 }
 
 /// Map unit to color for positive delta display (entire string colored).

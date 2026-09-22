@@ -155,7 +155,7 @@ pub fn find_installed_apps(
             });
         }
     }
-    apps.sort_by(|a, b| b.size.cmp(&a.size));
+    apps.sort_by_key(|a| std::cmp::Reverse(a.size));
     Ok(apps)
 }
 

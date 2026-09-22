@@ -10,37 +10,40 @@ use ratatui::{
     Frame,
 };
 
+/// Everything the status bar needs from the app, gathered by the caller.
+/// Keeps `render`'s signature manageable as indicators grow.
+pub struct StatusCtx<'a> {
+    pub mode: AppMode,
+    pub has_error: Option<&'a str>,
+    pub status_is_error: bool,
+    pub sort_mode: SortMode,
+    pub multi_select: bool,
+    pub multi_select_count: usize,
+    pub multi_select_size: u64,
+    pub theme: &'a ColorTheme,
+    pub time_custom: bool,
+    pub time_preset: usize,
+    pub time_custom_label: &'a str,
+    pub delta_filter_active: bool,
+    pub delta_filter_value: u64,
+    pub delta_filter_unit: usize,
+    pub current_dir_disk_usage: u64,
+    pub current_dir_apparent_size: u64,
+    pub current_dir_items: u64,
+}
+
 /// Render the status bar
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    mode: AppMode,
-    has_error: Option<&str>,
-    status_is_error: bool,
-    sort_mode: SortMode,
-    multi_select: bool,
-    multi_select_count: usize,
-    multi_select_size: u64,
-    theme: &ColorTheme,
-    time_custom: bool,
-    time_preset: usize,
-    time_custom_label: &str,
-    delta_filter_active: bool,
-    delta_filter_value: u64,
-    delta_filter_unit: usize,
-    current_dir_disk_usage: u64,
-    current_dir_apparent_size: u64,
-    current_dir_items: u64,
-) {
+pub fn render(f: &mut Frame, area: Rect, ctx: &StatusCtx) {
+    let theme = ctx.theme;
     let mut left_spans: Vec<Span> = Vec::new();
 
     // Multi-select indicator
-    if multi_select {
+    if ctx.multi_select {
         left_spans.push(Span::styled(
             format!(
                 " ● MULTI({}) {} ",
-                multi_select_count,
-                util::format_size(multi_select_size)
+                ctx.multi_select_count,
+                util::format_size(ctx.multi_select_size)
             ),
             Style::default()
                 .fg(theme.text_highlight)
@@ -48,7 +51,10 @@ pub fn render(
         ));
     }
 
-    if matches!(mode, AppMode::DeletePrompt | AppMode::DeletePermanentPrompt) {
+    if matches!(
+        ctx.mode,
+        AppMode::DeletePrompt | AppMode::DeletePermanentPrompt
+    ) {
         left_spans.push(Span::styled(
             " DELETE CONFIRM ",
             Style::default()
@@ -56,12 +62,12 @@ pub fn render(
                 .bg(theme.bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
-    } else if matches!(mode, AppMode::Help) {
+    } else if matches!(ctx.mode, AppMode::Help) {
         left_spans.push(Span::styled(
             " HELP ",
             Style::default().fg(theme.accent).bg(theme.bg),
         ));
-    } else if matches!(mode, AppMode::AiReview) {
+    } else if matches!(ctx.mode, AppMode::AiReview) {
         left_spans.push(Span::styled(
             " AI REVIEW ",
             Style::default()
@@ -77,7 +83,7 @@ pub fn render(
         Style::default().fg(theme.text_secondary),
     ));
     left_spans.push(Span::styled(
-        format!(" {}", util::format_size(current_dir_disk_usage)),
+        format!(" {}", util::format_size(ctx.current_dir_disk_usage)),
         Style::default().fg(theme.text_highlight),
     ));
     left_spans.push(Span::styled(
@@ -85,7 +91,7 @@ pub fn render(
         Style::default().fg(theme.text_secondary),
     ));
     left_spans.push(Span::styled(
-        format!(" {}", util::format_size(current_dir_apparent_size)),
+        format!(" {}", util::format_size(ctx.current_dir_apparent_size)),
         Style::default().fg(theme.text_highlight),
     ));
     left_spans.push(Span::styled(
@@ -93,13 +99,13 @@ pub fn render(
         Style::default().fg(theme.text_secondary),
     ));
     left_spans.push(Span::styled(
-        format!(" {}", util::format_count(current_dir_items)),
+        format!(" {}", util::format_count(ctx.current_dir_items)),
         Style::default().fg(theme.text_highlight),
     ));
 
-    if let Some(msg) = has_error {
+    if let Some(msg) = ctx.has_error {
         left_spans.push(Span::raw("   "));
-        let fg = if status_is_error {
+        let fg = if ctx.status_is_error {
             theme.danger
         } else {
             theme.success
@@ -109,79 +115,14 @@ pub fn render(
 
     let filter_spans = filter_indicator(
         theme,
-        time_custom,
-        time_preset,
-        time_custom_label,
-        delta_filter_active,
-        delta_filter_value,
-        delta_filter_unit,
+        ctx.time_custom,
+        ctx.time_preset,
+        ctx.time_custom_label,
+        ctx.delta_filter_active,
+        ctx.delta_filter_value,
+        ctx.delta_filter_unit,
     );
 
-    fn filter_indicator(
-        theme: &ColorTheme,
-        time_custom: bool,
-        time_preset: usize,
-        time_custom_label: &str,
-        delta_active: bool,
-        delta_value: u64,
-        delta_unit: usize,
-    ) -> Vec<Span<'static>> {
-        let data_style = Style::default().fg(theme.accent);
-        let normal_style = Style::default().fg(theme.text);
-
-        let val_span = |s: &str| Span::styled(s.to_string(), data_style);
-        let lbl_span = |s: &str| Span::styled(s.to_string(), normal_style);
-
-        let mut spans: Vec<Span> = Vec::new();
-        let mut has_time = false;
-        let mut has_delta = false;
-
-        // Time part
-        if time_custom && !time_custom_label.is_empty() {
-            has_time = true;
-            if time_custom_label.contains('~') {
-                // Range: time [07-12 ~ 07-13)
-                spans.push(lbl_span("time"));
-                spans.push(lbl_span(" ["));
-                spans.push(val_span(time_custom_label));
-                spans.push(lbl_span(")"));
-            } else {
-                // Single duration: time in 2h
-                spans.push(lbl_span("time"));
-                spans.push(lbl_span(" in "));
-                spans.push(val_span(time_custom_label));
-            }
-        } else if !time_custom {
-            has_time = true;
-            spans.push(lbl_span("time"));
-            spans.push(lbl_span(" in "));
-            spans.push(val_span(App::time_preset_label(time_preset)));
-        }
-
-        // Delta part
-        let unit_label = DELTA_UNIT_LABELS.get(delta_unit).copied().unwrap_or("--");
-
-        if delta_active {
-            has_delta = true;
-            if has_time {
-                spans.push(lbl_span(","));
-                spans.push(lbl_span(" "));
-            }
-            spans.push(lbl_span("delta"));
-            spans.push(lbl_span(" "));
-            spans.push(lbl_span(">="));
-            spans.push(lbl_span(" "));
-            spans.push(val_span(&delta_value.to_string()));
-            spans.push(lbl_span(" "));
-            spans.push(val_span(unit_label));
-        }
-
-        if !has_time && !has_delta {
-            return Vec::new();
-        }
-
-        spans
-    }
     let mut right_spans: Vec<Span> = Vec::new();
     if !filter_spans.is_empty() {
         right_spans.extend(filter_spans);
@@ -189,7 +130,7 @@ pub fn render(
     }
     right_spans.push(Span::raw("Sort: "));
     right_spans.push(Span::styled(
-        sort_mode.label(),
+        ctx.sort_mode.label(),
         Style::default()
             .fg(theme.accent)
             .add_modifier(ratatui::style::Modifier::BOLD),
@@ -212,4 +153,70 @@ pub fn render(
     } else {
         f.render_widget(Paragraph::new(Line::from(left_spans)).block(block), area);
     }
+}
+
+fn filter_indicator(
+    theme: &ColorTheme,
+    time_custom: bool,
+    time_preset: usize,
+    time_custom_label: &str,
+    delta_active: bool,
+    delta_value: u64,
+    delta_unit: usize,
+) -> Vec<Span<'static>> {
+    let data_style = Style::default().fg(theme.accent);
+    let normal_style = Style::default().fg(theme.text);
+
+    let val_span = |s: &str| Span::styled(s.to_string(), data_style);
+    let lbl_span = |s: &str| Span::styled(s.to_string(), normal_style);
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut has_time = false;
+    let mut has_delta = false;
+
+    // Time part
+    if time_custom && !time_custom_label.is_empty() {
+        has_time = true;
+        if time_custom_label.contains('~') {
+            // Range: time [07-12 ~ 07-13)
+            spans.push(lbl_span("time"));
+            spans.push(lbl_span(" ["));
+            spans.push(val_span(time_custom_label));
+            spans.push(lbl_span(")"));
+        } else {
+            // Single duration: time in 2h
+            spans.push(lbl_span("time"));
+            spans.push(lbl_span(" in "));
+            spans.push(val_span(time_custom_label));
+        }
+    } else if !time_custom {
+        has_time = true;
+        spans.push(lbl_span("time"));
+        spans.push(lbl_span(" in "));
+        spans.push(val_span(App::time_preset_label(time_preset)));
+    }
+
+    // Delta part
+    let unit_label = DELTA_UNIT_LABELS.get(delta_unit).copied().unwrap_or("--");
+
+    if delta_active {
+        has_delta = true;
+        if has_time {
+            spans.push(lbl_span(","));
+            spans.push(lbl_span(" "));
+        }
+        spans.push(lbl_span("delta"));
+        spans.push(lbl_span(" "));
+        spans.push(lbl_span(">="));
+        spans.push(lbl_span(" "));
+        spans.push(val_span(&delta_value.to_string()));
+        spans.push(lbl_span(" "));
+        spans.push(val_span(unit_label));
+    }
+
+    if !has_time && !has_delta {
+        return Vec::new();
+    }
+
+    spans
 }

@@ -63,7 +63,7 @@ impl Default for DaemonAccessConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LabelConfig {
     pub custom_mappings: Vec<LabelMapping>,
 }
@@ -74,25 +74,9 @@ pub struct LabelMapping {
     pub label: String,
 }
 
-impl Default for LabelConfig {
-    fn default() -> Self {
-        Self {
-            custom_mappings: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BrowsingConfig {
     pub auto_scan_on_start: bool,
-}
-
-impl Default for BrowsingConfig {
-    fn default() -> Self {
-        Self {
-            auto_scan_on_start: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

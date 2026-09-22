@@ -367,7 +367,7 @@ mod tests {
 
         let events = event_to_delta(
             &EventKind::Create(CreateKind::File),
-            &[file.clone()],
+            std::slice::from_ref(&file),
             &mut state,
             timestamp,
         );
@@ -391,7 +391,7 @@ mod tests {
 
         let events = event_to_delta(
             &EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
-            &[file.clone()],
+            std::slice::from_ref(&file),
             &mut state,
             timestamp,
         );
@@ -435,7 +435,7 @@ mod tests {
 
         let events = event_to_delta(
             &EventKind::Remove(RemoveKind::File),
-            &[file.clone()],
+            std::slice::from_ref(&file),
             &mut state,
             timestamp,
         );

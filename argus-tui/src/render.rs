@@ -72,29 +72,26 @@ fn render_main_content(f: &mut Frame, app: &App, area: Rect, cursor_visible: boo
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let error_str = app.last_error.as_deref();
-    let status_is_error = app.status_is_error;
-    status_bar::render(
-        f,
-        area,
-        app.mode,
-        error_str,
-        status_is_error,
-        app.sort_mode,
-        app.multi_select,
-        app.selected_paths.len(),
-        app.selected_total_size(),
-        &app.theme,
-        app.time_custom,
-        app.time_preset,
-        &app.time_custom_label,
-        app.delta_filter_active,
-        app.delta_filter_value,
-        app.delta_filter_unit,
-        app.current_dir_disk_usage,
-        app.current_dir_total,
-        app.current_dir_items,
-    );
+    let ctx = status_bar::StatusCtx {
+        mode: app.mode,
+        has_error: app.last_error.as_deref(),
+        status_is_error: app.status_is_error,
+        sort_mode: app.sort_mode,
+        multi_select: app.multi_select,
+        multi_select_count: app.selected_paths.len(),
+        multi_select_size: app.selected_total_size(),
+        theme: &app.theme,
+        time_custom: app.time_custom,
+        time_preset: app.time_preset,
+        time_custom_label: &app.time_custom_label,
+        delta_filter_active: app.delta_filter_active,
+        delta_filter_value: app.delta_filter_value,
+        delta_filter_unit: app.delta_filter_unit,
+        current_dir_disk_usage: app.current_dir_disk_usage,
+        current_dir_apparent_size: app.current_dir_total,
+        current_dir_items: app.current_dir_items,
+    };
+    status_bar::render(f, area, &ctx);
 }
 
 pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -201,7 +198,12 @@ fn render_scan_popup(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.scanning && !matches!(app.mode, AppMode::Cleanup | AppMode::Uninstall | AppMode::Brew) {
+    if app.scanning
+        && !matches!(
+            app.mode,
+            AppMode::Cleanup | AppMode::Uninstall | AppMode::Brew
+        )
+    {
         render_scan_popup(f, area, app);
         return;
     }

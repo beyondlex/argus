@@ -110,11 +110,6 @@ watch_dirs = [
 # 事件去抖延迟（秒）
 debounce_seconds = 10
 
-# 快照保留策略
-[daemon.snapshot_retention]
-hourly_retention_days = 7
-daily_retention_days = 30
-
 # UDS 监听地址
 uds_path = "/tmp/argusd.sock"
 

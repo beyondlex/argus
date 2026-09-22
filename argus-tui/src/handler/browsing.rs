@@ -202,7 +202,7 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         .unwrap_or_default();
     paths.retain(|p| {
         p.file_name()
-            .map(|n| n.to_string_lossy().to_string() != root_name)
+            .map(|n| n.to_string_lossy() != root_name)
             .unwrap_or(true)
     });
     if paths.is_empty() {

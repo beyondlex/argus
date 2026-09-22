@@ -141,7 +141,7 @@ pub fn try_parse_json(raw: &str) -> HashMap<String, AiResponse> {
 /// Uses 3 chars per token as a conservative estimate for mixed CJK/Latin text.
 pub fn estimate_tokens(prompt: &str) -> usize {
     let char_count = prompt.chars().count();
-    (char_count + 2) / 3
+    char_count.div_ceil(3)
 }
 
 // ── HTTP API (gated behind `ai` feature) ─────────────────────────────────
@@ -285,7 +285,7 @@ fn find_chunk_boundary(contexts: &[AiContext], config: &AiConfig) -> usize {
     let mut low = 1;
 
     while low < high {
-        let mid = (low + high + 1) / 2;
+        let mid = (low + high).div_ceil(2);
         let prompt = build_prompt(&contexts[..mid], &config.language);
         if estimate_tokens(&prompt) <= config.max_tokens_per_request {
             low = mid;

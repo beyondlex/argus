@@ -52,11 +52,16 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             format!(" {}", state.current_scan_target)
         };
-        let progress = if state.scan_progress_total > 0 {
-            let pct = state.scan_progress_current * 100 / state.scan_progress_total;
-            format!(" [{}/{}]{}%", state.scan_progress_current, state.scan_progress_total, pct)
-        } else {
-            String::new()
+        let progress = match state
+            .scan_progress_current
+            .checked_mul(100)
+            .and_then(|p| p.checked_div(state.scan_progress_total))
+        {
+            Some(pct) => format!(
+                " [{}/{}]{}%",
+                state.scan_progress_current, state.scan_progress_total, pct
+            ),
+            None => String::new(),
         };
         let lines = vec![
             Line::from(Span::styled(
@@ -91,15 +96,13 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
             .and_then(|i| state.packages.get(i))
             .map(|p| p.name.as_str())
             .unwrap_or("?");
-        let lines = vec![
-            Line::from(Span::styled(
-                format!("{} Uninstalling {}...", spinner, pkg_name),
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .alignment(Alignment::Center),
-        ];
+        let lines = vec![Line::from(Span::styled(
+            format!("{} Uninstalling {}...", spinner, pkg_name),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Center)];
         let [_, center, _] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
@@ -124,9 +127,10 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
         let pkg_name = pkg.map(|p| p.name.as_str()).unwrap_or("?");
         let confirm_text = format!("Uninstall {}?", pkg_name);
 
-        let mut lines = vec![
-            Line::from(Span::styled(confirm_text, Style::default().fg(theme.text))),
-        ];
+        let lines = vec![Line::from(Span::styled(
+            confirm_text,
+            Style::default().fg(theme.text),
+        ))];
 
         let confirm_block = Block::default()
             .borders(Borders::ALL)
@@ -140,7 +144,9 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
         let confirm_area = centered_rect(inner, 70, 50);
         f.render_widget(Clear, confirm_area);
         f.render_widget(
-            Paragraph::new(lines).block(confirm_block).alignment(Alignment::Center),
+            Paragraph::new(lines)
+                .block(confirm_block)
+                .alignment(Alignment::Center),
             confirm_area,
         );
         return;
@@ -154,14 +160,22 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
     ])
     .areas(inner);
 
-    render_brew_header(f, header_area, &state, theme);
-    render_brew_list(f, list_area, &state, theme);
-    render_brew_footer(f, footer_area, &state, theme);
+    render_brew_header(f, header_area, state, theme);
+    render_brew_list(f, list_area, state, theme);
+    render_brew_footer(f, footer_area, state, theme);
 
     // Info popup overlays on top of the brew list, rendered inside the brew block
     if state.show_info {
         if let (Some(path), Some(meta)) = (&state.info_path, &state.info_metadata) {
-            crate::components::metadata::render(f, area, path, meta, state.info_ai.as_ref(), theme, 80);
+            crate::components::metadata::render(
+                f,
+                area,
+                path,
+                meta,
+                state.info_ai.as_ref(),
+                theme,
+                80,
+            );
         }
     }
 }
@@ -317,10 +331,7 @@ fn render_brew_list(f: &mut Frame, area: Rect, state: &BrewState, theme: &ColorT
                 prefix_span,
                 Span::styled(format!("{:>12}", time_str), time_style),
                 Span::raw(" "),
-                Span::styled(
-                    format!("{:>9}", size_str),
-                    size_style,
-                ),
+                Span::styled(format!("{:>9}", size_str), size_style),
                 Span::styled(
                     lightning,
                     Style::default().fg(ai_color.unwrap_or(theme.warning)),
@@ -370,11 +381,7 @@ fn render_brew_footer(f: &mut Frame, area: Rect, state: &BrewState, theme: &Colo
                 .add_modifier(Modifier::BOLD),
         ));
         spans.extend(key_hints(
-            &[
-                ("Space", "Select"),
-                ("a", "AI"),
-                ("Esc", "Exit"),
-            ],
+            &[("Space", "Select"), ("a", "AI"), ("Esc", "Exit")],
             theme,
         ));
     } else {

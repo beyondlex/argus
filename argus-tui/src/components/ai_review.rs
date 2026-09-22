@@ -191,7 +191,7 @@ fn render_info_popup(
     render_val(
         f,
         r2,
-        &if result.deletable {
+        if result.deletable {
             "Deletable: Yes"
         } else {
             "Deletable: No"
@@ -528,8 +528,7 @@ fn render_pending_list(
     theme: &ColorTheme,
     available: u16,
 ) {
-    let mut y_offset = area.y;
-    for (i, path) in state.pending_paths.iter().enumerate() {
+    for (y_offset, (i, path)) in (area.y..).zip(state.pending_paths.iter().enumerate()) {
         if i >= (available as usize) {
             break;
         }
@@ -539,7 +538,6 @@ fn render_pending_list(
             width: area.width.saturating_sub(4),
             height: 1,
         };
-        y_offset += 1;
 
         let path_str = path.to_string_lossy().to_string();
         let text = Paragraph::new(Line::from(Span::styled(

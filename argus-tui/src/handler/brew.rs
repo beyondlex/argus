@@ -60,13 +60,11 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
     }
 
     // If report is showing, Esc clears it (returns to pkg list)
-    if state.report.is_some() {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-            if let Some(ref mut s) = app.brew_state {
-                s.report = None;
-            }
-            return;
+    if state.report.is_some() && matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        if let Some(ref mut s) = app.brew_state {
+            s.report = None;
         }
+        return;
     }
 
     // If info popup is showing, only Esc/q dismiss it (modal)
@@ -97,7 +95,10 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
                             s.selected_pkgs.insert(idx);
                         }
                     }
-                    s.cursor = s.cursor.saturating_add(1).min(filtered_len.saturating_sub(1));
+                    s.cursor = s
+                        .cursor
+                        .saturating_add(1)
+                        .min(filtered_len.saturating_sub(1));
                 }
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
@@ -175,7 +176,10 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
                 if let Some(idx) = pkg_idx {
                     s.selected_pkgs.insert(idx);
                 }
-                s.cursor = s.cursor.saturating_add(1).min(filtered_len.saturating_sub(1));
+                s.cursor = s
+                    .cursor
+                    .saturating_add(1)
+                    .min(filtered_len.saturating_sub(1));
             }
         }
         KeyCode::Char('/') => {
@@ -324,9 +328,15 @@ pub(crate) fn format_brew_time(dt: Option<chrono::DateTime<chrono::Utc>>) -> Str
 }
 
 fn handle_brew_info_popup(app: &mut App) {
-    let Some(ref state) = app.brew_state else { return };
-    let Some(&pkg_idx) = state.filtered.get(state.cursor) else { return };
-    let Some(pkg) = state.packages.get(pkg_idx) else { return };
+    let Some(ref state) = app.brew_state else {
+        return;
+    };
+    let Some(&pkg_idx) = state.filtered.get(state.cursor) else {
+        return;
+    };
+    let Some(pkg) = state.packages.get(pkg_idx) else {
+        return;
+    };
     let prefix = argus_core::brew_prefix();
     let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type).join(&pkg.version);
     match std::fs::metadata(&path) {
@@ -354,9 +364,15 @@ fn handle_brew_info_popup(app: &mut App) {
 }
 
 fn handle_brew_copy_path(app: &mut App) {
-    let Some(ref state) = app.brew_state else { return };
-    let Some(&pkg_idx) = state.filtered.get(state.cursor) else { return };
-    let Some(pkg) = state.packages.get(pkg_idx) else { return };
+    let Some(ref state) = app.brew_state else {
+        return;
+    };
+    let Some(&pkg_idx) = state.filtered.get(state.cursor) else {
+        return;
+    };
+    let Some(pkg) = state.packages.get(pkg_idx) else {
+        return;
+    };
     let prefix = argus_core::brew_prefix();
     let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type).join(&pkg.version);
     let path_str = path.display().to_string();
@@ -373,4 +389,3 @@ fn handle_brew_copy_path(app: &mut App) {
         }
     }
 }
-

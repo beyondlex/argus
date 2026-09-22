@@ -284,15 +284,13 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
             if let Some(ref mut s) = app.uninstall_state {
                 s.sort_mode = (s.sort_mode + 1) % 3;
                 match s.sort_mode {
-                    0 => s.apps.sort_by(|a, b| b.size.cmp(&a.size)),
+                    0 => s.apps.sort_by_key(|a| std::cmp::Reverse(a.size)),
                     1 => s.apps.sort_by(|a, b| {
                         let a_t = a.last_used.unwrap_or_default();
                         let b_t = b.last_used.unwrap_or_default();
                         b_t.cmp(&a_t)
                     }),
-                    _ => s
-                        .apps
-                        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+                    _ => s.apps.sort_by_key(|a| a.name.to_lowercase()),
                 }
                 s.filtered = (0..s.apps.len()).collect();
                 s.cursor = 0;
@@ -449,7 +447,7 @@ fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
             }
         }
     }
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     entries.truncate(200);
     entries
 }

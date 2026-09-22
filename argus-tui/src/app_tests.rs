@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::TuiConfig;
-use argus_core::{FileType, Snapshot, SnapshotBuilder, ROOT_NODE};
+use argus_core::{FileType, SnapshotBuilder, ROOT_NODE};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;

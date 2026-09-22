@@ -91,7 +91,7 @@ pub fn render(
         Constraint::Length(1), // Created
         Constraint::Length(1), // Perms
     ];
-    if let Some(ref ai) = ai {
+    if let Some(ai) = ai {
         rows.push(Constraint::Length(1)); // blank
         rows.push(Constraint::Length(1)); // AI header
         rows.push(Constraint::Length(1)); // blank
@@ -105,13 +105,10 @@ pub fn render(
         }
     }
 
-    let content_height: u16 = rows.iter().map(|c| {
-        if let Constraint::Length(n) = c {
-            *n
-        } else {
-            1
-        }
-    }).sum();
+    let content_height: u16 = rows
+        .iter()
+        .map(|c| if let Constraint::Length(n) = c { *n } else { 1 })
+        .sum();
 
     // +4 for top border, title, key hints, bottom border
     let popup_height = (content_height + 4).max(10).min(area.height);
@@ -157,7 +154,7 @@ pub fn render(
 
     let (num_span, unit_span) = {
         let leading = size_str.len() - size_str.trim_start().len();
-        let parts: Vec<&str> = size_str.trim().split_whitespace().collect();
+        let parts: Vec<&str> = size_str.split_whitespace().collect();
         if parts.len() >= 2 {
             (
                 Span::styled(

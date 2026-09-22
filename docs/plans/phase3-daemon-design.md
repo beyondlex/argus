@@ -384,10 +384,6 @@ watch_dirs = ["/Users/lex/Downloads", "/Users/lex/Desktop"]
 debounce_seconds = 10
 uds_path = "/tmp/argusd.sock"
 
-[daemon.snapshot_retention]
-hourly_retention_days = 7
-daily_retention_days = 30
-
 [logging]
 file_level = "info"
 ```

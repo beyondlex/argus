@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -136,7 +136,7 @@ fn config_dir() -> PathBuf {
         .join("argus")
 }
 
-fn print_launchd_plist(exe: &PathBuf) {
+fn print_launchd_plist(exe: &Path) {
     let exe = exe.display();
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -166,7 +166,7 @@ fn print_launchd_plist(exe: &PathBuf) {
     eprintln!("Install: mkdir -p ~/Library/LaunchAgents && argusd --generate-service launchd > ~/Library/LaunchAgents/com.argus.daemon.plist && launchctl load ~/Library/LaunchAgents/com.argus.daemon.plist");
 }
 
-fn print_systemd_unit(exe: &PathBuf) {
+fn print_systemd_unit(exe: &Path) {
     let exe = exe.display();
     let unit = format!(
         r#"[Unit]

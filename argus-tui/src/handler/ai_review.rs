@@ -98,33 +98,27 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
     }
 
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if state.cursor + 1 < state.results.len() {
-                let visible = crossterm::terminal::size()
-                    .ok()
-                    .map(|(_, h)| ((h as usize).saturating_sub(4)) / ITEM_LINES)
-                    .unwrap_or(6);
-                if state.cursor >= state.scroll_offset + visible - 1 {
-                    state.scroll_offset = state.cursor + 2 - visible;
-                }
-                state.cursor += 1;
+        KeyCode::Char('j') | KeyCode::Down if state.cursor + 1 < state.results.len() => {
+            let visible = crossterm::terminal::size()
+                .ok()
+                .map(|(_, h)| ((h as usize).saturating_sub(4)) / ITEM_LINES)
+                .unwrap_or(6);
+            if state.cursor >= state.scroll_offset + visible - 1 {
+                state.scroll_offset = state.cursor + 2 - visible;
             }
+            state.cursor += 1;
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if state.cursor > 0 {
-                state.cursor -= 1;
-                if state.cursor < state.scroll_offset {
-                    state.scroll_offset = state.cursor;
-                }
+        KeyCode::Char('k') | KeyCode::Up if state.cursor > 0 => {
+            state.cursor -= 1;
+            if state.cursor < state.scroll_offset {
+                state.scroll_offset = state.cursor;
             }
         }
         KeyCode::Char(' ') => {
             app.ai_review_toggle_mark();
         }
-        KeyCode::Char('i') => {
-            if state.status == AiStatus::Ready && !state.results.is_empty() {
-                state.info_item = Some(state.cursor);
-            }
+        KeyCode::Char('i') if state.status == AiStatus::Ready && !state.results.is_empty() => {
+            state.info_item = Some(state.cursor);
         }
         KeyCode::Char('d') => {
             if state.status != AiStatus::Ready {

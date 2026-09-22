@@ -413,7 +413,7 @@ mod tests {
         let agg_path_ref = agg_path_str.as_str();
         conn.execute(
             "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
-            &[agg_path_ref, "300", "agg", "1200"],
+            [agg_path_ref, "300", "agg", "1200"],
         )
         .expect("insert agg row");
 

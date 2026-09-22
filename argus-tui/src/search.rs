@@ -45,7 +45,7 @@ pub(crate) fn fuzzy_match(query: &str, target: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::TreeNode;
+
     #[test]
     fn test_fuzzy_match_indices_basic() {
         let result = fuzzy_match_indices("foo", "foobar");

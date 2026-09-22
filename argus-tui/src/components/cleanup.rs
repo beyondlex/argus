@@ -636,7 +636,7 @@ fn render_uninstall_confirm(
     let Some(app_idx) = state.selected_app else {
         return;
     };
-    let Some(ref app_info) = state.apps.get(app_idx) else {
+    let Some(app_info) = state.apps.get(app_idx) else {
         return;
     };
 

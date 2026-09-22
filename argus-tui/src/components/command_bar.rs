@@ -67,11 +67,8 @@ pub fn render(
             } else {
                 " ↕"
             };
-            let pct = if total > 0 {
-                (scroll + visible) * 100 / total
-            } else {
-                100
-            };
+            // total > visible here implies total >= 1, so no zero-division guard needed
+            let pct = (scroll + visible) * 100 / total;
             lines.push(Line::from(Span::styled(
                 format!("{scrollbar} {pct}%"),
                 Style::default().fg(theme.text_tertiary),

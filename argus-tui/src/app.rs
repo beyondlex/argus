@@ -435,9 +435,8 @@ impl App {
                                 .collect();
                             if !deps.is_empty() {
                                 let count = deps.len();
-                                if let Some(&pkg_idx) = state
-                                    .selected_pkg
-                                    .and_then(|i| state.filtered.get(i))
+                                if let Some(&pkg_idx) =
+                                    state.selected_pkg.and_then(|i| state.filtered.get(i))
                                 {
                                     if let Some(pkg) = state.packages.get_mut(pkg_idx) {
                                         pkg.dependents = count;
@@ -553,7 +552,7 @@ impl App {
                 self.scanning = false;
                 if let Some(ref mut state) = self.cleanup_state {
                     state.scanning = false;
-                    items.sort_by(|a, b| b.size.cmp(&a.size));
+                    items.sort_by_key(|item| std::cmp::Reverse(item.size));
                     state.items = items;
                     state.total_bytes = total_bytes;
                     // Pre-select items over 1GB
@@ -627,9 +626,7 @@ impl App {
                         .filter_map(|(i, pkg)| {
                             let path = argus_core::keg_path(&prefix, &pkg.name, &pkg.package_type)
                                 .join(&pkg.version);
-                            self.ai_analyzed
-                                .get(&path)
-                                .map(|&risk| (i, risk))
+                            self.ai_analyzed.get(&path).map(|&risk| (i, risk))
                         })
                         .collect();
                 }
@@ -1470,7 +1467,9 @@ impl App {
     }
 
     pub fn enter_brew_ai_review(&mut self) {
-        let Some(ref state) = self.brew_state else { return };
+        let Some(ref state) = self.brew_state else {
+            return;
+        };
         let prefix = argus_core::brew_prefix();
         let mut paths: Vec<std::path::PathBuf> = state
             .selected_pkgs

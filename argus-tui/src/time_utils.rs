@@ -99,11 +99,11 @@ pub(crate) fn format_time_label(left: &str, right: &str) -> String {
 }
 
 pub(crate) fn format_duration_label(ms: u64) -> String {
-    if ms % 604_800_000 == 0 {
+    if ms.is_multiple_of(604_800_000) {
         format!("{}w", ms / 604_800_000)
-    } else if ms % 86_400_000 == 0 {
+    } else if ms.is_multiple_of(86_400_000) {
         format!("{}d", ms / 86_400_000)
-    } else if ms % 3_600_000 == 0 {
+    } else if ms.is_multiple_of(3_600_000) {
         format!("{}h", ms / 3_600_000)
     } else {
         format!("{}m", ms / 60_000)

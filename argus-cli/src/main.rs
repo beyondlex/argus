@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -129,7 +129,7 @@ enum Commands {
     },
 }
 
-fn cmd_scan(path: &PathBuf) -> Result<i32> {
+fn cmd_scan(path: &Path) -> Result<i32> {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = cancel.clone();
 
@@ -166,48 +166,40 @@ fn cmd_help() -> Result<i32> {
     println!();
     println!("{}", "Commands:".bold().underline());
     println!(
-        "  {:34}  {}",
-        "scan --path <PATH>".green(),
-        "Scan a path and print summary"
+        "  {:34}  Scan a path and print summary",
+        "scan --path <PATH>".green()
     );
     println!(
-        "  {:34}  {}",
-        "delta-summary --path <PATH>".green(),
-        "Print delta summary for a path"
+        "  {:34}  Print delta summary for a path",
+        "delta-summary --path <PATH>".green()
     );
-    println!("  {:34}  {}", "help".green(), "Print this help text");
+    println!("  {:34}  Print this help text", "help".green());
     println!(
-        "  {:34}  {}",
-        "consolidate".green(),
-        "Request daemon to consolidate delta events"
+        "  {:34}  Request daemon to consolidate delta events",
+        "consolidate".green()
     );
-    println!("  {:34}  {}", "status".green(), "Query daemon status");
+    println!("  {:34}  Query daemon status", "status".green());
     println!(
-        "  {:34}  {}",
-        "clear".green(),
-        "Clear all delta events in daemon database"
+        "  {:34}  Clear all delta events in daemon database",
+        "clear".green()
     );
     #[cfg(feature = "cleanup")]
     {
         println!(
-            "  {:34}  {}",
-            "clean [--dry-run] [-y]".green(),
-            "Scan and clean caches, logs, temp files"
+            "  {:34}  Scan and clean caches, logs, temp files",
+            "clean [--dry-run] [-y]".green()
         );
         println!(
-            "  {:34}  {}",
-            "uninstall [--dry-run]".green(),
-            "List and uninstall apps with leftovers"
+            "  {:34}  List and uninstall apps with leftovers",
+            "uninstall [--dry-run]".green()
         );
         println!(
-            "  {:34}  {}",
-            "purge [--paths <DIR>] [--dry-run]".green(),
-            "Find and remove build artifacts"
+            "  {:34}  Find and remove build artifacts",
+            "purge [--paths <DIR>] [--dry-run]".green()
         );
         println!(
-            "  {:34}  {}",
-            "brew [--formula] [--cask] [--dry-run] [-y]".green(),
-            "List/uninstall brew packages by last used"
+            "  {:34}  List/uninstall brew packages by last used",
+            "brew [--formula] [--cask] [--dry-run] [-y]".green()
         );
     }
     println!();
@@ -215,28 +207,21 @@ fn cmd_help() -> Result<i32> {
         "{}",
         "TUI commands (type : inside the TUI):".bold().underline()
     );
-    println!("  {:34}  {}", ":Scan".cyan(), "Scan current directory");
+    println!("  {:34}  Scan current directory", ":Scan".cyan());
+    println!("  {:34}  Set delta threshold", ":Delta <N>[k|m|g]".cyan());
     println!(
-        "  {:34}  {}",
-        ":Delta <N>[k|m|g]".cyan(),
-        "Set delta threshold"
+        "  {:34}  Set time range (relative)",
+        ":Time <N>[m|h|d|w]".cyan()
     );
     println!(
-        "  {:34}  {}",
-        ":Time <N>[m|h|d|w]".cyan(),
-        "Set time range (relative)"
+        "  {:34}  Set time range (absolute or mixed)",
+        ":Time <from> to <to>".cyan()
     );
     println!(
-        "  {:34}  {}",
-        ":Time <from> to <to>".cyan(),
-        "Set time range (absolute or mixed)"
+        "  {:34}  Request event consolidation",
+        ":Consolidate".cyan()
     );
-    println!(
-        "  {:34}  {}",
-        ":Consolidate".cyan(),
-        "Request event consolidation"
-    );
-    println!("  {:34}  {}", ":Help".cyan(), "Show help overlay");
+    println!("  {:34}  Show help overlay", ":Help".cyan());
     Ok(0)
 }
 
@@ -1115,7 +1100,7 @@ fn format_signed_size(bytes: i64) -> String {
     format!("{sign}{}", format_size(abs))
 }
 
-fn print_delta_summary(path: &PathBuf, from_ms: u64, to_ms: u64, summary: &DeltaSummary) {
+fn print_delta_summary(path: &Path, from_ms: u64, to_ms: u64, summary: &DeltaSummary) {
     println!(
         "{}  {}",
         "delta summary path:".bold(),

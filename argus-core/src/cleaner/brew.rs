@@ -73,7 +73,12 @@ pub fn brew_prefix() -> PathBuf {
 
 fn brew_list_json(package_type: &str) -> Vec<BrewInfo> {
     let out = Command::new(brew_bin())
-        .args(["list", &format!("--{}", package_type), "--json", "--versions"])
+        .args([
+            "list",
+            &format!("--{}", package_type),
+            "--json",
+            "--versions",
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success());
@@ -280,7 +285,8 @@ fn last_used_from_history(pkg_name: &str) -> Option<DateTime<Utc>> {
                 if let Ok(ts) = ts_str.trim().parse::<i64>() {
                     if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
                         let line_rest = line.split_once(';').map(|(_, r)| r).unwrap_or("");
-                        if command_matches_pkg(line_rest, pkg_name) && latest.is_none_or(|l| dt > l) {
+                        if command_matches_pkg(line_rest, pkg_name) && latest.is_none_or(|l| dt > l)
+                        {
                             latest = Some(dt);
                         }
                     }
@@ -524,7 +530,11 @@ pub fn brew_dependents_of(name: &str) -> Vec<String> {
         return Vec::new();
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().to_string()).collect()
+    stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect()
 }
 
 /// 卸载 brew 包
@@ -574,7 +584,8 @@ pub fn brew_cache_size() -> u64 {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    let cache_dir = PathBuf::from(out.unwrap_or_else(|| "/opt/homebrew/Library/Caches/Homebrew".to_string()));
+    let cache_dir =
+        PathBuf::from(out.unwrap_or_else(|| "/opt/homebrew/Library/Caches/Homebrew".to_string()));
     dir_size(&cache_dir)
 }
 

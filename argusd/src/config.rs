@@ -86,28 +86,10 @@ pub struct DaemonConfig {
     pub watch_dirs: Vec<WatchDir>,
     pub debounce_seconds: u64,
     pub uds_path: String,
-    pub snapshot_retention: SnapshotRetention,
     pub delta_retention_days: u64,
     pub consolidation: ConsolidationConfig,
     pub log_level: Option<String>,
     pub log_enabled: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SnapshotRetention {
-    #[serde(default = "default_hourly_retention")]
-    pub hourly_retention_days: u64,
-    #[serde(default = "default_daily_retention")]
-    pub daily_retention_days: u64,
-}
-
-impl Default for SnapshotRetention {
-    fn default() -> Self {
-        Self {
-            hourly_retention_days: default_hourly_retention(),
-            daily_retention_days: default_daily_retention(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,7 +126,6 @@ impl Default for DaemonConfig {
             ],
             debounce_seconds: default_debounce_seconds(),
             uds_path: default_uds_path(),
-            snapshot_retention: SnapshotRetention::default(),
             delta_retention_days: default_delta_retention_days(),
             consolidation: ConsolidationConfig::default(),
             log_level: None,
@@ -159,14 +140,6 @@ const fn default_debounce_seconds() -> u64 {
 
 fn default_uds_path() -> String {
     argus_core::DEFAULT_UDS_PATH.to_string()
-}
-
-const fn default_hourly_retention() -> u64 {
-    7
-}
-
-const fn default_daily_retention() -> u64 {
-    30
 }
 
 const fn default_delta_retention_days() -> u64 {
@@ -198,8 +171,6 @@ struct RawDaemonConfig {
     debounce_seconds: u64,
     #[serde(default = "default_uds_path")]
     uds_path: String,
-    #[serde(default)]
-    snapshot_retention: SnapshotRetention,
     #[serde(default = "default_delta_retention_days")]
     delta_retention_days: u64,
     #[serde(default)]
@@ -220,7 +191,6 @@ impl TryFrom<RawDaemonConfig> for DaemonConfig {
             watch_dirs: watch_dirs?,
             debounce_seconds: raw.debounce_seconds,
             uds_path: raw.uds_path,
-            snapshot_retention: raw.snapshot_retention,
             delta_retention_days: raw.delta_retention_days,
             consolidation: raw.consolidation,
             log_level: raw.log_level,

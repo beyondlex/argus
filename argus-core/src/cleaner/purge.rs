@@ -142,7 +142,7 @@ pub fn find_artifacts(roots: &[PathBuf]) -> Result<Vec<Artifact>, String> {
         }
     }
 
-    artifacts.sort_by(|a, b| b.size.cmp(&a.size));
+    artifacts.sort_by_key(|a| std::cmp::Reverse(a.size));
     Ok(artifacts)
 }
 
@@ -260,7 +260,7 @@ mod tests {
         fs::create_dir_all(&node).unwrap();
         fs::write(node.join("pkg.js"), b"test").unwrap();
 
-        let artifacts = find_artifacts(&[tmp.clone()]).unwrap();
+        let artifacts = find_artifacts(std::slice::from_ref(&tmp)).unwrap();
         assert!(artifacts.len() >= 2);
 
         let rust_target = artifacts.iter().find(|a| a.kind == ArtifactKind::Target);

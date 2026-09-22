@@ -65,14 +65,10 @@ fn next_poll_timeout(
     spinner_rate: Duration,
     cursor_blink_rate: Duration,
 ) -> Duration {
-    let time_to_spinner = if app.scanning {
-        spinner_rate.saturating_sub(app.scan_spinner_tick.elapsed())
-    } else if matches!(app.mode, AppMode::Brew)
-        && app
-            .brew_state
-            .as_ref()
-            .is_some_and(|s| s.uninstalling)
-    {
+    let spinner_active = app.scanning
+        || (matches!(app.mode, AppMode::Brew)
+            && app.brew_state.as_ref().is_some_and(|s| s.uninstalling));
+    let time_to_spinner = if spinner_active {
         spinner_rate.saturating_sub(app.scan_spinner_tick.elapsed())
     } else {
         Duration::MAX
@@ -126,14 +122,9 @@ fn advance_timers(
     cursor_blink_rate: Duration,
 ) -> bool {
     let mut dirty = false;
-let brew_uninstalling = matches!(app.mode, AppMode::Brew)
-        && app
-            .brew_state
-            .as_ref()
-            .is_some_and(|s| s.uninstalling);
-    if (app.scanning || brew_uninstalling)
-        && app.scan_spinner_tick.elapsed() >= spinner_rate
-    {
+    let brew_uninstalling = matches!(app.mode, AppMode::Brew)
+        && app.brew_state.as_ref().is_some_and(|s| s.uninstalling);
+    if (app.scanning || brew_uninstalling) && app.scan_spinner_tick.elapsed() >= spinner_rate {
         app.scan_spinner = (app.scan_spinner + 1) % 10;
         app.scan_spinner_tick = Instant::now();
         dirty = true;

@@ -40,9 +40,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::TreeNode;
-    use crate::handler::browsing::{
-        handle_browsing_key, handle_delete_action, handle_gg_double_tap, move_cursor,
-    };
+    use crate::handler::browsing::{handle_browsing_key, handle_gg_double_tap, move_cursor};
     use crate::handler::command::{execute_command, handle_command_key};
     use crate::handler::prompt::{
         handle_delete_common, handle_delete_permanent_prompt_key, handle_delete_prompt_key,
@@ -226,8 +224,8 @@ mod tests {
         assert_eq!(app.cursor, 0);
     }
 
-    #[test]
     // ── handle_gg_double_tap ─────────────────────────────────────────────
+
     #[test]
     fn test_gg_double_tap_first_sets_pending() {
         let (tx, rx) = mpsc::channel(1);
