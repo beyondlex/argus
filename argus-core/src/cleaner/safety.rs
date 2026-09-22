@@ -153,6 +153,25 @@ mod tests {
     #[test]
     fn test_non_protected_user_paths() {
         assert!(!is_protected(Path::new("/Users/test/Downloads")));
+        // Exercise the canonicalize() branch too: this path exists, so
+        // canonicalize succeeds (and must not resolve into /System via
+        // firmlink/symlink tricks on macOS).
+        if let Some(home) = user_home() {
+            if home.is_dir() {
+                assert!(!is_protected(&home.join("Library")));
+                assert!(!is_protected(&home));
+            }
+        }
+    }
+
+    #[test]
+    fn test_protected_var_symlink_target() {
+        // /var is a symlink to /private/var on macOS; canonicalize resolves it.
+        // Both spellings must be treated as protected.
+        assert!(is_protected(Path::new("/var/db")));
+        if Path::new("/private/var/db").exists() {
+            assert!(is_protected(Path::new("/private/var/db")));
+        }
     }
 
     #[test]
