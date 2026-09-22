@@ -527,7 +527,13 @@ mod tests {
             root_scan_tree,
             &mut Vec::new(),
         );
-        app.tree_root = Some(TreeNode::Snapshot(Arc::new(sub_snap), ROOT_NODE));
+        let sub_snap_arc = Arc::new(sub_snap);
+        app.tree_root = Some(TreeNode::Snapshot(sub_snap_arc.clone(), ROOT_NODE));
+        // Production reaches this state via enter_directory's "switch to cached
+        // scan": view_root_path is a scanned subdir, so register it in the cache
+        // or load_current_children's root-level rebuild replaces the tree.
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/github/argus"), sub_snap_arc);
         app.current_dir_path = vec!["argus".into()];
         app.load_current_children();
 

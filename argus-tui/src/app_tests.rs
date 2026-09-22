@@ -553,11 +553,15 @@ fn make_flat_app() -> App {
     b.nodes[docs as usize].set_disk_usage(50);
     b.nodes[0].set_size(200);
     b.nodes[0].set_disk_usage(200);
-    let snap = b.finish(PathBuf::from("/tmp/test"), 200, 200);
+    let snap = Arc::new(b.finish(PathBuf::from("/tmp/test"), 200, 200));
     let (tx, rx) = mpsc::channel(1);
     let mut app = App::new(TuiConfig::default(), tx, rx);
     app.view_root_path = PathBuf::from("/tmp/test");
-    app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+    // Production populates the tree from scan_cache (ScanComplete → rebuild_tree);
+    // load_current_children rebuilds at root level, so register the snapshot there.
+    app.scan_cache
+        .insert(PathBuf::from("/tmp/test"), snap.clone());
+    app.tree_root = Some(TreeNode::Snapshot(snap, ROOT_NODE));
     app.current_dir_path = vec![String::from("test")];
     app.load_current_children();
     app
@@ -738,11 +742,13 @@ fn test_hidden_files_toggle_in_load() {
     b.push_file(ROOT_NODE, ".hidden", FileType::File, 50, 0);
     b.push_file(ROOT_NODE, "visible.txt", FileType::File, 50, 0);
     b.nodes[0].set_size(100);
-    let snap = b.finish(PathBuf::from("/tmp/test"), 100, 0);
+    let snap = Arc::new(b.finish(PathBuf::from("/tmp/test"), 100, 0));
     let (tx, rx) = mpsc::channel(1);
     let mut app = App::new(TuiConfig::default(), tx, rx);
     app.view_root_path = PathBuf::from("/tmp/test");
-    app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+    app.scan_cache
+        .insert(PathBuf::from("/tmp/test"), snap.clone());
+    app.tree_root = Some(TreeNode::Snapshot(snap, ROOT_NODE));
     app.current_dir_path = vec![String::from("test")];
 
     app.show_hidden = false;
@@ -763,11 +769,13 @@ fn test_dir_stack_depth_multiple_entries() {
     b.push_dir(a, "deep");
     b.nodes[0].set_size(300);
     b.nodes[a as usize].set_size(200);
-    let snap = b.finish(PathBuf::from("/tmp/deep"), 300, 0);
+    let snap = Arc::new(b.finish(PathBuf::from("/tmp/deep"), 300, 0));
     let (tx, rx) = mpsc::channel(1);
     let mut app = App::new(TuiConfig::default(), tx, rx);
     app.view_root_path = PathBuf::from("/tmp/deep");
-    app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+    app.scan_cache
+        .insert(PathBuf::from("/tmp/deep"), snap.clone());
+    app.tree_root = Some(TreeNode::Snapshot(snap, ROOT_NODE));
     app.current_dir_path = vec!["root".into()];
     app.load_current_children();
 
