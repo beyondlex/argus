@@ -154,6 +154,7 @@ async fn run(args: Args) {
         log_level: config.log_level.clone(),
         debounce_seconds: config.debounce_seconds,
         delta_retention_days: config.delta_retention_days,
+        consolidation_threshold: config.consolidation.sibling_threshold,
         db_path: db_path.clone(),
     };
     let ipc_handle = ipc_server::start_ipc_server(&config.uds_path, ipc_db, ipc_cfg);

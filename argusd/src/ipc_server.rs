@@ -20,8 +20,14 @@ pub struct ServerConfig {
     pub log_level: Option<String>,
     pub debounce_seconds: u64,
     pub delta_retention_days: u64,
+    pub consolidation_threshold: u64,
     pub db_path: PathBuf,
 }
+
+/// Upper bound for a single framed request. Requests are small JSON-ish
+/// structs; anything larger is a corrupt or hostile client, and honouring
+/// the length would let it allocate gigabytes in the daemon.
+const MAX_PAYLOAD_LEN: usize = 64 * 1024 * 1024;
 
 pub fn start_ipc_server(
     uds_path: &str,
@@ -101,6 +107,10 @@ async fn handle_connection(
             break;
         }
         let payload_len = u32::from_be_bytes(len_buf) as usize;
+        if payload_len > MAX_PAYLOAD_LEN {
+            warn!("oversized request ({payload_len} bytes), dropping connection");
+            break;
+        }
 
         let mut payload = vec![0u8; payload_len];
         stream.read_exact(&mut payload).await?;
@@ -148,8 +158,7 @@ async fn handle_connection(
             }
             DaemonRequest::RequestConsolidation => {
                 let mut conn = db.lock().await;
-                let threshold = 500;
-                match consolidate_events(&mut conn, threshold) {
+                match consolidate_events(&mut conn, cfg.consolidation_threshold) {
                     Ok(count) => DaemonResponse::ConsolidationDone {
                         consolidated_count: count,
                     },
