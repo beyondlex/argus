@@ -114,6 +114,11 @@ pub fn scan_path(
     if !path.exists() {
         return Err(ScanError::PathNotFound(path.to_path_buf()));
     }
+    // Align with list_dir: scanning a plain file would otherwise yield a
+    // confusing empty snapshot instead of an error.
+    if !path.is_dir() {
+        return Err(ScanError::PathNotFound(path.to_path_buf()));
+    }
 
     let mut seen_inodes = SeenInodes::new();
     let mut progress = ProgressTracker::new(progress_tx);
@@ -171,24 +176,31 @@ pub fn scan_path(
 
         let entry_path = entry.path();
 
-        if meta.is_file() || meta.is_symlink() {
-            if let (Ok(device), Ok(inode)) = (get_device(&meta), get_inode(&meta)) {
-                if !seen_inodes.insert((device, inode)) {
-                    continue;
-                }
+        // Hardlink dedup: later links to the same inode keep their tree entry
+        // (so files never vanish from browsing) but contribute no size, since
+        // the first link already accounted for the shared data.
+        let duplicate = match (get_device(&meta), get_inode(&meta)) {
+            (Ok(device), Ok(inode)) if meta.is_file() || meta.is_symlink() => {
+                !seen_inodes.insert((device, inode))
             }
-            if meta.is_file() {
-                let current_path = progress
-                    .is_active()
-                    .then(|| entry_path.to_string_lossy().to_string());
-                let du = get_disk_usage(&meta);
-                progress.record(1, meta.len(), du, current_path);
-            } else {
-                progress.record_files_only(1);
-            }
+            _ => false,
+        };
+
+        if meta.is_file() && !duplicate {
+            let current_path = progress
+                .is_active()
+                .then(|| entry_path.to_string_lossy().to_string());
+            let du = get_disk_usage(&meta);
+            progress.record(1, meta.len(), du, current_path);
+        } else {
+            progress.record_files_only(1);
         }
 
-        let (file_type, size, disk_usage) = node_meta(&meta);
+        let (file_type, mut size, mut disk_usage) = node_meta(&meta);
+        if duplicate {
+            size = 0;
+            disk_usage = 0;
+        }
         builder.push_file(parent, &name, file_type, size, disk_usage);
     }
 
@@ -433,6 +445,37 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let result = scan_path(Path::new("/nonexistent/path"), &cancel, None);
         assert!(matches!(result, Err(ScanError::PathNotFound(_))));
+    }
+
+    #[test]
+    fn test_scan_path_file_not_dir() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "content").unwrap();
+        let cancel = AtomicBool::new(false);
+        let result = scan_path(&file_path, &cancel, None);
+        assert!(matches!(result, Err(ScanError::PathNotFound(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_dedups_hardlinked_files() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new().unwrap();
+        let a = dir.path().join("a.bin");
+        let b = dir.path().join("b.bin");
+        fs::write(&a, vec![0u8; 4096]).unwrap();
+        fs::hard_link(&a, &b).unwrap();
+        assert_eq!(
+            fs::metadata(&a).unwrap().ino(),
+            fs::metadata(&b).unwrap().ino()
+        );
+
+        let cancel = AtomicBool::new(false);
+        let snapshot = scan_path(dir.path(), &cancel, None).unwrap();
+        // Only the first-seen link contributes its size
+        assert_eq!(snapshot.node(ROOT_NODE).size(), 4096);
+        assert_eq!(snapshot.children_len(ROOT_NODE), 2);
     }
 
     #[test]
