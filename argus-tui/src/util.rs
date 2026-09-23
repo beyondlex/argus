@@ -139,11 +139,6 @@ pub fn display_path(path: &Path) -> String {
     }
 }
 
-/// Get the default snapshot directory
-pub fn default_snapshots_dir() -> std::path::PathBuf {
-    dirs_config_path().join("argus").join("snapshots")
-}
-
 /// Get the default config file path
 pub fn default_config_path() -> std::path::PathBuf {
     dirs_config_path().join("argus").join("config.toml")
@@ -160,24 +155,15 @@ fn dirs_config_path() -> std::path::PathBuf {
     }
 }
 
-/// Determine if a path is protected (system blacklist)
+/// Determine if a path is protected (system blacklist).
+///
+/// Delegates to the canonical list in argus-core (`cleaner::safety`), which
+/// also covers macOS symlink targets like `/etc` → `/private/etc` that a
+/// canonicalized path resolves to. Keeping a second list here had drifted:
+/// it missed `/private/etc` and `/private/var/db`, silently allowing deletion
+/// of protected paths after canonicalization.
 pub fn is_protected_path(path: &Path) -> bool {
-    let protected: &[&str] = if cfg!(target_os = "macos") {
-        &[
-            "/System", "/usr/bin", "/usr/lib", "/bin", "/sbin", "/etc", "/var/db",
-        ]
-    } else {
-        &[
-            "/boot", "/etc", "/dev", "/proc", "/sys", "/usr/bin", "/usr/lib", "/bin", "/sbin",
-            "/lib", "/lib64",
-        ]
-    };
-
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let canonical_str = canonical.to_string_lossy();
-    protected
-        .iter()
-        .any(|p| canonical_str == *p || canonical_str.starts_with(&format!("{}/", p)))
+    argus_core::is_protected(path)
 }
 
 /// Extract unit suffix from a formatted size string (e.g., "1.23 MB" -> "MB")
@@ -258,5 +244,15 @@ mod tests {
     #[test]
     fn test_format_duration_formats_seconds() {
         assert_eq!(format_duration(Duration::from_millis(32_450)), "32.45s");
+    }
+
+    /// The TUI delete guard must match the core safety list, including macOS
+    /// symlink targets that canonicalize() resolves (/etc → /private/etc).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_protected_path_covers_macos_symlink_targets() {
+        assert!(is_protected_path(Path::new("/etc/hosts")));
+        assert!(is_protected_path(Path::new("/System/Library")));
+        assert!(!is_protected_path(Path::new("/tmp/whatever")));
     }
 }
