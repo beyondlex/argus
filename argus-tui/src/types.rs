@@ -268,7 +268,19 @@ pub struct AiPathVerdict {
     /// (e.g. "Biome is a code formatter and linter written in Rust.")
     pub background: String,
     pub deletable: bool,
+    /// Where this verdict came from: `"ai"` (model-generated) or
+    /// `"heuristic"` (built-in name-pattern fallback, no model involved).
+    /// Heuristic entries are placeholders; they are re-analyzed by the real
+    /// model once AI is configured instead of blocking it forever.
+    #[serde(default)]
+    pub source: String,
 }
+
+/// `AiPathVerdict.source` value for model-generated verdicts.
+pub const AI_SOURCE_MODEL: &str = "ai";
+
+/// `AiPathVerdict.source` value for heuristic fallback verdicts.
+pub const AI_SOURCE_HEURISTIC: &str = "heuristic";
 
 impl AiPathVerdict {
     /// Build a verdict from a program label and an AI response.
@@ -297,6 +309,7 @@ impl AiPathVerdict {
             suggestion: response.suggestion,
             background: response.background,
             deletable: response.deletable,
+            source: AI_SOURCE_MODEL.into(),
         }
     }
 }

@@ -147,6 +147,18 @@ pub fn load_all_ai_analyzed_paths(conn: &Connection) -> Result<Vec<String>, DbEr
     Ok(paths)
 }
 
+/// Load every cached AI analysis as `(path, data)` pairs in one query.
+/// Startup uses this instead of listing paths and re-querying each blob.
+pub fn load_ai_cache_entries(conn: &Connection) -> Result<Vec<(String, Vec<u8>)>, DbError> {
+    let mut stmt = conn.prepare("SELECT path, data FROM ai_analysis_cache")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
+}
+
 pub fn query_delta_total(
     conn: &Connection,
     path: &Path,

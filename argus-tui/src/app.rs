@@ -260,20 +260,15 @@ impl App {
             ai_state: None,
             ai_cache: HashMap::new(),
             ai_analyzed: {
+                // One bulk query for the whole cache instead of a
+                // path-listing query plus one blob query per entry.
                 let mut map = HashMap::new();
                 if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
-                    if let Ok(paths) = argus_core::load_all_ai_analyzed_paths(&conn) {
-                        for p in paths {
-                            let path = PathBuf::from(&p);
-                            let risk = argus_core::get_ai_analysis(&conn, &p)
-                                .ok()
-                                .flatten()
-                                .and_then(|data| {
-                                    serde_json::from_slice::<AiPathVerdict>(&data).ok()
-                                })
-                                .map(|v| v.risk_level)
-                                .unwrap_or(RiskLevel::Medium);
-                            map.insert(path, risk);
+                    if let Ok(entries) = argus_core::load_ai_cache_entries(&conn) {
+                        for (p, data) in entries {
+                            if let Ok(verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
+                                map.insert(PathBuf::from(&p), verdict.risk_level);
+                            }
                         }
                     }
                 }
@@ -1323,68 +1318,49 @@ impl App {
         self.spawn_ai_analysis(paths);
     }
 
-    /// Compute total size of paths using scan cache, with metadata fallback.
-    fn compute_pending_total_size(&self, paths: &[PathBuf]) -> u64 {
-        let mut total = 0u64;
-        for path in paths {
-            if let Some(snapshot) = self.scan_cache.get(path) {
-                total += snapshot.total_size;
-            } else {
-                let mut found = false;
-                for (root, snapshot) in &self.scan_cache {
-                    if let Ok(relative) = path.strip_prefix(root) {
-                        let mut idx = argus_core::ROOT_NODE;
-                        let mut ok = true;
-                        for component in relative.components() {
-                            let name = component.as_os_str().to_str().unwrap_or("");
-                            if let Some(child) = snapshot.child_idx(idx, name) {
-                                idx = child;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        if ok {
-                            total += snapshot.node(idx).size();
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if !found {
-                    if let Ok(meta) = std::fs::metadata(path) {
-                        total += meta.len();
+    /// Resolve `path` against the scan cache: prefer an exact cached scan,
+    /// otherwise the deepest cached root that contains the path. HashMap
+    /// iteration order is arbitrary, so "first prefix match" was
+    /// nondeterministic when both `/a` and `/a/b` were cached — the longest
+    /// root must win.
+    fn lookup_scan_size(&self, path: &Path) -> Option<u64> {
+        let mut best: Option<(&std::sync::Arc<Snapshot>, argus_core::NodeIndex, usize)> = None;
+        for (root, snapshot) in &self.scan_cache {
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let mut idx = argus_core::ROOT_NODE;
+            let mut resolved = true;
+            for component in relative.components() {
+                let name = component.as_os_str().to_str().unwrap_or("\u{0}");
+                match snapshot.child_idx(idx, name) {
+                    Some(child) => idx = child,
+                    None => {
+                        resolved = false;
+                        break;
                     }
                 }
             }
+            if !resolved {
+                continue;
+            }
+            let depth = root.as_os_str().len();
+            if best.is_none_or(|(_, _, best_len)| depth > best_len) {
+                best = Some((snapshot, idx, depth));
+            }
         }
-        total
+        best.map(|(snapshot, idx, _)| snapshot.node(idx).size())
+    }
+
+    /// Compute total size of paths using scan cache, with metadata fallback.
+    fn compute_pending_total_size(&self, paths: &[PathBuf]) -> u64 {
+        paths.iter().map(|p| self.compute_path_size(p)).sum()
     }
 
     /// Get the recursive size of a path using scan cache, with metadata fallback.
     fn compute_path_size(&self, path: &Path) -> u64 {
-        if let Some(snapshot) = self.scan_cache.get(path) {
-            return snapshot.total_size;
-        }
-        for (root, snapshot) in &self.scan_cache {
-            if let Ok(relative) = path.strip_prefix(root) {
-                let mut idx = argus_core::ROOT_NODE;
-                let mut ok = true;
-                for component in relative.components() {
-                    let name = component.as_os_str().to_str().unwrap_or("");
-                    if let Some(child) = snapshot.child_idx(idx, name) {
-                        idx = child;
-                    } else {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    return snapshot.node(idx).size();
-                }
-            }
-        }
-        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+        self.lookup_scan_size(path)
+            .unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
     }
 
     /// Spawn a background thread to compute AI verdicts.
@@ -1416,13 +1392,20 @@ impl App {
                 if let Some(ref conn) = conn {
                     if let Ok(Some(data)) = argus_core::get_ai_analysis(conn, &path_str) {
                         if let Ok(mut verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
-                            // Override cached size with scan-cache aggregated size (fixes
-                            // directories that were cached with metadata.len() values)
-                            if let Some(&scan_size) = path_sizes.get(path) {
-                                verdict.size = scan_size;
+                            // Heuristic entries are placeholders: when the real
+                            // model is available, replace them with a genuine
+                            // analysis instead of pinning them forever.
+                            let placeholder = use_ai && verdict.source != AI_SOURCE_MODEL;
+                            if !placeholder {
+                                // Override cached size with scan-cache aggregated
+                                // size (fixes directories cached with raw
+                                // metadata.len() values)
+                                if let Some(&scan_size) = path_sizes.get(path) {
+                                    verdict.size = scan_size;
+                                }
+                                cached.push(verdict);
+                                found = true;
                             }
-                            cached.push(verdict);
-                            found = true;
                         }
                     }
                 }
@@ -1906,6 +1889,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
         suggestion: suggestion.to_string(),
         background: background.to_string(),
         deletable,
+        source: AI_SOURCE_HEURISTIC.into(),
     }
 }
 
