@@ -997,35 +997,6 @@ impl TruncateEllipsis for str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_truncate_ascii() {
-        assert_eq!("abcdefgh".truncate_ellipsis(40), "abcdefgh");
-        assert_eq!("abcdefgh".truncate_ellipsis(6), "abc...");
-    }
-
-    /// Multi-byte descriptions (common in brew casks) must not panic on a
-    /// non-char-boundary slice.
-    #[test]
-    fn test_truncate_cjk_no_panic() {
-        let s = "图形界面工具用于管理磁盘空间和系统清理";
-        let out = s.truncate_ellipsis(40);
-        assert!(out.ends_with("..."));
-        assert!(out.len() <= 40);
-    }
-
-    #[test]
-    fn test_truncate_mixed_boundary() {
-        // 3-byte chars: cutting at byte 10 would split a char.
-        let s = "ääääääää";
-        let out = s.truncate_ellipsis(10);
-        assert!(out.ends_with("..."));
-    }
-}
-
 // ── Report ───────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "cleanup")]
@@ -1155,4 +1126,33 @@ fn print_delta_summary(path: &Path, from_ms: u64, to_ms: u64, summary: &DeltaSum
         "negative delta:".bold(),
         format_signed_size(summary.negative_delta).red()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_ascii() {
+        assert_eq!("abcdefgh".truncate_ellipsis(40), "abcdefgh");
+        assert_eq!("abcdefgh".truncate_ellipsis(6), "abc...");
+    }
+
+    /// Multi-byte descriptions (common in brew casks) must not panic on a
+    /// non-char-boundary slice.
+    #[test]
+    fn test_truncate_cjk_no_panic() {
+        let s = "图形界面工具用于管理磁盘空间和系统清理";
+        let out = s.truncate_ellipsis(40);
+        assert!(out.ends_with("..."));
+        assert!(out.len() <= 40);
+    }
+
+    #[test]
+    fn test_truncate_mixed_boundary() {
+        // 3-byte chars: cutting at byte 10 would split a char.
+        let s = "ääääääää";
+        let out = s.truncate_ellipsis(10);
+        assert!(out.ends_with("..."));
+    }
 }

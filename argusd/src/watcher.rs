@@ -604,7 +604,7 @@ mod tests {
 
         let events = event_to_delta(
             &EventKind::Modify(ModifyKind::Any),
-            &[file.clone()],
+            std::slice::from_ref(&file),
             &mut state,
             timestamp,
         );
