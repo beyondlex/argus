@@ -4,9 +4,9 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 
 ## Source Of Truth
 
-- All scans are in-memory — no SQLite persistence.
+- All scans are in-memory — snapshots are session-only, never persisted.
 - `scan_cache` is a session-only cache populated by pressing `s`.
-- The database (`~/.config/argus/argus.db`) is reserved for future daemon delta data.
+- The database (`~/.config/argus/argus.db`) is used for daemon delta events and the AI analysis cache (TUI reads/writes it for verdicts; scans themselves are never stored).
 - Architecture: flat-mode (ncdu-like) directory browsing. Single directory level visible at a time.
 
 ## Navigation Model
