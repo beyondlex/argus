@@ -73,9 +73,14 @@ impl DebounceEngine {
                         path: entry.event.path.clone(),
                         is_agg: false,
                     },
+                    // Any other sequence (delete→create on replacement,
+                    // delete→modify when a file reappears, …) still must keep
+                    // the signed sum. Overwriting with the new event here used
+                    // to drop the earlier negative delta: a 100 B file deleted
+                    // and recreated with 50 B recorded +50 instead of -50.
                     _ => DeltaEntry {
                         path: event.path,
-                        delta_size: event.delta_size,
+                        delta_size: entry.event.delta_size + event.delta_size,
                         event_type: event.event_type,
                         timestamp: event.timestamp,
                         is_agg: false,
@@ -327,6 +332,38 @@ mod tests {
             .unwrap()
             .event;
         assert_eq!(e.delta_size, -100);
+    }
+
+    /// A file deleted and recreated at the same path inside one debounce
+    /// window (replacement, git checkout) must net the delete against the
+    /// recreate instead of dropping the delete.
+    #[test]
+    fn test_delete_then_create_sums_signed_deltas() {
+        let (_tx, rx) = mpsc::channel(16);
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
+
+        // 100 B file replaced by a 50 B one: net -50, not +50.
+        engine.merge(entry("/tmp/r.txt", -100, "delete", 1000));
+        engine.merge(entry("/tmp/r.txt", 50, "create", 2000));
+
+        let e = &engine
+            .pending
+            .get(&PathBuf::from("/tmp/r.txt"))
+            .unwrap()
+            .event;
+        assert_eq!(e.delta_size, -50);
+
+        // Delete then modify (file reappeared and grew): -100 + 150 = +50.
+        engine.merge(entry("/tmp/s.txt", -100, "delete", 1000));
+        engine.merge(entry("/tmp/s.txt", 150, "modify", 2000));
+
+        let e = &engine
+            .pending
+            .get(&PathBuf::from("/tmp/s.txt"))
+            .unwrap()
+            .event;
+        assert_eq!(e.delta_size, 50);
     }
 
     #[test]
