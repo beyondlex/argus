@@ -41,6 +41,13 @@ impl WatcherState {
 
     pub fn file_size(&mut self, path: &Path) -> Option<u64> {
         if let Ok(meta) = std::fs::metadata(path) {
+            // Directories never take part in size accounting: their stat size
+            // (~4 KiB of directory entry data) is not user data, and modify
+            // events on a directory would otherwise inject noise deltas every
+            // time a child is created or renamed inside it.
+            if meta.is_dir() {
+                return None;
+            }
             let ino = {
                 #[cfg(unix)]
                 {
@@ -201,7 +208,10 @@ fn is_ignored(path: &Path) -> bool {
         None => return true,
     };
 
-    name.starts_with('.') && name != ".ds_store"
+    // Dotfiles are watcher noise (.git internals, caches). This deliberately
+    // includes .DS_Store — Finder rewrites it constantly and it would otherwise
+    // generate endless modify events.
+    name.starts_with('.')
         || name == "~"
         || name.ends_with(".swp")
         || name.ends_with(".swx")
@@ -460,6 +470,66 @@ mod tests {
         let events = event_to_delta(
             &EventKind::Create(CreateKind::File),
             &[file],
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 0);
+    }
+
+    /// .DS_Store is a dotfile and must be ignored: Finder rewrites it
+    /// constantly, which would otherwise flood the delta log with noise.
+    #[test]
+    fn test_ignored_ds_store() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(".DS_Store");
+        let mut state = WatcherState::new();
+        let timestamp = 1000;
+
+        fs::write(&file, b"finder junk").unwrap();
+
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any)),
+            &[file],
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 0);
+    }
+
+    /// Directory stat size is not user data; modify/create events carrying a
+    /// directory path must not inject directory-entry sizes into accounting.
+    #[test]
+    fn test_directory_events_not_accounted() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("subdir");
+        fs::create_dir(&sub).unwrap();
+
+        let mut state = WatcherState::new();
+        let timestamp = 1000;
+
+        // Create(Any) on a directory: no event.
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::Any),
+            std::slice::from_ref(&sub),
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 0);
+
+        // Modify(Any) on a directory: no event, and nothing cached.
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Any),
+            std::slice::from_ref(&sub),
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 0);
+        assert!(state.last_known_size(&sub).is_none());
+
+        // Removing an untracked directory: no event (nothing cached).
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&sub),
             &mut state,
             timestamp,
         );
