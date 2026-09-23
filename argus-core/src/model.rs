@@ -678,7 +678,13 @@ pub fn parse_human_size(input: &str) -> Result<u64, ParseSizeError> {
         _ => return Err(ParseSizeError::InvalidFormat(input.to_string())),
     };
 
-    Ok((value * multiplier as f64) as u64)
+    // f64→u64 casts saturate silently; surface absurd inputs as overflow
+    // instead of quietly returning u64::MAX (or 0 for negatives).
+    let scaled = value * multiplier as f64;
+    if !scaled.is_finite() || scaled < 0.0 || scaled >= u64::MAX as f64 {
+        return Err(ParseSizeError::Overflow);
+    }
+    Ok(scaled as u64)
 }
 
 fn split_number_unit(s: &str) -> (&str, &str) {
@@ -736,6 +742,19 @@ mod tests {
     #[test]
     fn test_parse_human_size_invalid() {
         assert!(parse_human_size("xyz").is_err());
+    }
+
+    #[test]
+    fn test_parse_human_size_negative_rejected() {
+        assert!(parse_human_size("-5GB").is_err());
+    }
+
+    #[test]
+    fn test_parse_human_size_overflow_rejected() {
+        assert!(matches!(
+            parse_human_size("99999999999999999999999TB"),
+            Err(ParseSizeError::Overflow)
+        ));
     }
 
     #[test]
