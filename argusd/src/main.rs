@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::{mpsc, Mutex};
 use tracing_subscriber::EnvFilter;
 
-use argus_core::{init_db, open_db, DeltaEvent, WatchDirInfo};
+use argus_core::{open_db, DeltaEvent, WatchDirInfo};
 use daemonize::{DaemonGuard, ServiceTemplate};
 
 pub(crate) static SHOULD_QUIT: AtomicBool = AtomicBool::new(false);
@@ -121,8 +121,8 @@ async fn run(args: Args) {
     );
 
     let db_path = argus_core::default_db_path();
+    // open_db already runs init_db on the new connection.
     let conn = open_db(&db_path).expect("failed to open database");
-    init_db(&conn).expect("failed to initialize database");
     let db = Arc::new(Mutex::new(conn));
 
     let (event_tx, event_rx) = mpsc::channel::<DeltaEvent>(1024);

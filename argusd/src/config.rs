@@ -109,21 +109,26 @@ impl Default for ConsolidationConfig {
     }
 }
 
+fn default_watch_dirs() -> Vec<WatchDir> {
+    // Resolve against $HOME at runtime — hardcoding a user's absolute path
+    // here would leave every other machine watching nothing.
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    ["Downloads", "Desktop"]
+        .iter()
+        .map(|name| WatchDir {
+            path: home.join(name),
+            include: None,
+            exclude: None,
+        })
+        .collect()
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            watch_dirs: vec![
-                WatchDir {
-                    path: PathBuf::from("/Users/lex/Downloads"),
-                    include: None,
-                    exclude: None,
-                },
-                WatchDir {
-                    path: PathBuf::from("/Users/lex/Desktop"),
-                    include: None,
-                    exclude: None,
-                },
-            ],
+            watch_dirs: default_watch_dirs(),
             debounce_seconds: default_debounce_seconds(),
             uds_path: default_uds_path(),
             delta_retention_days: default_delta_retention_days(),
@@ -223,6 +228,9 @@ fn load_config_from_path(path: &PathBuf) -> DaemonConfig {
             Some(raw_daemon) => match DaemonConfig::try_from(raw_daemon) {
                 Ok(cfg) => cfg,
                 Err(e) => {
+                    // Tracing is not initialised yet when config is loaded, so
+                    // warn! alone would be swallowed — fall back loudly.
+                    eprintln!("argusd: invalid watch_dirs in config {path:?}: {e}, using defaults");
                     tracing::warn!("invalid watch_dirs in config {path:?}: {e}, using defaults");
                     DaemonConfig::default()
                 }
@@ -230,6 +238,7 @@ fn load_config_from_path(path: &PathBuf) -> DaemonConfig {
             None => DaemonConfig::default(),
         },
         Err(e) => {
+            eprintln!("argusd: failed to parse config {path:?}: {e}, using defaults");
             tracing::warn!("failed to parse config {path:?}: {e}, using defaults");
             DaemonConfig::default()
         }
@@ -253,12 +262,28 @@ mod tests {
         let config = DaemonConfig::default();
         assert_eq!(config.debounce_seconds, 10);
         assert_eq!(config.uds_path, argus_core::DEFAULT_UDS_PATH);
-        assert!(!config.watch_dirs.is_empty());
         assert_eq!(config.delta_retention_days, 30);
         assert_eq!(config.consolidation.sibling_threshold, 500);
         assert_eq!(config.consolidation.interval_minutes, 60);
         assert!(config.log_level.is_none());
         assert!(!config.log_enabled);
+    }
+
+    /// Default watch dirs must be derived from $HOME, never a hardcoded user
+    /// path (the daemon would silently watch nothing on any other machine).
+    #[test]
+    fn test_default_watch_dirs_derived_from_home() {
+        let dirs = default_watch_dirs();
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            let paths: Vec<PathBuf> = dirs.iter().map(|d| d.path.clone()).collect();
+            assert_eq!(paths, vec![home.join("Downloads"), home.join("Desktop")]);
+            assert!(dirs
+                .iter()
+                .all(|d| d.include.is_none() && d.exclude.is_none()));
+        } else {
+            assert!(dirs.is_empty());
+        }
     }
 
     #[test]
