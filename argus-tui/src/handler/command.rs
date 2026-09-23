@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMessage, AppMode};
 use crate::ipc_client::IpcClient;
-
+use crate::util::log_msg;
 pub(crate) fn handle_command_key(key: KeyEvent, app: &mut App) {
     match key.code {
         KeyCode::Char(c) if app.command_input.len() < 200 => {
@@ -125,6 +125,25 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
         return;
     }
 
+    if cmd.eq_ignore_ascii_case("Connect") {
+        app.clear_command_state();
+        let uds_path = app.config.daemon.uds_path.clone();
+        let tx = app.tx.clone();
+        let log_path = app.log_path.clone();
+        tokio::spawn(async move {
+            if let Ok(mut client) = IpcClient::connect(&uds_path).await {
+                if client.ping().await.is_ok() {
+                    log_msg(&log_path, ":connect: connected to daemon");
+                    let _ = tx.send(AppMessage::DaemonConnected(client)).await;
+                    return;
+                }
+            }
+            let _ = tx
+                .send(AppMessage::Info("daemon connect failed".into()))
+                .await;
+        });
+        return;
+    }
     if cmd.eq_ignore_ascii_case("Consolidate") {
         app.clear_command_state();
         if app.server_mode {

@@ -36,6 +36,8 @@ pub async fn run(app: &mut App) -> anyhow::Result<()> {
                 app.should_quit = true;
             }
         }
+        // Periodic daemon detection: cheap no-op when connected or interval not yet elapsed.
+        app.try_daemon_detect();
 
         dirty |= drain_messages(app);
         dirty |= advance_timers(

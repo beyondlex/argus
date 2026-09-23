@@ -8,6 +8,7 @@ impl App {
     pub const COMMANDS: &'static [&'static str] = &[
         "Brew",
         "Clean",
+        "Connect",
         "Consolidate",
         "Delta",
         "Finder",

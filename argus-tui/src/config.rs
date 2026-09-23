@@ -53,12 +53,16 @@ impl AiConfig {
 #[derive(Debug, Clone)]
 pub struct DaemonAccessConfig {
     pub uds_path: String,
+    /// How often (in seconds) to check for daemon availability when not connected.
+    /// 0 disables periodic detection.
+    pub detection_interval_secs: u64,
 }
 
 impl Default for DaemonAccessConfig {
     fn default() -> Self {
         Self {
             uds_path: argus_core::DEFAULT_UDS_PATH.to_string(),
+            detection_interval_secs: 5,
         }
     }
 }
@@ -166,6 +170,7 @@ struct RawLabelMapping {
 #[derive(Debug, Deserialize)]
 struct RawDaemon {
     uds_path: Option<String>,
+    detection_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,6 +259,9 @@ pub fn load_config(path: &Path) -> TuiConfig {
     if let Some(d) = raw.daemon {
         if let Some(v) = d.uds_path {
             config.daemon.uds_path = v;
+        }
+        if let Some(v) = d.detection_interval_secs {
+            config.daemon.detection_interval_secs = v;
         }
     }
 

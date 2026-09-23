@@ -49,6 +49,8 @@ pub struct App {
     pub server_mode: bool,
     pub daemon_client: Option<IpcClient>,
     pub server_connected: bool,
+    /// Last time a daemon detection poll ran (monotonic).
+    pub last_daemon_detect: Instant,
     pub delta_cache: HashMap<Vec<String>, i64>,
     pub time_from: u64,
     pub time_to: u64,
@@ -205,6 +207,7 @@ impl App {
             server_mode: false,
             daemon_client: None,
             server_connected: false,
+            last_daemon_detect: Instant::now(),
             delta_cache: HashMap::new(),
             time_from: 0,
             time_to: 0,
@@ -713,6 +716,34 @@ impl App {
 
     pub fn default_time_range(&mut self) {
         self.set_time_preset(0);
+    }
+
+    /// Attempt to detect and connect to the daemon if we're not already connected.
+    /// Spawns a background task; on success sends `DaemonConnected`.
+    /// Detection failures are expected (daemon legitimately down) and stay silent.
+    pub fn try_daemon_detect(&mut self) {
+        if self.server_connected {
+            return;
+        }
+        let now = Instant::now();
+        let interval = std::time::Duration::from_secs(self.config.daemon.detection_interval_secs);
+        if interval.is_zero() || now.duration_since(self.last_daemon_detect) < interval {
+            return;
+        }
+        self.last_daemon_detect = now;
+        let uds_path = self.config.daemon.uds_path.clone();
+        let tx = self.tx.clone();
+        let log_path = self.log_path.clone();
+        tokio::spawn(async move {
+            if let Ok(mut client) = IpcClient::connect(&uds_path).await {
+                if client.ping().await.is_ok() {
+                    log_msg(&log_path, "try_daemon_detect: connected to daemon");
+                    let _ = tx.send(AppMessage::DaemonConnected(client)).await;
+                    return;
+                }
+            }
+            log_msg(&log_path, "try_daemon_detect: daemon not reachable yet");
+        });
     }
 
     pub fn time_preset_label(preset: usize) -> &'static str {

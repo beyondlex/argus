@@ -9,6 +9,24 @@ use ratatui::layout::Rect;
 
 use crate::theme::ColorTheme;
 
+
+fn command_desc(name: &str) -> &'static str {
+    match name {
+        "Brew" => "view Homebrew packages",
+        "Clean" => "preview & delete empty dirs",
+        "Consolidate" => "merge redundant delta events",
+        "Delta" => "filter by delta size",
+        "Finder" => "open interactive finder",
+        "Help" => "show help screen",
+        "Purge" => "permanently delete selected",
+        "Scan" => "scan current directory",
+        "Sort" => "toggle sort mode",
+        "Time" => "set time range filter",
+        "Uninstall" => "list to uninstall",
+        _ => "",
+    }
+}
+
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -51,11 +69,36 @@ pub fn render(
             } else {
                 Style::default().fg(theme.text).bg(theme.popup_bg)
             };
+            let desc_style =
+                Style::default().fg(theme.text_secondary).bg(theme.popup_bg);
             let marker = if i == selected { ">" } else { " " };
-            lines.push(Line::from(Span::styled(
-                format!("{}{:<width$}", marker, m, width = inner_w - 1),
-                style,
-            )));
+            let desc = command_desc(m);
+            if desc.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{:<width$}", marker, m, width = inner_w - 1),
+                    style,
+                )));
+            } else {
+                let cmd_slot = marker.len() + m.len();
+                let desc_slot = inner_w.saturating_sub(cmd_slot);
+                let truncated = if desc_slot <= 2 {
+                    String::new()
+                } else {
+                    desc.chars()
+                        .take(desc_slot - 2)
+                        .collect::<String>()
+                };
+                if truncated.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{:<width$}", marker, m, width = inner_w - 1),
+                        style,
+                    )));
+                } else {
+                    let name_span = Span::styled(format!("{}{}", marker, m), style);
+                    let desc_span = Span::styled(format!("  {}", truncated), desc_style);
+                    lines.push(Line::from(vec![name_span, desc_span]));
+                }
+            }
         }
         if total > visible {
             let at_top = scroll == 0;

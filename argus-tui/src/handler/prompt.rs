@@ -56,13 +56,25 @@ where
                 if path.is_dir() {
                     let tx = app.tx.clone();
                     let permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
+                    let delete_fn_clone = delete_fn;
                     app.deleting = true;
                     app.delete_progress = Some((0, 1));
                     app.delete_permanent = permanent;
                     app.mode = AppMode::Deleting;
 
                     tokio::task::spawn_blocking(move || {
-                        let errors = delete_dir_progressive(&path, permanent, &tx);
+                        // Fast path: trash::delete / remove_dir_all both recurse
+                        // for directories, so try a single call first.
+                        let errors = if let Err(e) = delete_fn_clone(&path) {
+                            let fb = delete_dir_progressive(&path, permanent, &tx);
+                            if fb.is_empty() && !e.contains("No such file or directory") {
+                                vec![format!("{}: {}", path.display(), e)]
+                            } else {
+                                fb
+                            }
+                        } else {
+                            vec![]
+                        };
                         let _ = tx.blocking_send(AppMessage::DeleteComplete {
                             errors,
                             paths: vec![path],

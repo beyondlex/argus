@@ -40,6 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &ColorTheme) {
         Line::from(key_hints(&[("s", "Scan directory")], theme)),
         Line::from(key_hints(&[("o", "Toggle sort mode")], theme)),
         Line::from(key_hints(&[("d", "Delete selected item")], theme)),
+        Line::from(key_hints(&[("c", "Clear delta/time filters")], theme)),
         Line::from(key_hints(&[("Tab", "Focus next panel")], theme)),
         Line::from(key_hints(&[("/", "Search items in tree")], theme)),
         Line::from(key_hints(
@@ -68,8 +69,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &ColorTheme) {
         Line::from(vec![Span::raw(
             "  :Time <N>[m|h|d|w] | <from> to <to>  Set time range",
         )]),
-        Line::from(vec![Span::raw("  :Delta <N>[k|m|g]  Set delta threshold")]),
-        Line::from(vec![Span::raw("  Press 'Clear' to reset filters")]),
+        Line::from(vec![Span::raw("  Press 'c' to reset all filters")]),
         Line::from(vec![Span::raw("")]),
         Line::from(key_hints(&[("? / Esc", "Close")], theme)),
     ];

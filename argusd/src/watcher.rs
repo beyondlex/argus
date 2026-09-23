@@ -135,7 +135,7 @@ fn event_to_delta(
                     process_info: None,
                 })
             }
-            EventKind::Modify(ModifyKind::Data(_)) => {
+            EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => {
                 let old_size = state.last_known_size(path).unwrap_or(0);
                 // file_size() already refreshes the cache entry
                 state.file_size(path).and_then(|new_size| {
@@ -154,14 +154,16 @@ fn event_to_delta(
                     }
                 })
             }
-            EventKind::Remove(RemoveKind::File) => state.remove(path).map(|size| DeltaEvent {
-                path: path.clone(),
-                delta_size: -(size as i64),
-                event_type: "delete".into(),
-                timestamp,
-                is_agg: false,
-                process_info: None,
-            }),
+            EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => {
+                state.remove(path).map(|size| DeltaEvent {
+                    path: path.clone(),
+                    delta_size: -(size as i64),
+                    event_type: "delete".into(),
+                    timestamp,
+                    is_agg: false,
+                    process_info: None,
+                })
+            }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
                 state.remove(path).map(|size| DeltaEvent {
                     path: path.clone(),
@@ -517,5 +519,49 @@ mod tests {
         trim_map_half_if_over(&mut state.size_cache, 5);
         assert!(state.size_cache.len() <= 5);
         assert!(!state.size_cache.is_empty());
+    }
+
+    #[test]
+    fn test_modify_any_kind() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("any.txt");
+        let mut state = WatcherState::new();
+        let timestamp = 1000;
+
+        fs::write(&file, b"hello").unwrap();
+        state.file_size(&file);
+        fs::write(&file, b"hello world").unwrap();
+
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Any),
+            &[file.clone()],
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "modify");
+        assert_eq!(events[0].delta_size, 6);
+    }
+
+    #[test]
+    fn test_remove_any_kind() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("gone.txt");
+        let mut state = WatcherState::new();
+        let timestamp = 1000;
+
+        fs::write(&file, b"bye").unwrap();
+        state.file_size(&file);
+        fs::remove_file(&file).unwrap();
+
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            &[file],
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "delete");
+        assert_eq!(events[0].delta_size, -3);
     }
 }
