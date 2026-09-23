@@ -9,7 +9,6 @@ use ratatui::layout::Rect;
 
 use crate::theme::ColorTheme;
 
-
 fn command_desc(name: &str) -> &'static str {
     match name {
         "Brew" => "view Homebrew packages",
@@ -69,8 +68,7 @@ pub fn render(
             } else {
                 Style::default().fg(theme.text).bg(theme.popup_bg)
             };
-            let desc_style =
-                Style::default().fg(theme.text_secondary).bg(theme.popup_bg);
+            let desc_style = Style::default().fg(theme.text_secondary).bg(theme.popup_bg);
             let marker = if i == selected { ">" } else { " " };
             let desc = command_desc(m);
             if desc.is_empty() {
@@ -84,9 +82,7 @@ pub fn render(
                 let truncated = if desc_slot <= 2 {
                     String::new()
                 } else {
-                    desc.chars()
-                        .take(desc_slot - 2)
-                        .collect::<String>()
+                    desc.chars().take(desc_slot - 2).collect::<String>()
                 };
                 if truncated.is_empty() {
                     lines.push(Line::from(Span::styled(
