@@ -56,7 +56,7 @@ MVP核心+CLI  →  TUI极客版    →  Daemon自动化  →  AI完全体     �
 
 **交付物**：
 - `argus-tui` 二进制
-- 配置文件系统（keybindings + theme）
+- 配置文件系统（theme color_scheme；键位重映射未实现）
 
 ---
 

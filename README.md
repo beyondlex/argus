@@ -153,36 +153,41 @@ Launch from any directory — the TUI starts with a pure filesystem tree view.
 
 Config file: `~/.config/argus/config.toml`
 
-```toml
-[keybindings]
-move_up = "k"
-move_down = "j"
-enter_dir = "l"
-leave_dir = "h"
-sort_toggle = "o"
-delete_item = "d"
-focus_panel = "tab"
-quit = "q"
+Only implemented options are shown; unknown/legacy sections are ignored.
 
+```toml
 [theme]
+# "system" (auto-detect) | "dark" | "light"
 color_scheme = "system"
-colors.growth_high = "#FF4444"
-colors.growth_medium = "#FF8800"
-colors.shrink_green = "#44FF44"
-colors.text_primary = "#FFFFFF"
 
 [browsing]
+# Scan the working directory automatically on startup
 auto_scan_on_start = false
 
+# Shared by argusd (watch_dirs/debounce/retention/consolidation)
+# and the TUI (uds_path/detection_interval_secs)
 [daemon]
 uds_path = "/tmp/argusd.sock"
-watch_dirs = ["/Users/lex/Downloads", "/Users/lex/Desktop"]
+detection_interval_secs = 5   # TUI daemon auto-detection interval
+# Default watch_dirs when unset: $HOME/Downloads and $HOME/Desktop
+watch_dirs = [
+    "/Users/you/Downloads",
+    { path = "/var/log", include = "*.log", exclude = "*.gz" },
+]
 debounce_seconds = 10
 delta_retention_days = 30
 
 [daemon.consolidation]
 sibling_threshold = 500
 interval_minutes = 60
+
+[ai]
+enabled = false
+model = "gpt-4o"
+api_url = ""
+api_key = ""
+language = "en-US"
+max_tokens_per_request = 4096
 ```
 
 ## Data Model

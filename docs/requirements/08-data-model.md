@@ -22,8 +22,7 @@ pub mod labels {
 }
 ```
 
-Label 确定优先级：`内置启发式 → 用户配置 custom_mappings → AI 补充`。
-后一层覆盖前一层。AI 不直接输出 label，只输出 label_detail 作为补充描述。
+Label 当前仅由内置启发式确定（`[labels]` 自定义映射未实现，见 `04-configuration.md` §7）。AI 不直接输出 label，只输出 label_detail 作为补充描述。
 
 ## AiPathVerdict
 
