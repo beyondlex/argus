@@ -76,10 +76,23 @@ pub enum AiError {
     MissingField(String),
     #[error("HTTP error: {0}")]
     Http(String),
+    /// Transient failure (timeout, connection reset, 429/5xx) that may
+    /// succeed on retry. Distinct from [`AiError::Http`] so retry logic can
+    /// tell "try again" apart from "will fail identically forever".
+    #[error("transient HTTP failure: {0}")]
+    HttpTransient(String),
     #[error("AI not configured: missing api_url or api_key")]
     NotConfigured,
     #[error("all retries failed")]
     AllRetriesFailed,
+}
+
+impl AiError {
+    /// Whether retrying the same request could plausibly succeed.
+    #[cfg(feature = "ai")]
+    fn is_transient(&self) -> bool {
+        matches!(self, AiError::HttpTransient(_))
+    }
 }
 
 /// Build a unified prompt for AI analysis.
@@ -146,6 +159,25 @@ pub fn estimate_tokens(prompt: &str) -> usize {
 
 // ── HTTP API (gated behind `ai` feature) ─────────────────────────────────
 
+/// Split ureq failures into retryable (`HttpTransient`) and permanent
+/// (`Http`). Retrying a 401/400 would fail identically; timeouts, dropped
+/// connections, 429 and 5xx are worth another attempt.
+#[cfg(feature = "ai")]
+fn classify_ureq_error(err: ureq::Error) -> AiError {
+    let msg = err.to_string();
+    match err {
+        ureq::Error::StatusCode(code) if code == 429 || code >= 500 => {
+            AiError::HttpTransient(format!("status {code}: {msg}"))
+        }
+        ureq::Error::StatusCode(_) => AiError::Http(msg),
+        ureq::Error::Io(_)
+        | ureq::Error::Timeout(_)
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::HostNotFound => AiError::HttpTransient(msg),
+        _ => AiError::Http(msg),
+    }
+}
+
 /// Send a prompt to the AI API and return the raw response text.
 /// Uses OpenAI Chat Completions format.
 #[cfg(feature = "ai")]
@@ -163,7 +195,7 @@ pub fn call_ai_api(prompt: &str, config: &AiConfig) -> Result<String, AiError> {
     let resp = ureq::post(&config.api_url)
         .header("Authorization", &format!("Bearer {}", config.api_key))
         .send_json(body)
-        .map_err(|e| AiError::Http(e.to_string()))?;
+        .map_err(classify_ureq_error)?;
 
     let raw = resp
         .into_body()
@@ -227,6 +259,11 @@ pub fn analyze(
 }
 
 /// Send a single batch with retry.
+///
+/// Retries cover both empty/partial parses and transient transport failures
+/// (timeouts, dropped connections, 429/5xx), with linear backoff. Permanent
+/// HTTP failures (401, 400, …) propagate immediately — they cannot succeed
+/// on retry.
 #[cfg(feature = "ai")]
 fn analyze_batch(
     contexts: &[AiContext],
@@ -235,7 +272,15 @@ fn analyze_batch(
     let prompt = build_prompt(contexts, &config.language);
 
     for attempt in 0..MAX_RETRIES {
-        let raw = call_ai_api(&prompt, config)?;
+        if attempt > 0 {
+            // Blocking background thread: a short linear backoff is fine.
+            std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
+        }
+        let raw = match call_ai_api(&prompt, config) {
+            Ok(raw) => raw,
+            Err(e) if e.is_transient() && attempt + 1 < MAX_RETRIES => continue,
+            Err(e) => return Err(e),
+        };
         let result = try_parse_json(&raw);
         if !result.is_empty() {
             // Verify all expected paths are present
