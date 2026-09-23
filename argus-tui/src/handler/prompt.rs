@@ -83,7 +83,9 @@ where
                 } else {
                     match delete_fn(&path) {
                         Ok(msg) => {
-                            app.set_error(msg, 3);
+                            // Success must use the info styling — set_error
+                            // renders it in the danger color.
+                            app.set_info(msg, 3);
                             let freed = crate::tree_ops::apply_deletion_to_state(app, &path);
                             app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
                             app.load_current_children();

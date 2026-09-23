@@ -23,7 +23,9 @@ pub(crate) fn parse_duration(s: &str) -> Result<u64, String> {
     let n: u64 = num_str
         .parse()
         .map_err(|_| format!("invalid number: {num_str}"))?;
-    Ok(n * mult)
+    // Absurd inputs must error, not wrap around silently.
+    n.checked_mul(mult)
+        .ok_or_else(|| format!("duration too large: {s}"))
 }
 
 pub(crate) fn parse_date_time(s: &str) -> Result<(u32, u32, u32, u32), String> {
