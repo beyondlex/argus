@@ -240,29 +240,40 @@ fn cmd_delta_summary(path: &PathBuf, from_ms: Option<u64>, to_ms: Option<u64>) -
     Ok(0)
 }
 
+// ── Daemon IPC ───────────────────────────────────────────────────────────────
+
+async fn daemon_request(req: DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let mut stream = UnixStream::connect(argus_core::DEFAULT_UDS_PATH)
+        .await
+        .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
+    send_daemon_request(&mut stream, req).await
+}
+
+/// One framed request/response exchange on an open daemon connection.
+/// Previously copy-pasted across consolidate/status/clear.
+async fn send_daemon_request(
+    stream: &mut UnixStream,
+    req: DaemonRequest,
+) -> anyhow::Result<DaemonResponse> {
+    let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
+    stream.write_all(&payload).await?;
+
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let resp_len = u32::from_be_bytes(len_buf) as usize;
+    let mut resp_buf = vec![0u8; resp_len];
+    stream.read_exact(&mut resp_buf).await?;
+
+    bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))
+}
+
 fn cmd_consolidate() -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let uds_path = argus_core::DEFAULT_UDS_PATH;
-        let mut stream = UnixStream::connect(uds_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
-
-        let req = DaemonRequest::RequestConsolidation;
-        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .await?;
-        stream.write_all(&payload).await?;
-
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).await?;
-        let resp_len = u32::from_be_bytes(len_buf) as usize;
-        let mut resp_buf = vec![0u8; resp_len];
-        stream.read_exact(&mut resp_buf).await?;
-
-        let resp: DaemonResponse =
-            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        let resp = daemon_request(DaemonRequest::RequestConsolidation).await?;
         match resp {
             DaemonResponse::ConsolidationDone { consolidated_count } => {
                 println!(
@@ -287,26 +298,7 @@ fn cmd_consolidate() -> Result<i32> {
 fn cmd_status() -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let uds_path = argus_core::DEFAULT_UDS_PATH;
-        let mut stream = UnixStream::connect(uds_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
-
-        let req = DaemonRequest::GetStatus;
-        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .await?;
-        stream.write_all(&payload).await?;
-
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).await?;
-        let resp_len = u32::from_be_bytes(len_buf) as usize;
-        let mut resp_buf = vec![0u8; resp_len];
-        stream.read_exact(&mut resp_buf).await?;
-
-        let resp: DaemonResponse =
-            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        let resp = daemon_request(DaemonRequest::GetStatus).await?;
         match resp {
             DaemonResponse::Status {
                 version,
@@ -375,26 +367,7 @@ fn cmd_status() -> Result<i32> {
 fn cmd_clear() -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let uds_path = argus_core::DEFAULT_UDS_PATH;
-        let mut stream = UnixStream::connect(uds_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
-
-        let req = DaemonRequest::ClearDb;
-        let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .await?;
-        stream.write_all(&payload).await?;
-
-        let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).await?;
-        let resp_len = u32::from_be_bytes(len_buf) as usize;
-        let mut resp_buf = vec![0u8; resp_len];
-        stream.read_exact(&mut resp_buf).await?;
-
-        let resp: DaemonResponse =
-            bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))?;
+        let resp = daemon_request(DaemonRequest::ClearDb).await?;
         match resp {
             DaemonResponse::DbCleared { deleted_count } => {
                 println!(
@@ -476,7 +449,7 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     println!(
         "{} {}",
         "Free space:".bold(),
-        format_size(free_space_macos()).cyan()
+        format_size(free_space_bytes()).cyan()
     );
     println!();
 
@@ -594,27 +567,35 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// Free space on the filesystem holding `/`, queried via statfs/statvfs
+/// syscalls. Earlier this shelled out to `df -k /`, which the repo hard
+/// constraints forbid and which breaks on PATH-less environments.
 #[cfg(target_os = "macos")]
-fn free_space_macos() -> u64 {
-    let path = std::path::Path::new("/");
-    if !path.exists() {
+fn free_space_bytes() -> u64 {
+    let c_path = match std::ffi::CString::new("/") {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut stat) };
+    if rc != 0 {
         return 0;
     }
-    match std::process::Command::new("df").arg("-k").arg("/").output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    if let Ok(blocks) = parts[3].parse::<u64>() {
-                        return blocks * 1024;
-                    }
-                }
-            }
-            0
-        }
-        Err(_) => 0,
+    (stat.f_bavail as u64).saturating_mul(stat.f_bsize as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn free_space_bytes() -> u64 {
+    let c_path = match std::ffi::CString::new("/") {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return 0;
     }
+    (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64)
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────
@@ -1004,10 +985,44 @@ trait TruncateEllipsis {
 impl TruncateEllipsis for str {
     fn truncate_ellipsis(&self, max_len: usize) -> String {
         if self.len() <= max_len {
-            self.to_string()
-        } else {
-            format!("{}...", &self[..max_len.saturating_sub(3)])
+            return self.to_string();
         }
+        // Byte slicing panics on non-char boundaries (e.g. CJK brew
+        // descriptions); cut on the last full character instead.
+        let mut end = max_len.saturating_sub(3);
+        while end > 0 && !self.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &self[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_ascii() {
+        assert_eq!("abcdefgh".truncate_ellipsis(40), "abcdefgh");
+        assert_eq!("abcdefgh".truncate_ellipsis(6), "abc...");
+    }
+
+    /// Multi-byte descriptions (common in brew casks) must not panic on a
+    /// non-char-boundary slice.
+    #[test]
+    fn test_truncate_cjk_no_panic() {
+        let s = "图形界面工具用于管理磁盘空间和系统清理";
+        let out = s.truncate_ellipsis(40);
+        assert!(out.ends_with("..."));
+        assert!(out.len() <= 40);
+    }
+
+    #[test]
+    fn test_truncate_mixed_boundary() {
+        // 3-byte chars: cutting at byte 10 would split a char.
+        let s = "ääääääää";
+        let out = s.truncate_ellipsis(10);
+        assert!(out.ends_with("..."));
     }
 }
 

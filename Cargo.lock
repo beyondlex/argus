@@ -138,6 +138,7 @@ dependencies = [
  "colored",
  "ctrlc",
  "inquire",
+ "libc",
  "serde_json",
  "tokio",
 ]
