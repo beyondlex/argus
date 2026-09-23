@@ -147,11 +147,7 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
     if cmd.eq_ignore_ascii_case("Consolidate") {
         app.clear_command_state();
         if app.server_mode {
-            let uds_path = app
-                .daemon_client
-                .as_ref()
-                .map(|_| crate::config::TuiConfig::default().daemon.uds_path.clone())
-                .unwrap_or_default();
+            let uds_path = app.config.daemon.uds_path.clone();
             let tx = app.tx.clone();
             tokio::spawn(async move {
                 match IpcClient::connect(&uds_path).await {

@@ -57,7 +57,9 @@ impl App {
         let from = self.time_from;
         let to = self.time_to;
         let tx = self.tx.clone();
-        let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
+        // Use the user-configured socket path — TuiConfig::default() ignores
+        // a custom [daemon].uds_path and would connect to the wrong socket.
+        let uds_path = self.config.daemon.uds_path.clone();
         let log_path = self.log_path.clone();
 
         // Take existing daemon client to avoid a new UDS connection

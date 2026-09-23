@@ -249,7 +249,7 @@ pub(crate) fn handle_time_toggle(app: &mut App) {
 }
 
 pub(crate) fn handle_daemon_reconnect(app: &mut App) {
-    let path = crate::config::TuiConfig::default().daemon.uds_path.clone();
+    let path = app.config.daemon.uds_path.clone();
     let path_clone = path.clone();
     let tx = app.tx.clone();
     tokio::spawn(async move {
