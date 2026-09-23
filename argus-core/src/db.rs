@@ -159,6 +159,12 @@ pub fn query_delta_total(
     // `is_agg = 1` rows represent subtree coverage, not extra additive events.
     // If a parent directory already has an aggregate row, descendants covered by
     // that row must not be counted again here, or the TUI will double count.
+    // Aggregation is parent-local (see `consolidate_events`): an ancestor agg
+    // row only ever sums the ancestor's direct children, never a descendant
+    // agg row. Therefore agg rows must NOT suppress each other — only raw
+    // (is_agg = 0) events are hidden by a covering in-window aggregate.
+    // The `agg.timestamp <= ?4` bound keeps out-of-window aggregates from
+    // suppressing in-window events (agg ts = max consolidated child ts).
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(delta_size), 0) FROM delta_events
          WHERE (path = ?1 OR path LIKE ?2)
@@ -167,13 +173,9 @@ pub fn query_delta_total(
                SELECT 1
                FROM delta_events AS agg
                WHERE agg.is_agg = 1
+                 AND delta_events.is_agg = 0
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
-                 AND agg.path <> delta_events.path
                  AND delta_events.path LIKE (agg.path || '/%')
-                 -- An aggregate row must only suppress descendants when the
-                 -- aggregate itself falls inside the queried window (agg
-                 -- timestamp = max consolidated child timestamp). Without this
-                 -- bound, a future-dated aggregate hides in-window events.
                  AND agg.timestamp <= ?4
            )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
@@ -190,8 +192,8 @@ pub fn query_delta_detail(
 ) -> Result<Vec<DeltaEntry>, DbError> {
     let path_str = path.to_string_lossy();
     let prefix = format!("{}/%", path_str);
-    // Keep this filter in lockstep with `query_delta_total`.
-    // The UI expects both calls to expose the same subtree coverage semantics.
+    // Keep this filter in lockstep with `query_delta_total` (same agg
+    // non-suppression invariant: only raw events are hidden by aggregates).
     let mut stmt = conn.prepare(
         "SELECT path, delta_size, event_type, timestamp, is_agg FROM delta_events
          WHERE (path = ?1 OR path LIKE ?2)
@@ -200,13 +202,9 @@ pub fn query_delta_detail(
                SELECT 1
                FROM delta_events AS agg
                WHERE agg.is_agg = 1
+                 AND delta_events.is_agg = 0
                  AND (agg.path = ?1 OR agg.path LIKE ?2)
-                 AND agg.path <> delta_events.path
                  AND delta_events.path LIKE (agg.path || '/%')
-                 -- An aggregate row must only suppress descendants when the
-                 -- aggregate itself falls inside the queried window (agg
-                 -- timestamp = max consolidated child timestamp). Without this
-                 -- bound, a future-dated aggregate hides in-window events.
                  AND agg.timestamp <= ?4
            )
          ORDER BY timestamp ASC",
@@ -926,6 +924,38 @@ mod tests {
 
         let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
         assert_eq!(total, 300);
+    }
+
+    /// Aggregate rows must not suppress each other. Consolidation is
+    /// parent-local: `/tmp/dir`'s agg only sums its direct children, so the
+    /// events consolidated into `/tmp/dir/sub`'s own agg are NOT included in
+    /// it. If the ancestor agg suppressed the descendant agg, that delta
+    /// would vanish permanently from ancestor queries.
+    #[test]
+    fn test_nested_aggs_both_counted_at_ancestor() {
+        let (conn, _) = setup_db();
+
+        for (path, delta, ts) in [
+            ("/tmp/dir", 300i64, 1200u64), // direct-children agg for dir
+            ("/tmp/dir/sub", 700, 1300),   // direct-children agg for sub
+        ] {
+            conn.execute(
+                "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg)
+                 VALUES (?1, ?2, 'agg', ?3, 1)",
+                params![path, delta, ts],
+            )
+            .unwrap();
+        }
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 1000);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Querying the subtree itself still sees its own agg only.
+        let sub_total = query_delta_total(&conn, Path::new("/tmp/dir/sub"), 0, 5000).unwrap();
+        assert_eq!(sub_total, 700);
     }
 
     #[test]
