@@ -16,7 +16,6 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 - `h` / `←`: return to parent directory (pop from dir_stack, reload children).
 - `H`: return to view_root (clear dir_stack).
 - `u`: within tree → go to parent; at tree root → change view_root to filesystem parent.
-- `w`: re-root view to current directory.
 - Navigation stack (`dir_stack`) tracks visited directories within the current tree root.
 
 ## Scanning
