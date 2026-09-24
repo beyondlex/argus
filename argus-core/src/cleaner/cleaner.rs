@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use super::audit::{log_operation, AuditEntry, AuditOp};
-use super::categories::{scan_target_size, CleanTarget};
+use super::categories::CleanTarget;
+use super::dir_size;
 use super::safety::{check_deletion_allowed, classify_risk, RiskLevel};
 
 #[derive(Debug, Clone)]
@@ -39,20 +40,31 @@ pub fn plan_clean(targets: &[CleanTarget]) -> Result<CleanPlan, String> {
     let mut total_bytes = 0u64;
 
     for target in targets {
-        let (size, existing_paths) =
-            scan_target_size(target).map_err(|e| format!("scan target {}: {e}", target.id))?;
-        if size > 0 && !existing_paths.is_empty() {
-            for p in existing_paths {
-                let risk = classify_risk(&p).max(target.risk);
-                items.push(CleanItem {
-                    path: p,
-                    size,
-                    risk,
-                    target_id: target.id.clone(),
-                });
+        let mut existing_paths = Vec::new();
+        for p in &target.paths {
+            if p.exists() {
+                existing_paths.push(p.clone());
             }
-            total_bytes += size;
         }
+        if existing_paths.is_empty() {
+            continue;
+        }
+        // Per-path size: assigning the target total to every path item used
+        // to inflate each item's label and multiply freed_bytes by the number
+        // of existing paths once exec_clean summed them.
+        let mut target_total = 0u64;
+        for p in existing_paths {
+            let size = dir_size(&p);
+            let risk = classify_risk(&p).max(target.risk);
+            items.push(CleanItem {
+                path: p,
+                size,
+                risk,
+                target_id: target.id.clone(),
+            });
+            target_total += size;
+        }
+        total_bytes += target_total;
     }
 
     Ok(CleanPlan {
@@ -150,5 +162,39 @@ mod tests {
         let plan = plan_clean(&[target]).unwrap();
         assert!(plan.is_empty());
         assert_eq!(plan.total_bytes, 0);
+    }
+
+    /// A target with several existing paths must report each path's own size:
+    /// assigning the target total to every item inflated per-item labels and
+    /// multiplied freed_bytes by the number of paths when exec_clean summed
+    /// the items.
+    #[test]
+    fn test_plan_clean_per_path_sizes_not_duplicated() {
+        let dir = std::env::temp_dir().join("_argus_plan_clean_sizes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("a").join("x.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("b").join("y.bin"), vec![0u8; 300]).unwrap();
+
+        let target = CleanTarget {
+            id: "multi-path".into(),
+            label: "Multi Path".into(),
+            paths: vec![dir.join("a"), dir.join("b")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+
+        let plan = plan_clean(&[target]).unwrap();
+        assert_eq!(plan.items.len(), 2);
+        let sizes: Vec<u64> = plan.items.iter().map(|i| i.size).collect();
+        assert_eq!(sizes, vec![100, 300]);
+        assert_eq!(plan.total_bytes, 400);
+
+        // exec_clean's freed-bytes sum over the plan items equals the plan total.
+        let items_sum: u64 = plan.items.iter().map(|i| i.size).sum();
+        assert_eq!(items_sum, plan.total_bytes);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

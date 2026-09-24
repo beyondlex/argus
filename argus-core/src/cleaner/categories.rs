@@ -1,5 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use super::dir_size;
 use super::safety::RiskLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -418,44 +419,10 @@ pub fn scan_target_size(target: &CleanTarget) -> Result<(u64, Vec<PathBuf>), std
     for p in &target.paths {
         if p.exists() {
             existing.push(p.clone());
-            total += dir_size(p)?;
+            total += dir_size(p);
         }
     }
     Ok((total, existing))
-}
-
-fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
-    let mut total = 0u64;
-    if path.is_file() {
-        return Ok(std::fs::metadata(path)?.len());
-    }
-    if path.is_dir() {
-        let mut dirs = vec![path.to_path_buf()];
-        while let Some(dir) = dirs.pop() {
-            let read_dir = match std::fs::read_dir(&dir) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            for entry in read_dir.flatten() {
-                let ft = match entry.file_type() {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                if ft.is_symlink() {
-                    continue;
-                }
-                if ft.is_dir() {
-                    dirs.push(entry.path());
-                } else if ft.is_file() {
-                    total += match entry.metadata() {
-                        Ok(m) => m.len(),
-                        Err(_) => 0,
-                    };
-                }
-            }
-        }
-    }
-    Ok(total)
 }
 
 #[cfg(test)]
@@ -480,7 +447,7 @@ mod tests {
     #[test]
     fn test_dir_size_nonexistent() {
         let p = Path::new("/nonexistent_path_xyz");
-        assert_eq!(dir_size(p).unwrap_or(0), 0);
+        assert_eq!(dir_size(p), 0);
     }
 
     #[test]
@@ -488,7 +455,7 @@ mod tests {
         let tmp = std::env::temp_dir();
         let f = tmp.join("_test_cleaner_size");
         std::fs::write(&f, b"hello").unwrap();
-        assert_eq!(dir_size(&f).unwrap(), 5);
+        assert_eq!(dir_size(&f), 5);
         let _ = std::fs::remove_file(&f);
     }
 

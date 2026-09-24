@@ -5,6 +5,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use super::audit::{log_operation, AuditEntry, AuditOp};
 use super::cleaner::CleanReport;
+use super::dir_size;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrewPackageType {
@@ -225,36 +226,6 @@ struct BrewDetailedInfo {
     desc: String,
     deps_count: usize,
     installed_bottle_size: u64,
-}
-
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if path.is_file() {
-        return std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    }
-    if !path.is_dir() {
-        return 0;
-    }
-    let mut dirs = vec![path.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let Ok(read_dir) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in read_dir.flatten() {
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
-                dirs.push(entry.path());
-            } else if ft.is_file() {
-                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            }
-        }
-    }
-    total
 }
 
 fn home_dir() -> Option<PathBuf> {
