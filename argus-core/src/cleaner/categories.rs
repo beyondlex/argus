@@ -428,6 +428,7 @@ pub fn scan_target_size(target: &CleanTarget) -> Result<(u64, Vec<PathBuf>), std
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_default_targets_have_ids() {
