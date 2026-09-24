@@ -45,7 +45,18 @@ fn node_size_in_snapshot(snapshot: &Snapshot, deleted_path: &Path) -> u64 {
 }
 
 pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
+    // Freed bytes must be counted exactly once: from the tree that currently
+    // displays the deleted path. The scan-cache pass below only maintains
+    // cache consistency — counting sizes there too double-booked whenever a
+    // cached subtree also contained the deleted path.
     let mut total_freed = 0u64;
+
+    if let Some(TreeNode::Snapshot(snap_arc, _)) = &mut app.tree_root {
+        let snap = Arc::make_mut(snap_arc);
+        total_freed = node_size_in_snapshot(snap, deleted_path);
+        let _ = remove_path_from_tree(snap, &app.view_root_path, deleted_path);
+    }
+
     let mut keys_to_remove = Vec::new();
 
     for key in app.scan_cache.keys() {
@@ -58,18 +69,13 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
         if key == app.view_root_path || deleted_path.starts_with(&key) {
             if let Some(arc) = app.scan_cache.get_mut(&key) {
                 let snapshot = Arc::make_mut(arc);
-                let freed = node_size_in_snapshot(snapshot, deleted_path);
                 remove_path_from_snapshot(snapshot, deleted_path);
-                total_freed = total_freed.saturating_add(freed);
             }
-        } else if let Some(snapshot) = app.scan_cache.remove(&key) {
-            total_freed = total_freed.saturating_add(snapshot.total_size);
+        } else {
+            // Cache entry strictly inside the deleted path: the whole subtree
+            // is gone, drop it.
+            app.scan_cache.remove(&key);
         }
-    }
-
-    if let Some(TreeNode::Snapshot(snap_arc, _)) = &mut app.tree_root {
-        let snap = Arc::make_mut(snap_arc);
-        let _ = remove_path_from_tree(snap, &app.view_root_path, deleted_path);
     }
 
     total_freed
@@ -493,6 +499,43 @@ mod tests {
             .iter()
             .find(|l| l.node.name() == "delete.txt")
             .is_none());
+    }
+
+    /// Freed bytes must be counted once even when several cached snapshots
+    /// contain the deleted path (root scan + cached subdir scan).
+    #[test]
+    fn test_delete_freed_counted_once_across_nested_caches() {
+        let mut root_b = SnapshotBuilder::new("test");
+        let ignore = root_b.push_dir(ROOT_NODE, "ignore");
+        root_b.push_file(ignore, "delete.bin", FileType::File, 10, 10);
+        root_b.push_file(ignore, "keep.bin", FileType::File, 12, 12);
+        for i in (1..root_b.nodes.len()).rev() {
+            let size = root_b.nodes[i].size();
+            if let Some(p) = root_b.nodes[i].parent() {
+                let t = root_b.nodes[p as usize].size().saturating_add(size);
+                root_b.nodes[p as usize].set_size(t);
+            }
+        }
+        let total = root_b.nodes[0].size();
+        let root_snap = root_b.finish(PathBuf::from("/tmp/test"), total, total);
+        // Cached subdir scan also contains delete.bin.
+        let mut sub_b = SnapshotBuilder::new("ignore");
+        sub_b.push_file(ROOT_NODE, "delete.bin", FileType::File, 10, 10);
+        sub_b.push_file(ROOT_NODE, "keep.bin", FileType::File, 12, 12);
+        let sub_total = 22;
+        let sub_snap = sub_b.finish(PathBuf::from("/tmp/test/ignore"), sub_total, sub_total);
+
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.tree_root = Some(TreeNode::Snapshot(Arc::new(root_snap), ROOT_NODE));
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test"), Arc::new(sub_snap.clone()));
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test/ignore"), Arc::new(sub_snap));
+
+        let freed = apply_deletion_to_state(&mut app, Path::new("/tmp/test/ignore/delete.bin"));
+        assert_eq!(freed, 10, "double-counted freed when two caches match");
     }
 
     #[test]

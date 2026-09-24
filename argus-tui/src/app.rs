@@ -491,7 +491,10 @@ impl App {
                 self.delta_detail = Some(state);
             }
             AppMessage::Info(msg) => {
-                self.set_error(msg, 4);
+                // Info is the success/neutral channel (e.g. "consolidated N
+                // events"); routing it through set_error rendered it in the
+                // danger color.
+                self.set_info(msg, 4);
             }
             AppMessage::DeleteProgress { current, total } => {
                 self.delete_progress = Some((current, total));
@@ -1779,10 +1782,12 @@ fn resolve_label(path: &std::path::Path) -> String {
     .to_string()
 }
 
-/// Generate a mock AI verdict based on directory/file name heuristics.
-/// Phase 1: no real AI call. Phase 2+: will call AI API.
-/// Label is program-determined (built-in heuristic). label_detail is left empty
-/// in Phase 1 mock; Phase 2+ AI will fill it.
+/// Heuristic fallback verdict derived from directory/file name patterns.
+/// Used when AI is not configured, and as the on-disk placeholder for
+/// uncached paths (source = "heuristic") so the model can replace them
+/// once AI becomes available.
+/// Label is program-determined (built-in heuristic). label_detail stays
+/// empty; only a real AI response fills it.
 fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
     let name = path
         .file_name()

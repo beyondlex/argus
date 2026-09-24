@@ -217,7 +217,8 @@ pub fn delta_unit_multiplier(unit: usize) -> u64 {
 
 pub const DELTA_UNIT_LABELS: &[&str] = &["KB", "MB", "GB"];
 
-pub const TIME_PRESET_COUNT: usize = 7;
+/// Presets 0..5 are defined in `App::set_time_preset` (1h/6h/12h/1d/3d/7d).
+pub const TIME_PRESET_COUNT: usize = 6;
 
 // ── AI Review ─────────────────────────────────────────────────────────────────
 
