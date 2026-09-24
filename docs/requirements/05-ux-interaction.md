@@ -12,6 +12,16 @@ argus scan --path ~/Downloads
 
 # 查询 daemon 状态（已运行、watch 目录、配置等）
 argus status
+
+# 本地 SQLite delta 汇总（不经 daemon）
+argus delta-summary --path ~/Downloads
+
+# daemon 增量整理 / 清空（危险操作，直接生效）
+argus consolidate
+argus clear
+
+# daemon 使用非默认 socket 时，所有 daemon 子命令可通过全局参数指定
+argus --uds-path /tmp/argus.sock status
 ```
 
 ### 1.2 阈值参数
@@ -35,7 +45,7 @@ CLI 退出码标准化，支持脚本化管道和 CI 集成：
 
 | 退出码 | 含义 | 适用场景 |
 |--------|------|---------|
-| `0` | 成功，未发现超阈值变动 | `argus scan` / `argus diff` 正常完成 |
+| `0` | 成功 | `argus scan` / `argus status` 等正常完成 |
 | `2` | 参数错误 | 非法路径、缺失必选参数、格式错误 |
 | `3` | IO 错误 | 快照文件不存在、权限不足、写入失败 |
 | `4` | 内部错误 | 快照损坏、数据不一致、反序列化失败 |

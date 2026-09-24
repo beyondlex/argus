@@ -7,7 +7,7 @@ Guide for AI agents contributing to Argus. Read fully before each session.
 Argus = personal desktop disk intelligence tool. Rust, Cargo Workspace.
 
 ```
-argus-core/  core logic (scan, diff, AI feature extraction)
+argus-core/  core logic (scan, snapshot, delta storage, cleaner, AI feature extraction)
 argus-cli/   CLI client (quick validation, automated testing)
 argusd/      daemon (background monitoring)
 argus-tui/   TUI client (ratatui)
@@ -39,15 +39,15 @@ TUI-specific rule:
 
 ### 2.3 AI Is a Plugin, Not Core
 
-- AI defaults off. All core features (scan, diff, browse, delete) work fully without AI.
+- AI defaults off. All core features (scan, browse, delete) work fully without AI.
 - AI code gated behind feature flags. Zero impact on core compile size.
 
 ## 3. Development Discipline
 
 ### 3.1 TDD First
 
-- **Write tests first**. Core algorithms (diff, tree merge, feature extraction) must have unit tests.
-- Cover all edge cases: empty dirs, single file, deep nesting, symmetric/asymmetric diff.
+- **Write tests first**. Core algorithms (scanner, snapshot CSR build, delta consolidation, feature extraction) must have unit tests.
+- Cover all edge cases: empty dirs, single file, deep nesting, prefix/wildcard paths.
 - CLI commands validated via integration tests (`cargo test --test integration`).
 - Use mock data, not real filesystem (except integration tests).
 
@@ -96,7 +96,7 @@ TUI-specific rule:
 
 - Types: PascalCase (`FileNode`, `Snapshot`)
 - Functions/methods: snake_case (`compare_trees`, `scan_path`)
-- Modules: snake_case, short (`model`, `scanner`, `diff`)
+- Modules: snake_case, short (`model`, `scanner`, `db`)
 - Error types: suffix `Error` (`ScanError`, `DiffError`)
 - Traits: verbs (`Scanner`, `Differ`), not `-able` suffixes
 
@@ -166,7 +166,7 @@ Naming: `test_<function>_<scenario>` (e.g. `test_compare_trees_both_empty`).
 ### 6.2 Implementation Order (Phase 1)
 
 ```
-model.rs → scanner.rs (w/ tests) → diff.rs (w/ tests)
+model.rs → scanner.rs (w/ tests) → db.rs (w/ tests)
   → ai_feature.rs (w/ tests) → cli/main.rs → integration tests
 ```
 

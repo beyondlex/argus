@@ -68,6 +68,9 @@ argus delta-summary --path ~/Downloads --from_ms 1700000000000 --to_ms 170000500
 # Request daemon event consolidation
 argus consolidate
 
+# Talk to a daemon on a non-default socket (must match argusd's --uds-path / config)
+argus --uds-path /tmp/argus.sock status
+
 # Print help
 argus help
 ```
@@ -77,6 +80,9 @@ argus help
 ```bash
 # Start in foreground
 argusd
+
+# Single instance: a second argusd (foreground or --daemon) refuses to start
+# while the PID file names a live process. `argusd stop` releases it.
 
 # Daemonize (fork to background)
 argusd --daemon
