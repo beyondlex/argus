@@ -247,7 +247,10 @@ fn cmd_delta_summary(path: &PathBuf, from_ms: Option<u64>, to_ms: Option<u64>) -
 
 // ── Daemon IPC ───────────────────────────────────────────────────────────────
 
-async fn daemon_request(req: DaemonRequest, uds_path: Option<&str>) -> anyhow::Result<DaemonResponse> {
+async fn daemon_request(
+    req: DaemonRequest,
+    uds_path: Option<&str>,
+) -> anyhow::Result<DaemonResponse> {
     let uds = uds_path.unwrap_or(argus_core::DEFAULT_UDS_PATH);
     let mut stream = UnixStream::connect(uds)
         .await
@@ -540,7 +543,10 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
             if dry_run {
                 println!("  ☻ {} (dry-run, skipped)", cmd.label.white());
             } else {
-                println!("  ☻ {} (pending, run after confirmation)", cmd.label.white());
+                println!(
+                    "  ☻ {} (pending, run after confirmation)",
+                    cmd.label.white()
+                );
             }
         }
         println!();
