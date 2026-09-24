@@ -64,6 +64,7 @@
 | CLI 连 daemon 硬编码默认 socket，`[daemon].uds_path` 自定义时 status/consolidate/clear 全部连错地方（TUI 同类问题已在 c190c0e 修复）。新增全局 `--uds-path` | `argus-cli/main.rs` | server 模式可用性 | 同上 |
 | `dir_size` 四份私有拷贝（purge/categories/brew/uninstaller）合并为 `cleaner::dir_size`，统一跳过符号链接 | `argus-core/cleaner/*` | DRY | 508b67b |
 | 文案 `mo clean --dry-run`（其它项目的残留） | `argus-cli/main.rs` | 文案 | 523d299 |
+| brew 卸载前从不展示依赖者警告：`brew_dependents_of` 是死 API，而卸载带 `--force`（brew 自己也不会拦）。TUI 确认框后台查询并列出依赖者，CLI 在确认提示前打印 | `argus-tui/handler/brew.rs` `components/brew.rs` `argus-cli/main.rs` | 删除安全（存疑 #13 已落地） | d88d131 |
 
 另：`mock_ai_verdict` 的 Phase 1/Phase 2 过期注释更新；AGENTS.md 中从未存在的 `diff` 模块引用改为真实模块；05-ux-interaction.md 命令清单同步到实际 CLI（含 `--uds-path`）。
 
@@ -121,6 +122,7 @@ view_root 无 scan_cache 且 `list_dir` 失败（权限/被删）时置 `tree_ro
 
 ### 13. brew 依赖信息链路断裂：`brew_dependents_of` 从未被调用
 CLI/TUI 的 brew 面板都展示 `dependents` 字段，但列表构建（`list_brew_packages`）恒填 0，core 里的 `brew_dependents_of()`（`brew uses --installed`）没有任何调用方——用户在卸载前看不到"有 N 个包依赖它"的警告，而 `uninstall_brew_package` 又带 `--force`（绕过 brew 的依赖检查）。合理接法：卸载前对该包调一次 `brew_dependents_of`，非空则展示并要求额外确认。属于 brew 错误通道重构（存疑 #10）同域，留待一起做。
+**已落地（第三轮，d88d131）**：TUI 确认框打开时后台查询并列出依赖者（最多展示 5 个），CLI 在确认提示前打印。剩余的"brew 错误靠字符串反解析"（存疑 #10）仍留待结构化错误通道重构。
 
 ### 14. 死公共 API：`exec_all_shell_cmds`、`has_ai_analysis(_batch)`
 三者只在 `lib.rs` re-export，全仓无调用方（`has_ai_analysis_batch` 已被 `load_ai_cache_entries` 取代）。保留待真实需求出现或下次清理时删除；`#[allow(dead_code)]` 对 pub 项不生效，故暂无噪音。
