@@ -34,9 +34,9 @@ fn main() {
             to_ms,
         } => cmd_delta_summary(path, *from_ms, *to_ms),
         Commands::Help => cmd_help(),
-        Commands::Consolidate => cmd_consolidate(),
-        Commands::Status => cmd_status(),
-        Commands::Clear => cmd_clear(),
+        Commands::Consolidate => cmd_consolidate(cli.uds_path.as_deref()),
+        Commands::Status => cmd_status(cli.uds_path.as_deref()),
+        Commands::Clear => cmd_clear(cli.uds_path.as_deref()),
         #[cfg(feature = "cleanup")]
         Commands::Clean { dry_run, yes } => cmd_clean(*dry_run, *yes),
         #[cfg(feature = "cleanup")]
@@ -65,6 +65,11 @@ fn main() {
 #[command(disable_help_subcommand = true)]
 #[command(name = "argus", version, about = "Disk usage scanner")]
 struct Cli {
+    /// Unix domain socket of the argusd daemon. Must match the daemon's
+    /// configured uds_path (default: /tmp/argusd.sock).
+    #[arg(long, global = true)]
+    uds_path: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -242,10 +247,11 @@ fn cmd_delta_summary(path: &PathBuf, from_ms: Option<u64>, to_ms: Option<u64>) -
 
 // ── Daemon IPC ───────────────────────────────────────────────────────────────
 
-async fn daemon_request(req: DaemonRequest) -> anyhow::Result<DaemonResponse> {
-    let mut stream = UnixStream::connect(argus_core::DEFAULT_UDS_PATH)
+async fn daemon_request(req: DaemonRequest, uds_path: Option<&str>) -> anyhow::Result<DaemonResponse> {
+    let uds = uds_path.unwrap_or(argus_core::DEFAULT_UDS_PATH);
+    let mut stream = UnixStream::connect(uds)
         .await
-        .map_err(|e| anyhow::anyhow!("connect to daemon failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("connect to daemon at {uds} failed: {e}"))?;
     send_daemon_request(&mut stream, req).await
 }
 
@@ -270,10 +276,10 @@ async fn send_daemon_request(
     bincode::deserialize(&resp_buf).map_err(|e| anyhow::anyhow!("deserialize: {e}"))
 }
 
-fn cmd_consolidate() -> Result<i32> {
+fn cmd_consolidate(uds_path: Option<&str>) -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let resp = daemon_request(DaemonRequest::RequestConsolidation).await?;
+        let resp = daemon_request(DaemonRequest::RequestConsolidation, uds_path).await?;
         match resp {
             DaemonResponse::ConsolidationDone { consolidated_count } => {
                 println!(
@@ -295,10 +301,10 @@ fn cmd_consolidate() -> Result<i32> {
     })
 }
 
-fn cmd_status() -> Result<i32> {
+fn cmd_status(uds_path: Option<&str>) -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let resp = daemon_request(DaemonRequest::GetStatus).await?;
+        let resp = daemon_request(DaemonRequest::GetStatus, uds_path).await?;
         match resp {
             DaemonResponse::Status {
                 version,
@@ -364,10 +370,10 @@ fn cmd_status() -> Result<i32> {
     })
 }
 
-fn cmd_clear() -> Result<i32> {
+fn cmd_clear(uds_path: Option<&str>) -> Result<i32> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let resp = daemon_request(DaemonRequest::ClearDb).await?;
+        let resp = daemon_request(DaemonRequest::ClearDb, uds_path).await?;
         match resp {
             DaemonResponse::DbCleared { deleted_count } => {
                 println!(
