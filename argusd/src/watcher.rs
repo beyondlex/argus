@@ -143,22 +143,29 @@ fn event_to_delta(
                 })
             }
             EventKind::Modify(ModifyKind::Data(_)) | EventKind::Modify(ModifyKind::Any) => {
-                let old_size = state.last_known_size(path).unwrap_or(0);
-                // file_size() already refreshes the cache entry
+                // Without a cached baseline the size delta is unknowable.
+                // Treating the baseline as 0 used to book the whole file size
+                // as a phantom +size on the first modify after daemon start
+                // (or after a cache eviction) — e.g. touching a 5 GB file
+                // recorded +5 GB. Observe now (seeds the baseline), emit only
+                // when the previous size is known and actually changed.
+                let old_size = state.last_known_size(path);
                 state.file_size(path).and_then(|new_size| {
-                    let delta = (new_size as i64) - (old_size as i64);
-                    if delta != 0 {
-                        Some(DeltaEvent {
-                            path: path.clone(),
-                            delta_size: delta,
-                            event_type: "modify".into(),
-                            timestamp,
-                            is_agg: false,
-                            process_info: None,
-                        })
-                    } else {
-                        None
-                    }
+                    old_size.and_then(|old| {
+                        let delta = (new_size as i64) - (old as i64);
+                        if delta != 0 {
+                            Some(DeltaEvent {
+                                path: path.clone(),
+                                delta_size: delta,
+                                event_type: "modify".into(),
+                                timestamp,
+                                is_agg: false,
+                                process_info: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
                 })
             }
             EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => {
@@ -534,6 +541,44 @@ mod tests {
             timestamp,
         );
         assert_eq!(events.len(), 0);
+    }
+
+    /// A modify event for a file the watcher has no baseline for (daemon just
+    /// started, or cache evicted) must not book the whole file size as a
+    /// phantom delta. The first observe only seeds the baseline.
+    #[test]
+    fn test_modify_without_baseline_records_nothing() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("big.bin");
+        let mut state = WatcherState::new();
+        let timestamp = 1000;
+
+        // 1 GB file touched without the watcher ever having seen it before.
+        fs::write(&file, b"x").unwrap();
+        let f = fs::File::create(&file).unwrap();
+        f.set_len(1_000_000_000).unwrap();
+        drop(f);
+
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Any),
+            std::slice::from_ref(&file),
+            &mut state,
+            timestamp,
+        );
+        assert!(events.is_empty());
+        // Baseline is now seeded; a real growth is measured from it.
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        f.write_all(b"more data").unwrap();
+        drop(f);
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Any),
+            std::slice::from_ref(&file),
+            &mut state,
+            timestamp,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, 9);
     }
 
     #[test]
