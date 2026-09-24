@@ -44,6 +44,29 @@
 
 另：argusd `main.rs` 去掉 `open_db` 后多余的 `init_db`（随 d08c4a1）；clippy `--all-targets` 清零（ee94ad2）。
 
+## 已修复（第三轮）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| SQLite `LIKE` 未转义通配符：查询 `my_projects` 会把 `my-projects`/`myXprojects` 的 delta 事件算进来；含 `_` 的目录被 consolidate 后，agg 反连接还会**抑制兄弟目录的原始事件**；`consolidate_events` 的 DELETE 会误删兄弟目录的行 | `argus-core/db.rs` 三处查询 + consolidate | delta 记账错误 + 误删数据 | 560c53f |
+| TUI 清理面板 `d` 键显示 `[DRY-RUN]`，但确认后 `exec_clean(items, dry_run)` 把标志传给被忽略的 `_force` 参数 → **dry-run 下真实删除** | `argus-tui/handler/cleanup.rs` `argus-core/cleaner.rs` | 数据安全 | 523d299 |
+| CLI `argus clean` 在 "Proceed with cleanup?" 确认**之前**执行 `brew cleanup`、`docker builder prune -f` 等不可逆命令 | `argus-cli/main.rs` | 破坏性操作未经确认 | 523d299 |
+| daemon 重启/缓存淘汰后首次 modify 无基线，旧代码以 0 为基线把整个文件大小记为幽灵正增量（touch 一个 5GB 文件记 +5GB） | `argusd/watcher.rs` | delta 记账错误 | 6318726 |
+| 无单实例保护：起第二个 argusd 会移走运行中 daemon 的 socket 文件，且两个 watcher 对同一事件各插一条 → delta 双倍记账 | `argusd/daemonize.rs` `main.rs` | delta 记账错误 | 2d179ee |
+| `plan_clean` 把 target 总尺寸赋给该 target 的每个路径：多项 target 时每项 label 虚高，exec_clean 的 freed_bytes 按项数翻倍 | `argus-core/cleaner.rs` | 清理统计错误 | 508b67b |
+| `bundle_id_for_app` 硬编码 `start + 30` 偏移多跳 1 字节：压缩格式 plist（`</key><string>` 无空白）解析失败 → bundle id 落到 `unknown.<name>` → leftover 扫描为空 | `argus-core/uninstaller.rs` | 卸载残留清理失效 | 569a5ba |
+| `classify_risk` 用裸 `starts_with(home)`：`/Users/lexx/...` 被当成 `/Users/lex` 家目录内 → 误判 Safe | `argus-core/safety.rs` | 删除风险分级 | 91aada8 |
+| AI 缓存按 64 位 `path_hash` 单键读写：碰撞时静默返回/覆盖别的路径的分析结果。读写删均加 `path` 列校验 | `argus-core/db.rs` | 健壮性 | 91aada8 |
+| `apply_deletion_to_state` 对 view 树和每个命中的 scan_cache 条目各计一次 freed：删除的路径同时存在于根扫描和子目录缓存时 freed 双倍 | `argus-tui/tree_ops.rs` | 统计错误 | fae8995 |
+| `AppMessage::Info` 走 `set_error`：后台任务的成功消息（"consolidated N events"）显示为红色错误 | `argus-tui/app.rs` | 体验一致性 | 同上 |
+| `TIME_PRESET_COUNT = 7` 但预设只有 0..5：`t` 键循环中多出一个重复的 1h 档 | `argus-tui/types.rs` | 交互小 bug | 同上 |
+| `ShellCmdTarget.timeout_secs` 声明但从未生效：卡死的 docker/brew 命令永久阻塞清理流程。改为 spawn + `try_wait` 轮询 + 超时 kill | `argus-core/shell_cmd.rs` | 可靠性 | 09593c0 |
+| CLI 连 daemon 硬编码默认 socket，`[daemon].uds_path` 自定义时 status/consolidate/clear 全部连错地方（TUI 同类问题已在 c190c0e 修复）。新增全局 `--uds-path` | `argus-cli/main.rs` | server 模式可用性 | 同上 |
+| `dir_size` 四份私有拷贝（purge/categories/brew/uninstaller）合并为 `cleaner::dir_size`，统一跳过符号链接 | `argus-core/cleaner/*` | DRY | 508b67b |
+| 文案 `mo clean --dry-run`（其它项目的残留） | `argus-cli/main.rs` | 文案 | 523d299 |
+
+另：`mock_ai_verdict` 的 Phase 1/Phase 2 过期注释更新；AGENTS.md 中从未存在的 `diff` 模块引用改为真实模块；05-ux-interaction.md 命令清单同步到实际 CLI（含 `--uds-path`）。
+
 ## 存疑 / 记录在案（未改动）
 
 ### 1. 聚合行覆盖下，新事件的可见性滞后
@@ -51,6 +74,7 @@ consolidate 之后某子树已有 agg 覆盖行，新到达的子路径事件在
 
 ### 2. SQLite `LIKE` 对 ASCII 不区分大小写
 `query_delta_total/detail` 的路径前缀匹配 `path LIKE '/users/%'` 会命中 `/Users/...`。macOS 默认文件系统大小写不敏感，跨大小写路径冲突的场景罕见，但理论上会造成串数据。若要严格，可改 `GLOB` 或 `PRAGMA case_sensitive_like`。
+**已解决（第三轮，560c53f）**：前缀匹配改为 `substr` 精确等值，天然大小写敏感且无通配符语义。
 
 ### 3. 非 ASCII 搜索高亮可能偏移 1 个字符位
 `argus-tui/search.rs` `fuzzy_match_indices` 非 ASCII 分支用 `to_lowercase()` 后的字符数换算高亮区间；个别字符（如 `İ`）小写化后字符数会变，高亮宽度随之偏移。文件名场景极少见，暂不处理。
@@ -91,3 +115,30 @@ view_root 无 scan_cache 且 `list_dir` 失败（权限/被删）时置 `tree_ro
 - TUI 渲染层 `right_width` 逐帧重算等微开销，远低于渲染阈值，不值得优化。
 - `SeenInodes::positions` 每次插入做 9 次完整 SipHash（device+inode+轮次）。可换 Kirsch–Mitzenmacher 双重哈希（1 次哈希派生 9 个位置），约省扫描热路径上 ~5% CPU；布隆误判率特性会略变，改动前先跑误判率测试。
 - `load_current_children` 的 graft 路径（进入树中无子节点的目录时 `list_dir` 后 `Arc::make_mut`）会整体克隆快照：`current_children` 持有同一 Arc，refcount>1 触发克隆。大树上每次进入此类目录多付一次 O(树) 拷贝。出现频率低（仅"树里为空但磁盘上非空"的目录），若实际可感可改为独立 overlay 列表。
+- `query_delta_total/detail` 前缀匹配由 `LIKE 'prefix%'` 改为 `substr` 等值后，理论上放弃了 LIKE 前缀索引优化；但原查询从未设 `PRAGMA case_sensitive_like=ON`，大小写不敏感的 LIKE 本就不满足该优化的前提，且 OR 条件也阻碍索引路径。个人库数据量（万级事件）下无回归。
+
+## 存疑 / 记录在案（第三轮新增，未改动）
+
+### 13. brew 依赖信息链路断裂：`brew_dependents_of` 从未被调用
+CLI/TUI 的 brew 面板都展示 `dependents` 字段，但列表构建（`list_brew_packages`）恒填 0，core 里的 `brew_dependents_of()`（`brew uses --installed`）没有任何调用方——用户在卸载前看不到"有 N 个包依赖它"的警告，而 `uninstall_brew_package` 又带 `--force`（绕过 brew 的依赖检查）。合理接法：卸载前对该包调一次 `brew_dependents_of`，非空则展示并要求额外确认。属于 brew 错误通道重构（存疑 #10）同域，留待一起做。
+
+### 14. 死公共 API：`exec_all_shell_cmds`、`has_ai_analysis(_batch)`
+三者只在 `lib.rs` re-export，全仓无调用方（`has_ai_analysis_batch` 已被 `load_ai_cache_entries` 取代）。保留待真实需求出现或下次清理时删除；`#[allow(dead_code)]` 对 pub 项不生效，故暂无噪音。
+
+### 15. watcher size_cache 淘汰后，删除事件无法记账
+`MAX_CACHE_ENTRIES`（10 万）触发减半淘汰时，被逐出的条目后续删除时 `state.remove()` 返回 None → 负增量丢失，delta 只会偏高不会偏低（保守方向）。这是有界缓存的固有代价，当前上限对个人机器绰绰有余；若将来要彻底解决，需把基线尺寸落库。
+
+### 16. 启动时不存在的 watch 目录永远不被监控
+`start_watcher` 对 `!dir.exists()` 的目录只打 warn 跳过，之后即使用户创建了该目录也不会补挂 watcher，直到重启 daemon。可选：后台线程周期性重试挂载，或监听父目录的 create 事件。
+
+### 17. 审计日志只追加、无轮转；`read_audit_log` 返回最旧的 limit 条
+`~/.config/argus/audit.log` 无限增长（每行一条 JSON，个人使用增长缓慢）；且 `read_audit_log(limit)` 从文件头读，返回的是**最旧**记录——审计场景通常想要"最近 N 条"。轻量修法：读取时用固定环形缓冲/从尾部读。
+
+### 18. `find_orphaned_data` 的已知性判断双向 contains，容易漏报孤儿
+`fc.contains(kc) || kc.contains(fc)`：名为 "Go" 的应用会把 "golang"、"google-cloud-sdk" 全部判为已知，孤儿数据漏报。方向保守（宁可漏删不可误删），可接受；若要更准可改成词边界匹配或仅精确等值 + bundle id 前缀。
+
+### 19. IPC 客户端读响应无长度上限
+daemon 端对请求设了 `MAX_PAYLOAD_LEN`，但 TUI/CLI 的 `send_request` 按 daemon 报头分配响应缓冲。对端是本机同用户的可信进程，风险低；若要对称加固，读响应时套同样的上限。
+
+### 20. 单实例守卫依赖 PID 文件，崩溃后可能误报"已在运行"
+`DaemonGuard::acquire` 以 `kill(pid, 0)` 判断存活；崩溃残留的 PID 文件若被回收复用会拒绝启动（错误信息已提示 `argusd stop` 恢复）。与 stop() 的既有 PID 复用问题（存疑 #6）同源，一并留待 pidfd/进程名校验方案。
