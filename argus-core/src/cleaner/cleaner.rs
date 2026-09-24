@@ -71,7 +71,13 @@ fn move_to_trash(path: &PathBuf) -> Result<(), String> {
     trash::delete(path).map_err(|e| format!("trash error for {}: {e}", path.display()))
 }
 
-pub fn exec_clean(items: &[CleanItem], _force: bool) -> Result<CleanReport, String> {
+/// Move the given items to the trash and write an audit entry.
+///
+/// There is deliberately no "force" or "dry-run" flag: previews are produced
+/// by [`plan_clean`], and execution always deletes. An ignored `_force`
+/// parameter used to exist here and misled a caller into passing a dry-run
+/// flag through it — deleting for real while the UI advertised a preview.
+pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, String> {
     let mut report = CleanReport {
         total_attempted: items.len() as u64,
         total_succeeded: 0,

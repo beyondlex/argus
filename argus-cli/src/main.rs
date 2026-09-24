@@ -443,7 +443,7 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     if dry_run {
         println!(
             "{}",
-            "☻ First time? Run mo clean --dry-run first to preview changes".yellow()
+            "☻ First time? Run argus clean --dry-run first to preview changes".yellow()
         );
     }
     println!(
@@ -522,26 +522,19 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     println!();
 
     // ── Shell commands (brew, docker) ────────────────────────────────────────
+    // Listing only at this point. These commands are irreversible (docker
+    // builder prune drops build cache), so they must run after the user has
+    // confirmed the cleanup below — they used to execute before the prompt.
+    #[cfg(feature = "shell-cmds")]
+    let shell_cmds = default_shell_cmd_targets();
     #[cfg(feature = "shell-cmds")]
     {
-        let shell_cmds = default_shell_cmd_targets();
         println!("➤ {}", "Shell Commands".bold());
         for cmd in &shell_cmds {
             if dry_run {
                 println!("  ☻ {} (dry-run, skipped)", cmd.label.white());
             } else {
-                let result = try_exec_shell_cmd(cmd);
-                if result.success {
-                    let output = if result.output.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" — {}", result.output.dimmed())
-                    };
-                    println!("  ✓ {}{}", cmd.label.white(), output);
-                } else {
-                    let err = result.error.unwrap_or_else(|| "unknown error".into());
-                    println!("  ☻ {} ({})", cmd.label.white(), err.yellow());
-                }
+                println!("  ☻ {} (pending, run after confirmation)", cmd.label.white());
             }
         }
         println!();
@@ -562,7 +555,26 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
         }
     }
 
-    let report = exec_clean(&plan.items, false).map_err(|e| anyhow::anyhow!("exec clean: {e}"))?;
+    #[cfg(feature = "shell-cmds")]
+    {
+        for cmd in &shell_cmds {
+            let result = try_exec_shell_cmd(cmd);
+            if result.success {
+                let output = if result.output.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", result.output.dimmed())
+                };
+                println!("  ✓ {}{}", cmd.label.white(), output);
+            } else {
+                let err = result.error.unwrap_or_else(|| "unknown error".into());
+                println!("  ☻ {} ({})", cmd.label.white(), err.yellow());
+            }
+        }
+        println!();
+    }
+
+    let report = exec_clean(&plan.items).map_err(|e| anyhow::anyhow!("exec clean: {e}"))?;
     print_clean_report(&report);
     Ok(0)
 }

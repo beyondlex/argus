@@ -36,18 +36,35 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
                     .collect();
                 let tx = app.tx.clone();
                 app.cleanup_state.as_mut().unwrap().confirm_pending = false;
-                std::thread::spawn(move || {
-                    let report = argus_core::exec_clean(&to_delete, dry_run);
-                    match report {
-                        Ok(r) => {
-                            let _ = tx.blocking_send(AppMessage::CleanupExecComplete(r));
+                // Dry-run must not touch the filesystem: the panel advertises
+                // "[DRY-RUN]", so confirmation only reports what WOULD be freed.
+                // (exec_clean's second parameter is ignored by core, so passing
+                // the flag through used to delete for real in dry-run mode.)
+                if dry_run {
+                    let freed: u64 = to_delete.iter().map(|i| i.size).sum();
+                    let report = argus_core::CleanReport {
+                        total_attempted: to_delete.len() as u64,
+                        total_succeeded: 0,
+                        total_failed: 0,
+                        freed_bytes: freed,
+                        errors: Vec::new(),
+                    };
+                    let _ = tx.blocking_send(AppMessage::CleanupExecComplete(report));
+                } else {
+                    std::thread::spawn(move || {
+                        let report = argus_core::exec_clean(&to_delete);
+                        match report {
+                            Ok(r) => {
+                                let _ = tx.blocking_send(AppMessage::CleanupExecComplete(r));
+                            }
+                            Err(e) => {
+                                let _ = tx.blocking_send(AppMessage::Error(format!(
+                                    "clean failed: {e}"
+                                )));
+                            }
                         }
-                        Err(e) => {
-                            let _ =
-                                tx.blocking_send(AppMessage::Error(format!("clean failed: {e}")));
-                        }
-                    }
-                });
+                    });
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
                 if let Some(ref mut s) = app.cleanup_state {
