@@ -96,8 +96,11 @@ pub fn set_ai_analysis(conn: &Connection, path: &str, data: &[u8]) -> Result<(),
 
 pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>, DbError> {
     let path_hash = path_hash(path);
-    let mut stmt = conn.prepare("SELECT data FROM ai_analysis_cache WHERE path_hash = ?1")?;
-    let mut rows = stmt.query(params![path_hash])?;
+    // The cache key is a 64-bit hash; the path column double-checks it so a
+    // collision cannot silently return (or overwrite) another path's verdict.
+    let mut stmt =
+        conn.prepare("SELECT data FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2")?;
+    let mut rows = stmt.query(params![path_hash, path])?;
     match rows.next()? {
         Some(row) => Ok(Some(row.get(0)?)),
         None => Ok(None),
@@ -107,8 +110,8 @@ pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>,
 pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
     let path_hash = path_hash(path);
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM ai_analysis_cache WHERE path_hash = ?1",
-        params![path_hash],
+        "SELECT COUNT(*) FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2",
+        params![path_hash, path],
         |row| row.get(0),
     )?;
     Ok(count > 0)
@@ -116,11 +119,13 @@ pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
 
 pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
     let mut results = Vec::with_capacity(paths.len());
-    let mut stmt = conn.prepare("SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 LIMIT 1")?;
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2 LIMIT 1",
+    )?;
     for path in paths {
         let path_hash = path_hash(path);
         let exists: bool = stmt
-            .query(params![path_hash])?
+            .query(params![path_hash, path])?
             .next()
             .map(|r| r.is_some())
             .unwrap_or(false);
@@ -132,8 +137,8 @@ pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<
 pub fn delete_ai_analysis(conn: &Connection, path: &str) -> Result<(), DbError> {
     let path_hash = path_hash(path);
     conn.execute(
-        "DELETE FROM ai_analysis_cache WHERE path_hash = ?1",
-        params![path_hash],
+        "DELETE FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2",
+        params![path_hash, path],
     )?;
     Ok(())
 }

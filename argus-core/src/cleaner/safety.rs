@@ -98,7 +98,10 @@ pub fn classify_risk(path: &Path) -> RiskLevel {
     };
     let home_str = home.to_string_lossy();
 
-    if !path_str.starts_with(home_str.as_ref()) {
+    // Boundary-safe "under home": a raw starts_with would classify
+    // /Users/lexx/... as inside /Users/lex's home.
+    let under_home = path_str.starts_with(&format!("{}/", home_str)) || path_str == home_str;
+    if !under_home {
         if path_str.starts_with("/var/tmp")
             || path_str.starts_with("/tmp")
             || path_str.starts_with("/Library")
@@ -198,6 +201,19 @@ mod tests {
     fn test_check_deletion_allowed_rejects_protected() {
         assert!(check_deletion_allowed(Path::new("/System")).is_err());
         assert!(check_deletion_allowed(Path::new("/tmp")).is_ok());
+    }
+
+    #[test]
+    fn test_risk_outside_home_prefix_sibling_is_not_home() {
+        // /Users/lex/<something> is home, but a sibling home directory whose
+        // name merely extends it (/Users/lexx) must not classify as inside.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        if let Some(stem) = home.rsplit('/').next() {
+            if let Some(parent) = Path::new(&home).parent() {
+                let sibling = parent.join(format!("{stem}-other"));
+                assert_ne!(classify_risk(&sibling), RiskLevel::Safe);
+            }
+        }
     }
 
     #[test]
