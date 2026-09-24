@@ -16,7 +16,50 @@ impl DaemonGuard {
         config_dir().join("argusd.pid")
     }
 
-    pub fn daemonize() -> Result<Self, String> {
+    /// Claim single-instance ownership before any watcher starts.
+    ///
+    /// Two concurrent daemons would each insert an event per filesystem
+    /// change (double-counted deltas) and the second would steal the UDS
+    /// socket file from under the first. The PID file doubles as the lock:
+    /// it is claimed for foreground runs too, and `Drop` releases it.
+    ///
+    /// Known trade-off: after a crash the file can name a recycled PID and
+    /// produce a false "already running"; run `argusd stop` / delete the
+    /// file to recover (same PID-reuse caveat as `stop()`).
+    pub fn acquire(daemon: bool) -> Result<Self, String> {
+        if let Some(pid) = Self::running_daemon_pid() {
+            return Err(format!(
+                "argusd is already running (pid {pid}); stop it first with `argusd stop`"
+            ));
+        }
+        if daemon {
+            return Self::daemonize();
+        }
+        let pid_path = Self::pid_path();
+        if let Some(parent) = pid_path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&pid_path, std::process::id().to_string())
+            .map_err(|e| format!("failed to write PID file: {e}"))?;
+        Ok(Self { pid_path })
+    }
+
+    /// PID of the live daemon named by the PID file, if any.
+    /// A stale file whose PID no longer exists is treated as not running.
+    pub fn running_daemon_pid() -> Option<i32> {
+        let pid: i32 = fs::read_to_string(Self::pid_path())
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        if pid_alive(pid) {
+            Some(pid)
+        } else {
+            None
+        }
+    }
+
+    fn daemonize() -> Result<Self, String> {
         let pid_path = Self::pid_path();
 
         let pid = unsafe { libc::fork() };
@@ -136,6 +179,13 @@ fn config_dir() -> PathBuf {
         .join("argus")
 }
 
+/// Existence probe: signal 0 delivers nothing but reports ESRCH when the
+/// process does not exist. EPERM (process exists, not ours) counts as alive.
+fn pid_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) };
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
 fn print_launchd_plist(exe: &Path) {
     let exe = exe.display();
     let plist = format!(
@@ -202,5 +252,18 @@ mod tests {
         let path = DaemonGuard::pid_path();
         assert_eq!(path.file_name().unwrap(), "argusd.pid");
         assert!(path.ends_with("argus/argusd.pid"));
+    }
+
+    #[test]
+    fn test_pid_alive_detects_live_and_reaped_process() {
+        assert!(pid_alive(std::process::id() as i32));
+
+        // A fully reaped child must report ESRCH.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id() as i32;
+        child.wait().expect("reap child");
+        assert!(!pid_alive(pid));
     }
 }

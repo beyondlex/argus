@@ -67,10 +67,14 @@ fn main() {
         return;
     }
 
-    let _guard = if args.daemon {
-        Some(DaemonGuard::daemonize().expect("failed to daemonize"))
-    } else {
-        None
+    // Refuse a second instance before any watcher/socket is set up: two
+    // daemons would double-book every filesystem change into the delta log.
+    let _guard = match DaemonGuard::acquire(args.daemon) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("argusd: {e}");
+            std::process::exit(1);
+        }
     };
 
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
