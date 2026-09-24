@@ -166,7 +166,12 @@ pub fn query_delta_total(
     to_ms: u64,
 ) -> Result<i64, DbError> {
     let path_str = path.to_string_lossy();
-    let prefix = format!("{}/%", path_str);
+    // Prefix matching must be literal: LIKE would treat `%`/`_` in the path
+    // (e.g. `my_projects`) as wildcards and pull in sibling directories such
+    // as `my-dir`. `substr(path, 1, length(?2)) = ?2` is an exact byte-for-byte
+    // prefix check and is also case-sensitive, unlike SQLite's ASCII-only
+    // case-insensitive LIKE.
+    let prefix = format!("{}/", path_str);
     // IMPORTANT:
     // `is_agg = 1` rows represent subtree coverage, not extra additive events.
     // If a parent directory already has an aggregate row, descendants covered by
@@ -179,15 +184,15 @@ pub fn query_delta_total(
     // suppressing in-window events (agg ts = max consolidated child ts).
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(delta_size), 0) FROM delta_events
-         WHERE (path = ?1 OR path LIKE ?2)
+         WHERE (path = ?1 OR substr(path, 1, length(?2)) = ?2)
            AND timestamp >= ?3 AND timestamp <= ?4
            AND NOT EXISTS (
                SELECT 1
                FROM delta_events AS agg
                WHERE agg.is_agg = 1
                  AND delta_events.is_agg = 0
-                 AND (agg.path = ?1 OR agg.path LIKE ?2)
-                 AND delta_events.path LIKE (agg.path || '/%')
+                 AND (agg.path = ?1 OR substr(agg.path, 1, length(?2)) = ?2)
+                 AND substr(delta_events.path, 1, length(agg.path) + 1) = agg.path || '/'
                  AND agg.timestamp <= ?4
            )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
@@ -203,20 +208,21 @@ pub fn query_delta_detail(
     to_ms: u64,
 ) -> Result<Vec<DeltaEntry>, DbError> {
     let path_str = path.to_string_lossy();
-    let prefix = format!("{}/%", path_str);
     // Keep this filter in lockstep with `query_delta_total` (same agg
-    // non-suppression invariant: only raw events are hidden by aggregates).
+    // non-suppression invariant and literal substr prefix matching — see the
+    // comment there for why LIKE is not used).
+    let prefix = format!("{}/", path_str);
     let mut stmt = conn.prepare(
         "SELECT path, delta_size, event_type, timestamp, is_agg FROM delta_events
-         WHERE (path = ?1 OR path LIKE ?2)
+         WHERE (path = ?1 OR substr(path, 1, length(?2)) = ?2)
            AND timestamp >= ?3 AND timestamp <= ?4
            AND NOT EXISTS (
                SELECT 1
                FROM delta_events AS agg
                WHERE agg.is_agg = 1
                  AND delta_events.is_agg = 0
-                 AND (agg.path = ?1 OR agg.path LIKE ?2)
-                 AND delta_events.path LIKE (agg.path || '/%')
+                 AND (agg.path = ?1 OR substr(agg.path, 1, length(?2)) = ?2)
+                 AND substr(delta_events.path, 1, length(agg.path) + 1) = agg.path || '/'
                  AND agg.timestamp <= ?4
            )
          ORDER BY timestamp ASC",
@@ -249,7 +255,8 @@ pub fn query_delta_summary(
     to_ms: u64,
 ) -> Result<DeltaSummary, DbError> {
     let path_str = path.to_string_lossy();
-    let prefix = format!("{}/%", path_str);
+    // Literal prefix matching, same rationale as `query_delta_total`.
+    let prefix = format!("{}/", path_str);
     conn.query_row(
         "SELECT
             COUNT(*) AS event_count,
@@ -264,7 +271,7 @@ pub fn query_delta_summary(
             COALESCE(SUM(CASE WHEN delta_size > 0 THEN delta_size ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN delta_size < 0 THEN delta_size ELSE 0 END), 0)
          FROM delta_events
-         WHERE (path = ?1 OR path LIKE ?2)
+         WHERE (path = ?1 OR substr(path, 1, length(?2)) = ?2)
            AND timestamp >= ?3 AND timestamp <= ?4",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
         |row| {
@@ -378,11 +385,17 @@ pub fn consolidate_events(conn: &mut Connection, threshold: u64) -> Result<u64, 
         // We intentionally keep aggregation local to one parent path.
         // Do not try to infer or merge descendant aggregate rows here; the
         // query layer treats each aggregate row as a subtree-wide coverage value.
-        let parent_prefix = format!("{}/%", parent);
-        let nested_prefix = format!("{}/%/", parent);
+        // Direct children are matched with literal substr/instr prefix checks —
+        // LIKE here would treat `%`/`_` in the parent path as wildcards and
+        // DELETE rows belonging to sibling directories (e.g. `my_dir` eating
+        // `my-dir`'s events).
+        let child_prefix = format!("{parent}/");
         tx.execute(
-            "DELETE FROM delta_events WHERE is_agg = 0 AND path LIKE ?1 AND path NOT LIKE ?2",
-            params![parent_prefix, nested_prefix],
+            "DELETE FROM delta_events
+             WHERE is_agg = 0
+               AND substr(path, 1, length(?1)) = ?1
+               AND instr(substr(path, length(?1) + 1), '/') = 0",
+            params![child_prefix],
         )?;
         total_consolidated = total_consolidated.saturating_add(count);
 
@@ -968,6 +981,82 @@ mod tests {
         // Querying the subtree itself still sees its own agg only.
         let sub_total = query_delta_total(&conn, Path::new("/tmp/dir/sub"), 0, 5000).unwrap();
         assert_eq!(sub_total, 700);
+    }
+
+    /// Sibling directories whose names differ only where the queried path
+    /// contains a LIKE wildcard (`_` matches any char) must not leak into the
+    /// query. `my_projects` and `my-projects` coexisting is ordinary; LIKE
+    /// prefix matching pulled `my-projects` events into `my_projects` totals.
+    #[test]
+    fn test_query_excludes_wildcard_sibling_paths() {
+        let (mut conn, _) = setup_db();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/my_projects/a.bin"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/my-projects/b.bin"),
+                delta_size: 999,
+                event_type: "create".into(),
+                timestamp: 1100,
+                is_agg: false,
+            },
+        ];
+        insert_events(&mut conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/my_projects"), 0, 5000).unwrap();
+        assert_eq!(total, 100);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/my_projects"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, PathBuf::from("/tmp/my_projects/a.bin"));
+
+        // The underscore path itself must not be suppressed by an aggregate
+        // over a wildcard-matching sibling directory.
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg)
+             VALUES (?1, 555, 'agg', 1200, 1)",
+            params!["/tmp/my-projects"],
+        )
+        .unwrap();
+        let total = query_delta_total(&conn, Path::new("/tmp/my_projects"), 0, 5000).unwrap();
+        assert_eq!(total, 100);
+    }
+
+    /// Consolidation deletes only the target directory's direct children;
+    /// similarly-named sibling directories must keep their events.
+    #[test]
+    fn test_consolidate_does_not_touch_wildcard_siblings() {
+        let (mut conn, _) = setup_db();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/my_dir/a.bin"),
+                delta_size: 10,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/my-dir/b.bin"),
+                delta_size: 20,
+                event_type: "create".into(),
+                timestamp: 1100,
+                is_agg: false,
+            },
+        ];
+        insert_events(&mut conn, &events).unwrap();
+
+        consolidate_events(&mut conn, 1).unwrap();
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/my-dir"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, PathBuf::from("/tmp/my-dir/b.bin"));
     }
 
     #[test]
