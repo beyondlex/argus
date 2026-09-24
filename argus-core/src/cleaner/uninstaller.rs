@@ -41,6 +41,8 @@ const LEFTOVER_RELATIVE_PATHS: &[&str] = &[
     "Library/Containers",
 ];
 
+const BUNDLE_ID_KEY: &str = "<key>CFBundleIdentifier</key>";
+
 fn bundle_id_for_app(app_path: &Path) -> Option<String> {
     let plist_path = app_path.join("Contents/Info.plist");
     if !plist_path.exists() {
@@ -48,8 +50,12 @@ fn bundle_id_for_app(app_path: &Path) -> Option<String> {
     }
     let content = std::fs::read_to_string(&plist_path).ok()?;
 
-    if let Some(start) = content.find("<key>CFBundleIdentifier</key>") {
-        let after = &content[start + 30..];
+    // Plain-text plist scan. The offset must skip exactly the key tag —
+    // a hardcoded +30 used to eat one byte past '>', so a minified plist
+    // ("<key>…</key><string>…") failed the "<string>" lookup below and the
+    // app fell back to the "unknown.<name>" id, missing its leftovers.
+    if let Some(start) = content.find(BUNDLE_ID_KEY) {
+        let after = &content[start + BUNDLE_ID_KEY.len()..];
         if let Some(val_start) = after.find("<string>") {
             let from_val = &after[val_start + 8..];
             if let Some(val_end) = from_val.find("</string>") {
@@ -349,6 +355,24 @@ pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanRepor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn test_bundle_id_minified_plist() {
+        // No whitespace between key and string tags: the scan must skip
+        // exactly the key tag, not one byte past it.
+        let tmp = std::env::temp_dir().join("_argus_bundle_id_test.app/Contents");
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.min</string></dict></plist>",
+        )
+        .unwrap();
+        let id = bundle_id_for_app(tmp.parent().unwrap());
+        assert_eq!(id.as_deref(), Some("com.example.min"));
+        let _ = fs::remove_dir_all(tmp.parent().unwrap().parent().unwrap());
+    }
 
     #[test]
     fn test_find_apps_returns_list() {
