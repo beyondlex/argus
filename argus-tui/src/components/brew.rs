@@ -127,10 +127,33 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
         let pkg_name = pkg.map(|p| p.name.as_str()).unwrap_or("?");
         let confirm_text = format!("Uninstall {}?", pkg_name);
 
-        let lines = vec![Line::from(Span::styled(
+        let mut lines = vec![Line::from(Span::styled(
             confirm_text,
             Style::default().fg(theme.text),
         ))];
+        if let Some(pkg) = pkg {
+            if pkg.dependents > 0 {
+                // Uninstall uses --force, so dependents are not re-checked by
+                // brew itself — the warning must come from us.
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("! {} package(s) depend on this:", pkg.dependents),
+                    Style::default().fg(theme.danger),
+                )));
+                for name in pkg.dependents_names.iter().take(5) {
+                    lines.push(Line::from(Span::styled(
+                        format!("  - {name}"),
+                        Style::default().fg(theme.warning),
+                    )));
+                }
+                if pkg.dependents_names.len() > 5 {
+                    lines.push(Line::from(Span::styled(
+                        format!("  … and {} more", pkg.dependents_names.len() - 5),
+                        Style::default().fg(theme.text_tertiary),
+                    )));
+                }
+            }
+        }
 
         let confirm_block = Block::default()
             .borders(Borders::ALL)
@@ -141,7 +164,13 @@ pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
             .title_bottom(
                 Line::from(key_hints(&[("y", "Yes"), ("n", "Cancel")], theme)).centered(),
             );
-        let confirm_area = centered_rect(inner, 70, 50);
+        let rows = lines.len() as u16 + 2; // borders
+        let confirm_area = {
+            // Same width as the percent-based helper, but tall enough for the
+            // dependents warning lines.
+            let percent_y = ((rows * 100) / inner.height.max(1)).clamp(30, 90);
+            centered_rect(inner, 70, percent_y)
+        };
         f.render_widget(Clear, confirm_area);
         f.render_widget(
             Paragraph::new(lines)

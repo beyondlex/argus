@@ -49,6 +49,12 @@ pub enum AppMessage {
         cache_size: u64,
     },
     BrewScanProgress(String),
+    /// Result of the pre-uninstall `brew uses --installed` lookup for the
+    /// package at `pkg_index` in `BrewState::packages`.
+    BrewDependentsReady {
+        pkg_index: usize,
+        names: Vec<String>,
+    },
     BrewUninstallComplete(argus_core::CleanReport),
     Error(String),
     Info(String),

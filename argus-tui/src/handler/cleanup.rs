@@ -58,9 +58,8 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
                                 let _ = tx.blocking_send(AppMessage::CleanupExecComplete(r));
                             }
                             Err(e) => {
-                                let _ = tx.blocking_send(AppMessage::Error(format!(
-                                    "clean failed: {e}"
-                                )));
+                                let _ = tx
+                                    .blocking_send(AppMessage::Error(format!("clean failed: {e}")));
                             }
                         }
                     });

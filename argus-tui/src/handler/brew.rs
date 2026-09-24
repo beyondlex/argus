@@ -214,6 +214,26 @@ pub(crate) fn handle_brew_key(key: KeyEvent, app: &mut App) {
                 if !s.filtered.is_empty() {
                     s.selected_pkg = Some(s.cursor);
                     s.confirm_pending = true;
+                    // Kick off the dependency lookup for the confirm dialog:
+                    // uninstall runs with --force, so the user must see what
+                    // else depends on the package before committing.
+                    let pkg_idx = s.filtered.get(s.cursor).copied();
+                    if let Some(idx) = pkg_idx {
+                        if let Some(pkg) = s.packages.get(idx) {
+                            let name = pkg.name.clone();
+                            let dependents_checked = pkg.dependents > 0;
+                            if !dependents_checked {
+                                let tx = app.tx.clone();
+                                std::thread::spawn(move || {
+                                    let names = argus_core::brew_dependents_of(&name);
+                                    let _ = tx.blocking_send(AppMessage::BrewDependentsReady {
+                                        pkg_index: idx,
+                                        names,
+                                    });
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }

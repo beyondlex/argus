@@ -648,6 +648,17 @@ impl App {
                     }
                 }
             }
+            AppMessage::BrewDependentsReady { pkg_index, names } => {
+                if let Some(ref mut state) = self.brew_state {
+                    if let Some(pkg) = state.packages.get_mut(pkg_index) {
+                        // Populate the pre-uninstall warning the list could
+                        // not know: `brew uses` runs per package, too costly
+                        // for the initial scan.
+                        pkg.dependents = names.len();
+                        pkg.dependents_names = names;
+                    }
+                }
+            }
             AppMessage::BrewUninstallComplete(report) => {
                 if let Some(ref mut state) = self.brew_state {
                     state.confirm_pending = false;

@@ -10,10 +10,10 @@ use tokio::net::UnixStream;
 
 #[cfg(feature = "cleanup")]
 use argus_core::{
-    brew_cache_size, default_clean_targets, dry_clean, exec_clean, find_artifacts,
-    find_installed_apps, find_leftovers, find_orphaned_data, is_brew_available, list_brew_packages,
-    remove_artifacts, uninstall_app, uninstall_brew_package, BrewFilterType, BrewPackageType,
-    CleanItem, CleanReport, CleanTarget, TargetCategory,
+    brew_cache_size, brew_dependents_of, default_clean_targets, dry_clean, exec_clean,
+    find_artifacts, find_installed_apps, find_leftovers, find_orphaned_data, is_brew_available,
+    list_brew_packages, remove_artifacts, uninstall_app, uninstall_brew_package, BrewFilterType,
+    BrewPackageType, CleanItem, CleanReport, CleanTarget, TargetCategory,
 };
 
 use argus_core::{
@@ -934,11 +934,16 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
     if !pkg.description.is_empty() {
         println!("  {}  {}", "desc:".bold(), pkg.description);
     }
-    if pkg.dependents > 0 {
+    // The list view cannot afford a per-package `brew uses` pass, so the
+    // dependency lookup happens once for the selected package. Uninstall
+    // runs with --force: brew itself will not refuse, this warning must.
+    let dependents = brew_dependents_of(&pkg.name);
+    if !dependents.is_empty() {
         println!(
-            "  {}  {} other packages depend on this",
+            "  {}  {} other package(s) depend on this: {}",
             "dependents:".bold(),
-            pkg.dependents.to_string().yellow()
+            dependents.len().to_string().yellow(),
+            dependents.join(", ").yellow()
         );
     }
 
