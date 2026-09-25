@@ -232,55 +232,74 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// 解析 zsh_history / bash_history 中包名作为命令的最后使用时间
-fn last_used_from_history(pkg_name: &str) -> Option<DateTime<Utc>> {
-    let home = home_dir()?;
-    // 优先尝试 zsh_history (macOS 默认 shell)
-    let history_files = [home.join(".zsh_history"), home.join(".bash_history")];
+/// Preloaded shell-history state shared by every package in one scan.
+/// Each package used to re-read both history files (multi-MB for long-lived
+/// shells), making a 100-package scan re-read hundreds of MB.
+struct HistorySnapshot {
+    /// `(content, mtime)` per readable history file.
+    files: Vec<(String, Option<DateTime<Utc>>)>,
+}
 
-    let mut latest: Option<DateTime<Utc>> = None;
-
-    for hist_path in &history_files {
-        if !hist_path.exists() {
-            continue;
-        }
-        let content = std::fs::read_to_string(hist_path).ok()?;
-        // zsh ext history 格式: ": <timestamp>:0;<command>"
-        // 普通 history 格式: "  <command>"
-        for line in content.lines().rev() {
-            // zsh 扩展格式
-            if let Some(ts_str) = line
-                .strip_prefix(": ")
-                .and_then(|rest| rest.split(';').next())
-            {
-                if let Ok(ts) = ts_str.trim().parse::<i64>() {
-                    if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
-                        let line_rest = line.split_once(';').map(|(_, r)| r).unwrap_or("");
-                        if command_matches_pkg(line_rest, pkg_name) && latest.is_none_or(|l| dt > l)
-                        {
-                            latest = Some(dt);
-                        }
-                    }
+impl HistorySnapshot {
+    fn load() -> Self {
+        let mut files = Vec::new();
+        if let Some(home) = home_dir() {
+            for hist_path in [home.join(".zsh_history"), home.join(".bash_history")] {
+                let mtime = std::fs::metadata(&hist_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| {
+                        let dur = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+                        Utc.timestamp_opt(dur.as_secs() as i64, 0).single()
+                    });
+                // read_to_string fails on non-UTF-8 bytes (zsh keeps binary
+                // garbage from pasted input); skip that file rather than
+                // aborting the whole scan (`?` here used to drop every later
+                // file too).
+                if let Ok(content) = std::fs::read_to_string(&hist_path) {
+                    files.push((content, mtime));
                 }
             }
-            // 简单的空格分隔 (非 zsh 扩展格式)
-            let trimmed = line.trim_start();
-            if !trimmed.starts_with(':') && command_matches_pkg(trimmed, pkg_name) {
-                // 无法获取精确时间，只用文件修改时间作为 fallback
-                if latest.is_none() {
-                    if let Ok(meta) = std::fs::metadata(hist_path) {
-                        if let Ok(mtime) = meta.modified() {
-                            let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-                            if let Some(dt) = Utc.timestamp_opt(dur.as_secs() as i64, 0).single() {
+        }
+        Self { files }
+    }
+
+    /// Latest timestamp among history entries whose command matches `pkg_name`.
+    /// zsh extended format: ": <timestamp>:0;<command>"; plain: "  <command>".
+    fn last_used(&self, pkg_name: &str) -> Option<DateTime<Utc>> {
+        let mut latest: Option<DateTime<Utc>> = None;
+        for (content, mtime) in &self.files {
+            for line in content.lines().rev() {
+                if let Some(ts_str) = line
+                    .strip_prefix(": ")
+                    .and_then(|rest| rest.split(';').next())
+                    // The zsh field is "<ts>:0" — everything after the first
+                    // ':' is the event id. Parsing "ts:0" as i64 used to fail
+                    // on every line, silently disabling this whole branch.
+                    .and_then(|field| field.split(':').next())
+                {
+                    if let Ok(ts) = ts_str.trim().parse::<i64>() {
+                        if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
+                            let line_rest = line.split_once(';').map(|(_, r)| r).unwrap_or("");
+                            if command_matches_pkg(line_rest, pkg_name)
+                                && latest.is_none_or(|l| dt > l)
+                            {
                                 latest = Some(dt);
                             }
                         }
                     }
                 }
+                let trimmed = line.trim_start();
+                if !trimmed.starts_with(':') && command_matches_pkg(trimmed, pkg_name) {
+                    // No per-entry timestamp: fall back to the file mtime.
+                    if latest.is_none() {
+                        latest = *mtime;
+                    }
+                }
             }
         }
+        latest
     }
-    latest
 }
 
 fn command_matches_pkg(command: &str, pkg_name: &str) -> bool {
@@ -296,9 +315,8 @@ fn command_matches_pkg(command: &str, pkg_name: &str) -> bool {
     !cmd_base.is_empty() && cmd_base == base_name
 }
 
-/// 获取包安装路径下二进制文件的最后访问时间
-fn last_access_from_opt(pkg_name: &str) -> Option<DateTime<Utc>> {
-    let prefix = brew_prefix();
+/// 获取包安装路径下二进制文件的最后访问时间（第一层，最多 100 个条目取最大值）
+fn last_access_from_opt(prefix: &Path, pkg_name: &str) -> Option<DateTime<Utc>> {
     let opt_dir = prefix.join("opt").join(pkg_name);
     if !opt_dir.exists() {
         return None;
@@ -307,38 +325,26 @@ fn last_access_from_opt(pkg_name: &str) -> Option<DateTime<Utc>> {
     let bin_dir = opt_dir.join("bin");
     let target_dir = if bin_dir.exists() { &bin_dir } else { &opt_dir };
     let mut latest: Option<DateTime<Utc>> = None;
-    let mut dirs = vec![target_dir.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+    let read_dir = std::fs::read_dir(target_dir).ok()?;
+    for entry in read_dir.flatten().take(100) {
+        let Ok(ft) = entry.file_type() else {
             continue;
         };
-        for entry in read_dir.flatten() {
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            if ft.is_dir() {
-                dirs.push(entry.path());
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                // 尝试 accessed 时间
-                if let Ok(atime) = meta.accessed() {
-                    if let Ok(dur) = atime.duration_since(std::time::UNIX_EPOCH) {
-                        if let Some(dt) = Utc.timestamp_opt(dur.as_secs() as i64, 0).single() {
-                            if latest.is_none_or(|l| dt > l) {
-                                latest = Some(dt);
-                            }
-                        }
+        if ft.is_dir() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if let Ok(atime) = meta.accessed() {
+            if let Ok(dur) = atime.duration_since(std::time::UNIX_EPOCH) {
+                if let Some(dt) = Utc.timestamp_opt(dur.as_secs() as i64, 0).single() {
+                    if latest.is_none_or(|l| dt > l) {
+                        latest = Some(dt);
                     }
-                }
-                // 限制扫描范围，超过 100 个文件就停
-                if latest.is_some() {
-                    return latest;
                 }
             }
         }
-        // 只扫描第一层
-        break;
     }
     latest
 }
@@ -387,13 +393,18 @@ fn spotlight_last_used(pkg_name: &str) -> Option<DateTime<Utc>> {
 }
 
 /// 综合判定包的最后使用时间：shell history → opt atime → spotlight
-fn determine_last_used(pkg_name: &str, package_type: &BrewPackageType) -> Option<DateTime<Utc>> {
+fn determine_last_used(
+    pkg_name: &str,
+    package_type: &BrewPackageType,
+    history: &HistorySnapshot,
+    prefix: &Path,
+) -> Option<DateTime<Utc>> {
     // 1. Shell history (formula/CLI)
-    if let Some(dt) = last_used_from_history(pkg_name) {
+    if let Some(dt) = history.last_used(pkg_name) {
         return Some(dt);
     }
     // 2. 文件访问时间
-    if let Some(dt) = last_access_from_opt(pkg_name) {
+    if let Some(dt) = last_access_from_opt(prefix, pkg_name) {
         return Some(dt);
     }
     // 3. Spotlight (cask/GUI)
@@ -428,6 +439,8 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
     }
 
     let prefix = brew_prefix();
+    // Load once per scan: per-package history re-reads dominated the runtime.
+    let history = HistorySnapshot::load();
     let formulae = brew_list_json("formula");
     let casks = brew_list_json("cask");
 
@@ -442,7 +455,7 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
 
         let ptype = BrewPackageType::Formula;
         let size = keg_size(&prefix, &info.name, &ptype);
-        let last_used = determine_last_used(&info.name, &ptype);
+        let last_used = determine_last_used(&info.name, &ptype, &history, &prefix);
 
         packages.push(BrewPackage {
             name: info.name.clone(),
@@ -465,7 +478,7 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
 
         let ptype = BrewPackageType::Cask;
         let size = keg_size(&prefix, &info.name, &ptype);
-        let last_used = determine_last_used(&info.name, &ptype);
+        let last_used = determine_last_used(&info.name, &ptype, &history, &prefix);
 
         packages.push(BrewPackage {
             name: info.name.clone(),
@@ -634,6 +647,35 @@ mod tests {
         assert!(command_matches_pkg("python3 script.py", "python@3.11"));
         assert!(!command_matches_pkg("ls -la", "wget"));
         assert!(command_matches_pkg("python -V", "python@3.11"));
+    }
+
+    #[test]
+    fn test_history_snapshot_zsh_extended_format() {
+        let hist = HistorySnapshot {
+            files: vec![(
+                ": 1700000000:0;wget https://example.com\n: 1690000000:0;ls -la\n".into(),
+                None,
+            )],
+        };
+        let dt = hist.last_used("wget").expect("zsh timestamp");
+        assert_eq!(dt.timestamp(), 1_700_000_000);
+        assert!(hist.last_used("curl").is_none());
+    }
+
+    #[test]
+    fn test_history_snapshot_plain_format_uses_mtime() {
+        let mtime = Utc.timestamp_opt(1_690_000_000, 0).single();
+        let hist = HistorySnapshot {
+            files: vec![("wget file.tar.gz\n".into(), mtime)],
+        };
+        let dt = hist.last_used("wget").expect("mtime fallback");
+        assert_eq!(dt.timestamp(), 1_690_000_000);
+    }
+
+    #[test]
+    fn test_history_snapshot_empty_or_unmatched() {
+        let hist = HistorySnapshot { files: Vec::new() };
+        assert!(hist.last_used("wget").is_none());
     }
 
     #[test]
