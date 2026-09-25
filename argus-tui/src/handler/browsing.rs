@@ -92,7 +92,9 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char('.') => {
             app.show_hidden = !app.show_hidden;
-            app.set_error(
+            // A neutral toggle, not a failure: set_error rendered it in the
+            // danger color.
+            app.set_info(
                 if app.show_hidden {
                     "hidden files shown".into()
                 } else {
