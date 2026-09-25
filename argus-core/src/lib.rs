@@ -26,6 +26,7 @@ pub use cleaner::{
     },
     categories::{default_clean_targets, scan_target_size, CleanTarget, TargetCategory},
     cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},
+    dir_size,
     purge::{find_artifacts, remove_artifacts, Artifact, ArtifactKind},
     safety::{check_deletion_allowed, classify_risk, is_protected, RiskLevel},
     uninstaller::{

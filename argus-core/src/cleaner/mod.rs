@@ -17,8 +17,9 @@ use std::path::Path;
 /// double-book shared data.
 ///
 /// Single shared implementation: four private copies of this function had
-/// drifted across purge/categories/brew/uninstaller.
-pub(crate) fn dir_size(path: &Path) -> u64 {
+/// drifted across purge/categories/brew/uninstaller. Exported so clients
+/// (TUI detail panels) reuse it instead of growing yet another copy.
+pub fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
     if path.is_file() {
         return std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);

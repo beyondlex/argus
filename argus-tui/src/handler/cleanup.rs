@@ -88,13 +88,11 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(ref mut s) = app.cleanup_state {
-                s.dry_run = false;
                 s.cursor = s.cursor.saturating_add(1).min(item_count.saturating_sub(1));
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if let Some(ref mut s) = app.cleanup_state {
-                s.dry_run = false;
                 s.cursor = s.cursor.saturating_sub(1);
             }
         }
@@ -440,7 +438,8 @@ fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
                 Err(_) => continue,
             };
             if ft.is_dir() {
-                let size = dir_total_size(&p);
+                // Shared recursive size from argus-core (skips symlinks).
+                let size = argus_core::dir_size(&p);
                 entries.push((
                     p.strip_prefix(path)
                         .unwrap_or(&p)
@@ -466,33 +465,4 @@ fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     entries.truncate(200);
     entries
-}
-
-fn dir_total_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut dirs = vec![path.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let read_dir = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for entry in read_dir.flatten() {
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
-                dirs.push(entry.path());
-            } else if ft.is_file() {
-                total += match entry.metadata() {
-                    Ok(m) => m.len(),
-                    Err(_) => 0,
-                };
-            }
-        }
-    }
-    total
 }
