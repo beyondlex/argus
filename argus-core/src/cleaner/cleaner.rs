@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::audit::{log_operation, AuditEntry, AuditOp};
 use super::categories::CleanTarget;
@@ -78,7 +78,7 @@ pub fn dry_clean(targets: &[CleanTarget]) -> Result<CleanPlan, String> {
     plan_clean(targets)
 }
 
-fn move_to_trash(path: &PathBuf) -> Result<(), String> {
+fn move_to_trash(path: &Path) -> Result<(), String> {
     check_deletion_allowed(path).map_err(|e| e.to_string())?;
     trash::delete(path).map_err(|e| format!("trash error for {}: {e}", path.display()))
 }
@@ -90,6 +90,12 @@ fn move_to_trash(path: &PathBuf) -> Result<(), String> {
 /// parameter used to exist here and misled a caller into passing a dry-run
 /// flag through it — deleting for real while the UI advertised a preview.
 pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, String> {
+    Ok(exec_items(items, AuditOp::Clean))
+}
+
+/// Shared trash-delete loop for clean / purge / uninstall. The three private
+/// copies used to drift in error wording and audit metadata.
+pub(crate) fn exec_items(items: &[CleanItem], op: AuditOp) -> CleanReport {
     let mut report = CleanReport {
         total_attempted: items.len() as u64,
         total_succeeded: 0,
@@ -113,7 +119,7 @@ pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, String> {
 
     let entry = AuditEntry {
         timestamp: chrono::Utc::now(),
-        operation: AuditOp::Clean,
+        operation: op,
         paths: items.iter().map(|i| i.path.clone()).collect(),
         total_bytes: report.freed_bytes,
         success: report.total_failed == 0,
@@ -125,7 +131,7 @@ pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, String> {
     };
     let _ = log_operation(&entry);
 
-    Ok(report)
+    report
 }
 
 #[cfg(test)]

@@ -119,9 +119,8 @@ pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
 
 pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
     let mut results = Vec::with_capacity(paths.len());
-    let mut stmt = conn.prepare(
-        "SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2 LIMIT 1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2 LIMIT 1")?;
     for path in paths {
         let path_hash = path_hash(path);
         let exists: bool = stmt

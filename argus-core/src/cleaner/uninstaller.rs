@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use super::audit::{log_operation, AuditEntry, AuditOp};
+use super::audit::AuditOp;
 use super::cleaner::{CleanItem, CleanReport};
 use super::dir_size;
-use super::safety::{check_deletion_allowed, RiskLevel};
+use super::safety::RiskLevel;
 
 #[derive(Debug, Clone)]
 pub struct AppInfo {
@@ -74,29 +74,9 @@ fn app_name_from_path(app_path: &Path) -> String {
 }
 
 fn app_size(app_path: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut dirs = vec![app_path.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let read_dir = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for entry in read_dir.flatten() {
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if ft.is_dir() {
-                dirs.push(entry.path());
-            } else if ft.is_file() {
-                total += match entry.metadata() {
-                    Ok(m) => m.len(),
-                    Err(_) => 0,
-                };
-            }
-        }
-    }
-    total
+    // Same walk as the shared dir_size (symlink dirs not followed, symlink
+    // files not counted); the private copy had drifted from it.
+    super::dir_size(app_path)
 }
 
 fn last_used_date(app_path: &Path) -> Option<DateTime<Utc>> {
@@ -331,49 +311,8 @@ pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanRepor
         }
     }
 
-    let mut report = CleanReport {
-        total_attempted: items.len() as u64,
-        total_succeeded: 0,
-        total_failed: 0,
-        freed_bytes: 0,
-        errors: Vec::new(),
-    };
-
-    for item in &items {
-        if let Err(e) = check_deletion_allowed(&item.path) {
-            report.total_failed += 1;
-            report.errors.push((item.path.clone(), e));
-            continue;
-        }
-        match trash::delete(&item.path) {
-            Ok(()) => {
-                report.total_succeeded += 1;
-                report.freed_bytes += item.size;
-            }
-            Err(e) => {
-                report.total_failed += 1;
-                report
-                    .errors
-                    .push((item.path.clone(), format!("trash: {e}")));
-            }
-        }
-    }
-
-    let entry = AuditEntry {
-        timestamp: chrono::Utc::now(),
-        operation: AuditOp::Uninstall,
-        paths: items.iter().map(|i| i.path.clone()).collect(),
-        total_bytes: report.freed_bytes,
-        success: report.total_failed == 0,
-        error: if report.total_failed > 0 {
-            Some(format!("{} failures", report.total_failed))
-        } else {
-            None
-        },
-    };
-    let _ = log_operation(&entry);
-
-    Ok(report)
+    // Shared check + trash + audit loop (same as clean and purge).
+    Ok(super::cleaner::exec_items(&items, AuditOp::Uninstall))
 }
 
 #[cfg(test)]

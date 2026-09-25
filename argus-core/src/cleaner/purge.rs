@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
-use super::audit::{log_operation, AuditEntry, AuditOp};
+use super::audit::AuditOp;
 use super::cleaner::{CleanItem, CleanReport};
 use super::dir_size;
-use super::safety::{check_deletion_allowed, classify_risk, RiskLevel};
+use super::safety::{classify_risk, RiskLevel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {
@@ -158,49 +158,9 @@ pub fn remove_artifacts(artifacts: &[Artifact]) -> Result<CleanReport, String> {
         })
         .collect();
 
-    let mut report = CleanReport {
-        total_attempted: items.len() as u64,
-        total_succeeded: 0,
-        total_failed: 0,
-        freed_bytes: 0,
-        errors: Vec::new(),
-    };
-
-    for item in &items {
-        if let Err(e) = check_deletion_allowed(&item.path) {
-            report.total_failed += 1;
-            report.errors.push((item.path.clone(), e));
-            continue;
-        }
-        match trash::delete(&item.path) {
-            Ok(()) => {
-                report.total_succeeded += 1;
-                report.freed_bytes += item.size;
-            }
-            Err(e) => {
-                report.total_failed += 1;
-                report
-                    .errors
-                    .push((item.path.clone(), format!("trash: {e}")));
-            }
-        }
-    }
-
-    let entry = AuditEntry {
-        timestamp: chrono::Utc::now(),
-        operation: AuditOp::Purge,
-        paths: items.iter().map(|i| i.path.clone()).collect(),
-        total_bytes: report.freed_bytes,
-        success: report.total_failed == 0,
-        error: if report.total_failed > 0 {
-            Some(format!("{} failures", report.total_failed))
-        } else {
-            None
-        },
-    };
-    let _ = log_operation(&entry);
-
-    Ok(report)
+    // Shared check + trash + audit loop; the private copy used to word
+    // errors and log audit entries slightly differently than exec_clean.
+    Ok(super::cleaner::exec_items(&items, AuditOp::Purge))
 }
 
 #[cfg(test)]
