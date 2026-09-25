@@ -115,7 +115,9 @@ pub struct CleanReport {
 
 pub fn plan_clean(targets: &[CleanTarget]) -> Result<CleanPlan, CleanerError>;
 pub fn dry_clean(targets: &[CleanTarget]) -> Result<CleanPlan, CleanerError>;
-pub fn exec_clean(items: &[CleanItem], force: bool) -> Result<CleanReport, CleanerError>;
+// 无 force/dry-run 参数：预览由 plan_clean 产出，执行必定删除。
+// clean/purge/uninstall 共用内部 exec_items(items, op) 循环。
+pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, CleanerError>;
 ```
 
 ### 3.5 `cleaner/audit.rs` — 审计日志
@@ -140,7 +142,10 @@ pub enum AuditOp {
 }
 
 pub fn log_operation(entry: &AuditEntry) -> Result<(), CleanerError>;
+// limit 取最近的 N 条（日志为追加式，文件头是最旧记录），按时间正序返回。
 pub fn read_audit_log(limit: usize) -> Result<Vec<AuditEntry>, CleanerError>;
+// 递归求目录逻辑大小，跳过符号链接；cleaner 与客户端共用。
+pub fn dir_size(path: &Path) -> u64;
 ```
 
 ### 3.6 `cleaner/uninstaller.rs` — App 发现与卸载

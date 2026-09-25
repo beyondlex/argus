@@ -100,7 +100,7 @@ Shows breadcrumb path for the current directory.
 ## Cleanup / Uninstall / Brew Panels (C / P / U / B)
 
 - `C` Clean（缓存/日志目标清理）、`P` Purge（构建产物发现）、`U` Uninstall（应用卸载+残留）、`B` Brew（按最近使用排序）。
-- Clean 面板 `d` 切换 dry-run 标记：dry-run 下确认（Enter → y）只生成预览报告，**不触碰文件系统**；真实删除仅在非 dry-run 且确认后发生。
+- Clean 面板 `d` 切换 dry-run 标记，标记保持到再次按 `d`（j/k 移动光标不再重置它）：dry-run 下确认（Enter → y）只生成预览报告，**不触碰文件系统**；真实删除仅在非 dry-run 且确认后发生。
 - 空格多选、Enter 触发确认、Esc/q 退出；`i` 展开目录明细（后台线程扫描，最多 200 行）。
 - Brew 面板按 last_used 升序（never 最前）；卸载需要 y/N 确认。
 

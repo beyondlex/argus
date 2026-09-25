@@ -97,6 +97,7 @@ view_root 无 scan_cache 且 `list_dir` 失败（权限/被删）时置 `tree_ro
 
 ### 9. UDS socket 位于全局 /tmp
 `/tmp/argusd.sock` 对本机所有用户可连接：任何本地进程都能查询 delta（路径泄露信息）、ClearDb、触发 consolidation。个人工具可接受；加固方向是按用户隔离的 `$TMPDIR`（`getconf DARWIN_USER_TEMP_DIR`）或 socket 权限位。跨端改动需同步 TUI/CLI/daemon 三处默认值。
+**权限位已加固（第四轮，4d349c7）**：daemon 绑定后立即 `chmod 0600`，非 daemon 属主用户已无法连接；路径迁移到 `$TMPDIR` 仍未做（需三端同步默认值）。
 
 ### 10. brew 依赖错误靠字符串反解析
 `AppMessage::Error` 处理里用 `split("required by ")` 从错误文案中提取依赖者列表回填 brew 包元数据。文案一改即静默失效；重构 brew 错误通道（结构化错误）时顺手处理。
@@ -135,6 +136,7 @@ CLI/TUI 的 brew 面板都展示 `dependents` 字段，但列表构建（`list_b
 
 ### 17. 审计日志只追加、无轮转；`read_audit_log` 返回最旧的 limit 条
 `~/.config/argus/audit.log` 无限增长（每行一条 JSON，个人使用增长缓慢）；且 `read_audit_log(limit)` 从文件头读，返回的是**最旧**记录——审计场景通常想要"最近 N 条"。轻量修法：读取时用固定环形缓冲/从尾部读。
+**limit 语义已修复（第四轮，294f412）**：`read_audit_from` 读完整个文件后保留最近 N 条（按时间正序返回）。日志轮转仍未做，见第四轮存疑 #21。
 
 ### 18. `find_orphaned_data` 的已知性判断双向 contains，容易漏报孤儿
 `fc.contains(kc) || kc.contains(fc)`：名为 "Go" 的应用会把 "golang"、"google-cloud-sdk" 全部判为已知，孤儿数据漏报。方向保守（宁可漏删不可误删），可接受；若要更准可改成词边界匹配或仅精确等值 + bundle id 前缀。
@@ -144,3 +146,41 @@ daemon 端对请求设了 `MAX_PAYLOAD_LEN`，但 TUI/CLI 的 `send_request` 按
 
 ### 20. 单实例守卫依赖 PID 文件，崩溃后可能误报"已在运行"
 `DaemonGuard::acquire` 以 `kill(pid, 0)` 判断存活；崩溃残留的 PID 文件若被回收复用会拒绝启动（错误信息已提示 `argusd stop` 恢复）。与 stop() 的既有 PID 复用问题（存疑 #6）同源，一并留待 pidfd/进程名校验方案。
+
+## 已修复（第四轮）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| `run_with_timeout` 轮询期间不读管道：子进程输出超过 64KiB 管道缓冲后阻塞在 write，永远退不出 → 多输出的 `brew cleanup` 每次都按超时被杀（上轮修的超时机制自身引入的缺陷）。管道改为后台线程并行排空 | `argus-core/shell_cmd.rs` | 清理流程误报超时 | a34ada1 |
+| zsh 扩展历史 `: <ts>:0;<cmd>` 解析取到 `"<ts>:0"`，`parse::<i64>` 必然失败 → **带时间戳的 zsh 历史分支从未生效**，所有包退化为 mtime 粗粒度。先按 `;` 切再按 `:` 取首段 | `argus-core/brew.rs` | brew 排序依据错误（新测试暴露） | abf2228 |
+| `list_brew_packages` 对每个包重读两份完整 shell 历史（长历史 × 百级包 = 数百 MB 重复读），`last_access_from_opt` 每包重新 spawn `brew --prefix`；且其"100 文件上限"实际在第一个有条目的文件处提前返回，注释与行为不符。历史/prefix 每次扫描只加载一次，atime 取前 100 项最大值；非 UTF-8 历史文件跳过而非中断整个查找（原 `?` 会连带丢弃后续文件） | `argus-core/brew.rs` | brew 扫描性能 + 正确性 | abf2228 |
+| `read_audit_from(limit)` 从文件头截断，返回**最旧** N 条（存疑 #17 后半）。改为保留最近 N 条并补测试 | `argus-core/audit.rs` | 审计查询语义 | 294f412 |
+| UDS socket 绑定后无权限收紧（存疑 #9 前半）：/tmp 下默认全员可连，任意本地用户可 ClearDb。绑定后 chmod 0600 | `argusd/ipc_server.rs` | IPC 暴露面 | 4d349c7 |
+| `find_orphaned_data` 内部调 `find_installed_apps`（逐 app spawn `mdls` + 全量 bundle 尺寸遍历），但它只需要名字和 bundle id；CLI `cmd_clean` 又额外跑第二次全量扫描仅为打印 app 数。拆出免详情的 `collect_app_bundles`，`OrphanedData` 新增 `installed_app_count` | `argus-core/uninstaller.rs` `argus-cli/main.rs` | clean 命令耗时（秒级节省） | 7c759e3 |
+| Clean 面板 `j`/`k` 移动光标时静默把 `dry_run` 重置为 false：用户显式开启的预览模式一移动就变回真实删除 | `argus-tui/handler/cleanup.rs` | 删除预览可预期性 | 93c1097 |
+| CLI `argus clean` 的 "First time? Run --dry-run first" 提示只在 dry-run 模式下显示（逻辑写反），真实删除前反而看不到 | `argus-cli/main.rs` | 提示时机 | 7c759e3 |
+| `.git` 内部文件（pack 可达数百 MB）全额记账：`is_ignored` 只看路径最后一段，与注释声称的".git internals 是噪音"不符。隐藏目录检查改为遍历 watch root 之下的所有路径段；watch dir 配了显式 include glob 时跳过该检查（用户显式选择这些路径） | `argusd/watcher.rs` | delta 噪音 | 19bd263 |
+| `.` 切换隐藏文件可见性走 `set_error`（红色错误样式）；同类中性消息样式统一 | `argus-tui/handler/browsing.rs` | 体验一致性 | 677b6a3 |
+| `remove_artifacts`/`uninstall_app` 与 `exec_clean` 三份"保护检查+trash+报告+审计"循环合并为 `exec_items(op)`；uninstaller 的 `app_size` 私有遍历与 TUI 明细面板的 `dir_total_size` 均改为复用共享 `dir_size`（已导出为公共 API） | `argus-core/cleaner/*` `argus-tui/handler/cleanup.rs` | DRY | 0e1829a |
+
+## 存疑 / 记录在案（第四轮新增，未改动）
+
+### 21. 审计日志无轮转
+`read_audit_log` 语义已修（见 #17），但文件本身仍无限追加。个人使用增长缓慢（每次删除一行 JSON），暂不做轮转；若做，按大小或按月切段 + 读取时合并。
+
+### 22. 隐藏目录过滤遮蔽 `.npm`/`.cargo` 类缓存的真实增长
+第四轮把隐藏目录**内部**的变更也过滤了（与注释声称的意图一致，.git 噪音确实严重）。副作用：`~/.npm/_cacache`、`~/.cargo/registry` 等隐藏目录下真实的大体积增长也不再进 delta。用户可通过 watch dir 的显式 `include` glob 重新纳入（此路径不受隐藏过滤影响）。若默认行为要反转，改动点在 `has_hidden_ancestor` 的调用条件。
+
+### 23. `classify_risk` 对 home 下未知目录判 Safe
+`~/Documents`、`~/src` 等不在 Library/.Trash 规则内的路径返回 `Safe`（无需键入式确认）。当前所有删除入口都有 `.max(target.risk)` / `.max(Low)` 兜底 + 保护路径硬闸 + 废纸篓默认，未构成实际风险；但语义上"未知"更接近 Medium。改动会影响现有 target 的确认流，需连同 UI 文案一起评估。
+
+### 24. watcher 对 `RenameMode::Both/Any` 不产生事件
+rename 只处理 `From`（记删）与 `To`（记增）。macOS FSEvents 与 inotify 对 rename 的事件形态不同（有的拆成 remove+create，有的发 `Both`），`_ => None` 分支可能让某些平台的 rename 漏记。实测未观察到缺账（多数后端拆发事件），留观。
+
+### 25. `spotlight_last_used` 的 app 名匹配过宽
+`pkg_name.contains(&stem.to_lowercase())` 单向包含：短包名可能匹配到无关 app（如包 `vim` 匹配 `Vi Media.app`?）。仅影响 last_used 展示的准确性，不影响删除决策；mdls 调用有 app 目录遍历上限。可加双向词边界收紧。
+
+## 性能观察（第四轮新增）
+
+- `find_installed_apps` 保留逐 app `mdls` + bundle 尺寸遍历——这是"按最近使用排序/展示大小"功能的必要成本（Uninstall 面板真正需要这些数据），orphan 扫描侧已豁免。
+- `consolidate_events` 每周期全表扫描原始事件行（`WHERE is_agg = 0`）。事件表在保留期（默认 30 天）+ consolidation 下有界，个人量级无感；若将来默认保留期变长，考虑按 `timestamp` 分段扫描。
