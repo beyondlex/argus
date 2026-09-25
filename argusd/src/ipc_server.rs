@@ -63,6 +63,17 @@ async fn run_ipc_server(
     }
 
     let listener = UnixListener::bind(&path)?;
+    // A socket under /tmp is connectable by every local user by default;
+    // without this, anyone could query the delta history or wipe the DB via
+    // ClearDb. Restrict to the daemon owner.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(&path, perms) {
+            warn!("could not restrict socket permissions: {e}");
+        }
+    }
     info!("IPC server listening on {uds_path}");
 
     loop {
