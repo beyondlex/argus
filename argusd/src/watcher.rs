@@ -225,6 +225,23 @@ fn is_ignored(path: &Path) -> bool {
         || name.ends_with("~")
 }
 
+/// True when any component between the watch root and the path is hidden.
+/// The per-entry `is_ignored` only sees the file name, so churn *inside*
+/// `.git` (pack files can reach hundreds of MB) was fully accounted even
+/// though the comment claims .git internals are noise. Skipped when the
+/// watch dir declares an explicit include glob — that is the user opting
+/// into exactly those paths.
+fn has_hidden_ancestor(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .map(|rel| {
+            rel.components().any(|c| {
+                let s = c.as_os_str().to_string_lossy();
+                s.starts_with('.') || s == "~" || s.ends_with(".swp") || s.ends_with(".swx")
+            })
+        })
+        .unwrap_or(false)
+}
+
 pub fn start_watcher(
     watch_dirs: Vec<WatchDir>,
     event_tx: mpsc::Sender<DeltaEvent>,
@@ -280,10 +297,13 @@ pub fn start_watcher(
                         event_to_delta(&event.kind, &event.paths, &mut state, timestamp);
 
                     for ev in delta_events {
-                        let keep = match_watch_dir(&ev.path, &watch_dirs)
-                            .map(|wd| wd.matches(&ev.path))
-                            .unwrap_or(false);
-                        if !keep {
+                        let Some(wd) = match_watch_dir(&ev.path, &watch_dirs) else {
+                            continue;
+                        };
+                        if !wd.matches(&ev.path) {
+                            continue;
+                        }
+                        if wd.include.is_none() && has_hidden_ancestor(&wd.path, &ev.path) {
                             continue;
                         }
                         if event_tx.blocking_send(ev).is_err() {
@@ -481,6 +501,29 @@ mod tests {
             timestamp,
         );
         assert_eq!(events.len(), 0);
+    }
+
+    /// Churn *inside* a hidden directory must be filtered too: `.git` pack
+    /// files carry real sizes and the per-entry name check used to let them
+    /// all through.
+    #[test]
+    fn test_hidden_ancestor_filters_git_internals() {
+        let root = PathBuf::from("/watch");
+        let git_internal = root.join(".git/objects/ab/cdef1234");
+        assert!(has_hidden_ancestor(&root, &git_internal));
+
+        // Normal nested paths are unaffected.
+        assert!(!has_hidden_ancestor(&root, &root.join("src/lib/main.rs")));
+        // Events outside the watch root: treat as not hidden (the watch-dir
+        // match already rejects them).
+        assert!(!has_hidden_ancestor(&root, &PathBuf::from("/elsewhere/x")));
+
+        // A watch root that is itself hidden must not suppress everything.
+        let hidden_root = PathBuf::from("/Users/lex/.config");
+        assert!(!has_hidden_ancestor(
+            &hidden_root,
+            &hidden_root.join("argus/cache.bin")
+        ));
     }
 
     /// .DS_Store is a dotfile and must be ignored: Finder rewrites it
