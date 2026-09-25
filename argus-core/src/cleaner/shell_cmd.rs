@@ -1,4 +1,4 @@
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use super::audit::{log_operation, AuditEntry, AuditOp};
@@ -53,49 +53,79 @@ pub fn default_shell_cmd_targets() -> Vec<ShellCmdTarget> {
 /// `timeout_secs` used to be silently ignored — a wedged `docker builder
 /// prune` blocked the cleanup flow forever. Poll `try_wait` instead and kill
 /// the process when the budget is exhausted.
+///
+/// The pipes must be drained *while* the child runs, not after exit: once the
+/// 64 KiB pipe buffer fills, a chatty child (`brew cleanup` prints every
+/// keg) blocks on write and never exits, so polling `try_wait` alone would
+/// kill it at the deadline even though it was making progress.
 fn run_with_timeout(target: &ShellCmdTarget) -> Result<std::process::Output, String> {
+    use std::sync::mpsc;
+
     let mut child = std::process::Command::new(&target.command)
         .args(&target.args)
-        // Output is buffered by us, not the terminal; avoid the child
-        // inheriting our stdio so long output cannot block on the pipe.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("failed to run {}: {e}", target.command))?;
 
+    // One drain thread per pipe; each forwards bytes into a channel-owned
+    // buffer so the child can never block on a full pipe.
+    fn drain<R: std::io::Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let mut chunk = [0u8; 8192];
+                // Read to EOF (child exit or kill closes the pipe).
+                while let Ok(n) = pipe.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+            }
+            let _ = tx.send(buf);
+        });
+        (handle, rx)
+    }
+    let (out_handle, out_rx) = drain(child.stdout.take());
+    let (err_handle, err_rx) = drain(child.stderr.take());
+
     let deadline = Instant::now() + Duration::from_secs(target.timeout_secs.max(1));
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("wait {}: {e}", target.command))?
-        {
-            return finish_output(child, status);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                // Pipes are drained by the threads; reaping is best-effort.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait {}: {e}", target.command));
+            }
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            // Drop the drain threads' blocking reads by closing our ends via
+            // process exit of the pipes; join with a detach to avoid hanging.
             return Err(format!(
                 "{} timed out after {}s",
                 target.command, target.timeout_secs
             ));
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
-}
+    };
 
-fn finish_output(
-    mut child: Child,
-    status: std::process::ExitStatus,
-) -> Result<std::process::Output, String> {
-    use std::io::Read;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
-    }
+    // Child has exited, so both pipes see EOF and the joins return promptly.
+    let stdout = out_rx.recv().unwrap_or_default();
+    let stderr = err_rx.recv().unwrap_or_default();
+    let _ = out_handle.join();
+    let _ = err_handle.join();
     // Fully reap the child after draining the pipes.
     let _ = child.wait();
     Ok(std::process::Output {
@@ -206,5 +236,23 @@ mod tests {
         assert!(!result.success);
         assert!(result.error.unwrap_or_default().contains("timed out"));
         assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    /// Output larger than the 64 KiB pipe buffer must not wedge the run: the
+    /// pipes used to stay unread while polling, so a chatty child blocked on
+    /// write and was killed at the deadline despite finishing its work.
+    #[cfg(unix)]
+    #[test]
+    fn test_try_exec_shell_cmd_large_output_completes() {
+        let target = ShellCmdTarget {
+            id: "test-chatty".into(),
+            label: "Test Chatty".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "head -c 262144 /dev/zero | tr '\\0' x".into()],
+            timeout_secs: 10,
+        };
+        let result = try_exec_shell_cmd(&target);
+        assert!(result.success, "error: {:?}", result.error);
+        assert_eq!(result.output.len(), 262_144);
     }
 }
