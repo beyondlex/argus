@@ -449,7 +449,7 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
 
     println!("{}", "Clean Your Mac".bold().cyan());
     println!();
-    if dry_run {
+    if !dry_run {
         println!(
             "{}",
             "☻ First time? Run argus clean --dry-run first to preview changes".yellow()
@@ -508,10 +508,12 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     println!("➤ {}", "Uninstalled App Data".bold());
     match find_orphaned_data() {
         Ok(orphaned) => {
-            let apps = find_installed_apps(None).unwrap_or_default();
+            // The orphan scan already knows how many installed apps it
+            // considered; a second find_installed_apps pass used to double
+            // the cost (one mdls spawn + bundle walk per app).
             println!(
                 "  ✓ Found {} active/installed apps",
-                apps.len().to_string().cyan()
+                orphaned.installed_app_count.to_string().cyan()
             );
             if orphaned.item_count > 0 {
                 println!(

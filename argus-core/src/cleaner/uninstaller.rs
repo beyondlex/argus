@@ -127,9 +127,15 @@ fn last_used_date(app_path: &Path) -> Option<DateTime<Utc>> {
     }
 }
 
-pub fn find_installed_apps(
+/// Walk the application directories and collect bundle info.
+/// `with_details` controls the expensive parts — `app_size` (full bundle
+/// walk) and `last_used_date` (one `mdls` spawn per app, seconds across a
+/// few hundred apps). The orphan scan only needs names and bundle ids, so
+/// it skips both instead of paying for data it discards.
+fn collect_app_bundles(
     progress: Option<std::sync::mpsc::Sender<String>>,
-) -> Result<Vec<AppInfo>, String> {
+    with_details: bool,
+) -> Vec<AppInfo> {
     let mut apps = Vec::new();
     for dir_str in APP_DIRS {
         let dir = Path::new(dir_str);
@@ -149,9 +155,13 @@ pub fn find_installed_apps(
             if let Some(ref tx) = progress {
                 let _ = tx.send(path.display().to_string());
             }
-            let size = app_size(&path);
+            let size = if with_details { app_size(&path) } else { 0 };
             let id = bundle_id_for_app(&path).unwrap_or_else(|| format!("unknown.{}", name));
-            let last_used = last_used_date(&path);
+            let last_used = if with_details {
+                last_used_date(&path)
+            } else {
+                None
+            };
             apps.push(AppInfo {
                 id,
                 name,
@@ -162,6 +172,13 @@ pub fn find_installed_apps(
             });
         }
     }
+    apps
+}
+
+pub fn find_installed_apps(
+    progress: Option<std::sync::mpsc::Sender<String>>,
+) -> Result<Vec<AppInfo>, String> {
+    let mut apps = collect_app_bundles(progress, true);
     apps.sort_by_key(|a| std::cmp::Reverse(a.size));
     Ok(apps)
 }
@@ -224,11 +241,17 @@ pub struct OrphanedData {
     pub paths: Vec<PathBuf>,
     pub total_bytes: u64,
     pub item_count: usize,
+    /// Number of installed apps the orphan classification considered.
+    /// Callers previously ran a second full app scan (one `mdls` spawn per
+    /// app) just to display this count.
+    pub installed_app_count: usize,
 }
 
 pub fn find_orphaned_data() -> Result<OrphanedData, String> {
     let home = home_dir().ok_or_else(|| "HOME not set".to_string())?;
-    let apps = find_installed_apps(None)?;
+    // Names and bundle ids only: sizes and Spotlight last-used dates are
+    // irrelevant here and cost a full bundle walk plus one mdls per app.
+    let apps = collect_app_bundles(None, false);
 
     let known_names: Vec<String> = apps
         .iter()
@@ -283,6 +306,7 @@ pub fn find_orphaned_data() -> Result<OrphanedData, String> {
         paths: orphaned,
         total_bytes: total,
         item_count: count,
+        installed_app_count: apps.len(),
     })
 }
 
