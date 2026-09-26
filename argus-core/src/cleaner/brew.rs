@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -234,10 +235,30 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Preloaded shell-history state shared by every package in one scan.
 /// Each package used to re-read both history files (multi-MB for long-lived
-/// shells), making a 100-package scan re-read hundreds of MB.
+/// shells); after that was fixed, `last_used` still re-scanned every line per
+/// package — O(packages × history lines), seconds of CPU for heavy histories.
+/// One pass at load time indexes each command's first token instead.
+///
+/// Token matching mirrors `command_matches_pkg` exactly:
+/// - exact token == pkg (A) or == pkg's base name, i.e. the part before '@' (B)
+///   → looked up in `timed_exact` / `plain_exact`
+/// - token with trailing digits stripped == base (`python3` vs `python`) (C)
+///   → looked up in `timed_stripped` / `plain_stripped`
 struct HistorySnapshot {
-    /// `(content, mtime)` per readable history file.
-    files: Vec<(String, Option<DateTime<Utc>>)>,
+    /// First token → latest timestamped use (zsh extended format).
+    timed_exact: HashMap<String, DateTime<Utc>>,
+    /// Digit-stripped token → latest timestamped use (case C).
+    timed_stripped: HashMap<String, DateTime<Utc>>,
+    /// Per history file, in load order: untimestamped lines carry no per-line
+    /// time, so the first file with a matching plain line contributes its
+    /// mtime (unchanged fallback behavior).
+    plain: Vec<PlainFileHistory>,
+}
+
+struct PlainFileHistory {
+    mtime: Option<DateTime<Utc>>,
+    exact: HashSet<String>,
+    stripped: HashSet<String>,
 }
 
 impl HistorySnapshot {
@@ -261,58 +282,127 @@ impl HistorySnapshot {
                 }
             }
         }
-        Self { files }
+        Self::from_files(files)
     }
 
-    /// Latest timestamp among history entries whose command matches `pkg_name`.
-    /// zsh extended format: ": <timestamp>:0;<command>"; plain: "  <command>".
-    fn last_used(&self, pkg_name: &str) -> Option<DateTime<Utc>> {
-        let mut latest: Option<DateTime<Utc>> = None;
-        for (content, mtime) in &self.files {
-            for line in content.lines().rev() {
-                if let Some(ts_str) = line
-                    .strip_prefix(": ")
-                    .and_then(|rest| rest.split(';').next())
-                    // The zsh field is "<ts>:0" — everything after the first
-                    // ':' is the event id. Parsing "ts:0" as i64 used to fail
-                    // on every line, silently disabling this whole branch.
-                    .and_then(|field| field.split(':').next())
-                {
-                    if let Ok(ts) = ts_str.trim().parse::<i64>() {
-                        if let Some(dt) = Utc.timestamp_opt(ts, 0).single() {
-                            let line_rest = line.split_once(';').map(|(_, r)| r).unwrap_or("");
-                            if command_matches_pkg(line_rest, pkg_name)
-                                && latest.is_none_or(|l| dt > l)
-                            {
-                                latest = Some(dt);
-                            }
-                        }
+    /// Index the history in one pass. Exposed for tests.
+    fn from_files(files: Vec<(String, Option<DateTime<Utc>>)>) -> Self {
+        let mut timed_exact: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let mut timed_stripped: HashMap<String, DateTime<Utc>> = HashMap::new();
+        let mut plain = Vec::new();
+
+        for (content, mtime) in files {
+            let mut plain_file = PlainFileHistory {
+                mtime,
+                exact: HashSet::new(),
+                stripped: HashSet::new(),
+            };
+            for line in content.lines() {
+                if let Some(dt) = zsh_entry_timestamp(line) {
+                    // ": <ts>:0;<cmd>" — index the command's first token.
+                    let cmd = line.split_once(';').map(|(_, r)| r).unwrap_or("");
+                    if let Some(token) = first_token(cmd) {
+                        index_timed(&mut timed_exact, &mut timed_stripped, token, dt);
                     }
+                    continue;
                 }
                 let trimmed = line.trim_start();
-                if !trimmed.starts_with(':') && command_matches_pkg(trimmed, pkg_name) {
-                    // No per-entry timestamp: fall back to the file mtime.
-                    if latest.is_none() {
-                        latest = *mtime;
+                if trimmed.starts_with(':') {
+                    // Malformed zsh entry (unparseable timestamp): the old
+                    // scan matched neither branch for these lines.
+                    continue;
+                }
+                if let Some(token) = first_token(trimmed) {
+                    plain_file.exact.insert(token.to_string());
+                    if let Some(base) = digit_stripped(token) {
+                        plain_file.stripped.insert(base.to_string());
                     }
                 }
             }
+            plain.push(plain_file);
         }
-        latest
+
+        Self {
+            timed_exact,
+            timed_stripped,
+            plain,
+        }
+    }
+
+    /// Latest timestamp among history entries whose command matches `pkg_name`,
+    /// or the mtime of the first history file with any untimestamped match.
+    fn last_used(&self, pkg_name: &str) -> Option<DateTime<Utc>> {
+        let base = pkg_name.split('@').next().unwrap_or(pkg_name);
+        let latest = [
+            self.timed_exact.get(pkg_name),
+            self.timed_exact.get(base),
+            // Empty-stripped tokens are never indexed, so a bare digit query
+            // cannot alias anything.
+            self.timed_stripped.get(base),
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .max();
+        if latest.is_some() {
+            return latest;
+        }
+        for file in &self.plain {
+            if file.exact.contains(pkg_name)
+                || file.exact.contains(base)
+                || file.stripped.contains(base)
+            {
+                return file.mtime;
+            }
+        }
+        None
     }
 }
 
-fn command_matches_pkg(command: &str, pkg_name: &str) -> bool {
-    let cmd_first_token = command.split_whitespace().next().unwrap_or("");
-    if cmd_first_token == pkg_name {
-        return true;
+fn zsh_entry_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    // The zsh field is "<ts>:0" — everything after the first ':' is the event
+    // id. Parsing "ts:0" as i64 used to fail on every line, silently
+    // disabling this whole branch.
+    let ts = line
+        .strip_prefix(": ")
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|field| field.split(':').next())?
+        .trim()
+        .parse::<i64>()
+        .ok()?;
+    Utc.timestamp_opt(ts, 0).single()
+}
+
+fn first_token(command: &str) -> Option<&str> {
+    command.split_whitespace().next().filter(|t| !t.is_empty())
+}
+
+fn digit_stripped(token: &str) -> Option<&str> {
+    let base = token.trim_end_matches(|c: char| c.is_ascii_digit());
+    (!base.is_empty()).then_some(base)
+}
+
+fn index_timed(
+    exact: &mut HashMap<String, DateTime<Utc>>,
+    stripped: &mut HashMap<String, DateTime<Utc>>,
+    token: &str,
+    dt: DateTime<Utc>,
+) {
+    upsert_max(exact, token, dt);
+    if let Some(base) = digit_stripped(token) {
+        upsert_max(stripped, base, dt);
     }
-    let base_name = pkg_name.split('@').next().unwrap_or(pkg_name);
-    if cmd_first_token == base_name {
-        return true;
-    }
-    let cmd_base = cmd_first_token.trim_end_matches(|c: char| c.is_ascii_digit());
-    !cmd_base.is_empty() && cmd_base == base_name
+}
+
+/// Keep the latest timestamp when a token appears in several entries.
+fn upsert_max(map: &mut HashMap<String, DateTime<Utc>>, key: &str, dt: DateTime<Utc>) {
+    map.entry(key.to_string())
+        .and_modify(|e| {
+            if dt > *e {
+                *e = dt;
+            }
+        })
+        .or_insert(dt);
 }
 
 /// 获取包安装路径下二进制文件的最后访问时间（第一层，最多 100 个条目取最大值）
@@ -369,13 +459,18 @@ fn spotlight_last_used(pkg_name: &str) -> Option<DateTime<Utc>> {
                     || stem.replace(' ', "-").eq_ignore_ascii_case(pkg_name)
                     || pkg_name.contains(&stem.to_lowercase())
                 {
-                    let output = Command::new("mdls")
+                    let output = match Command::new("mdls")
                         .arg("-name")
                         .arg("kMDItemLastUsedDate")
                         .arg("-raw")
                         .arg(&p)
                         .output()
-                        .ok()?;
+                    {
+                        Ok(o) => o,
+                        // A transient spawn failure (e.g. fd pressure) must
+                        // skip this app, not give up on the whole search.
+                        Err(_) => continue,
+                    };
                     if output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let trimmed = stdout.trim();
@@ -641,6 +736,23 @@ mod tests {
         assert_eq!(result[0].name, "firefox");
     }
 
+    /// Brute-force line-by-line matcher kept as the reference for the
+    /// token-index equivalence test. Semantics: first token == pkg (A),
+    /// == pkg's base name before '@' (B), or trailing digits stripped ==
+    /// base (`python3` vs `python`) (C).
+    fn command_matches_pkg(command: &str, pkg_name: &str) -> bool {
+        let cmd_first_token = command.split_whitespace().next().unwrap_or("");
+        if cmd_first_token == pkg_name {
+            return true;
+        }
+        let base_name = pkg_name.split('@').next().unwrap_or(pkg_name);
+        if cmd_first_token == base_name {
+            return true;
+        }
+        let cmd_base = cmd_first_token.trim_end_matches(|c: char| c.is_ascii_digit());
+        !cmd_base.is_empty() && cmd_base == base_name
+    }
+
     #[test]
     fn test_command_matches_pkg() {
         assert!(command_matches_pkg("wget https://example.com", "wget"));
@@ -651,31 +763,105 @@ mod tests {
 
     #[test]
     fn test_history_snapshot_zsh_extended_format() {
-        let hist = HistorySnapshot {
-            files: vec![(
-                ": 1700000000:0;wget https://example.com\n: 1690000000:0;ls -la\n".into(),
-                None,
-            )],
-        };
+        let hist = HistorySnapshot::from_files(vec![(
+            ": 1700000000:0;wget https://example.com\n: 1690000000:0;ls -la\n".into(),
+            None,
+        )]);
         let dt = hist.last_used("wget").expect("zsh timestamp");
         assert_eq!(dt.timestamp(), 1_700_000_000);
+        // Several timestamped entries for one command: the latest wins.
+        let multi = HistorySnapshot::from_files(vec![(
+            ": 1700000000:0;wget a\n: 1710000000:0;wget b\n".into(),
+            None,
+        )]);
+        assert_eq!(multi.last_used("wget").unwrap().timestamp(), 1_710_000_000);
         assert!(hist.last_used("curl").is_none());
     }
 
     #[test]
     fn test_history_snapshot_plain_format_uses_mtime() {
         let mtime = Utc.timestamp_opt(1_690_000_000, 0).single();
-        let hist = HistorySnapshot {
-            files: vec![("wget file.tar.gz\n".into(), mtime)],
-        };
+        let hist = HistorySnapshot::from_files(vec![("wget file.tar.gz\n".into(), mtime)]);
         let dt = hist.last_used("wget").expect("mtime fallback");
         assert_eq!(dt.timestamp(), 1_690_000_000);
     }
 
     #[test]
     fn test_history_snapshot_empty_or_unmatched() {
-        let hist = HistorySnapshot { files: Vec::new() };
+        let hist = HistorySnapshot::from_files(Vec::new());
         assert!(hist.last_used("wget").is_none());
+    }
+
+    /// The one-pass token index must agree with brute-force line scanning for
+    /// every package name: same Optional timestamp, or the same mtime
+    /// fallback. Guards the three matching cases (exact pkg, exact base,
+    /// digit-stripped base) against drift.
+    #[test]
+    fn test_history_index_matches_brute_force_scan() {
+        let mtime = Utc.timestamp_opt(1_680_000_000, 0).single();
+        let content = ": 1700000000:0;wget https://example.com\n\
+                       : 1700000100:0;python3 -m pip install x\n\
+                       : 1700000200:0;python -V\n\
+                       : 1700000300:0;python@3.11 --version\n\
+                       ls -la\n\
+                       : 1700000400:0;git status\n\
+                       : malformed;wget should-not-parse\n\
+                       wget2 file.bin\n\
+                       : 1700000500:0;vimrc_helper\n\
+                       : 1700000600:0;cargo build --release\n\
+                       : 1700000700:0;cargo3 test\n\
+                       wget later.tar.gz\n";
+        let files = vec![(content.to_string(), mtime)];
+        let indexed = HistorySnapshot::from_files(files.clone());
+
+        // Brute force: the old line-by-line scan (timestamped lines only —
+        // this fixture's mtime fallback is exercised by the dedicated test).
+        let brute_force = |pkg: &str| -> Option<DateTime<Utc>> {
+            let mut latest = None;
+            for (content, _) in &files {
+                for line in content.lines() {
+                    if let Some(dt) = zsh_entry_timestamp(line) {
+                        let rest = line.split_once(';').map(|(_, r)| r).unwrap_or("");
+                        if command_matches_pkg(rest, pkg) && latest.is_none_or(|l| dt > l) {
+                            latest = Some(dt);
+                        }
+                    }
+                }
+            }
+            latest
+        };
+
+        // Timestamped-comparable packages only: packages whose only matches
+        // are plain lines fall through the brute-force helper (ts-only) here
+        // and are asserted against the mtime fallback below.
+        for pkg in [
+            "wget",
+            "python",
+            "python3",
+            "python@3.11",
+            "git",
+            "cargo",
+            "cargo@3",
+            "vimrc_helper",
+            "vim",
+            "curl",
+        ] {
+            assert_eq!(
+                indexed.last_used(pkg),
+                brute_force(pkg),
+                "index diverged from brute force for pkg {pkg:?}"
+            );
+        }
+
+        // The fixture's plain lines (`wget later.tar.gz`) map to the file
+        // mtime fallback for wget — but wget also has timestamped entries,
+        // and those take precedence in the normalized semantics.
+        assert_eq!(
+            indexed.last_used("wget").unwrap().timestamp(),
+            1_700_000_000
+        );
+        // Plain-only package falls back to the file mtime.
+        assert_eq!(indexed.last_used("wget2"), mtime);
     }
 
     #[test]
