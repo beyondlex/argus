@@ -4,3 +4,4 @@ target/
 .idea/
 reasonix.toml
 .DS_Store
+.claude/

@@ -180,12 +180,21 @@ pub fn query_delta_total(
     // `is_agg = 1` rows represent subtree coverage, not extra additive events.
     // If a parent directory already has an aggregate row, descendants covered by
     // that row must not be counted again here, or the TUI will double count.
-    // Aggregation is parent-local (see `consolidate_events`): an ancestor agg
-    // row only ever sums the ancestor's direct children, never a descendant
-    // agg row. Therefore agg rows must NOT suppress each other — only raw
-    // (is_agg = 0) events are hidden by a covering in-window aggregate.
-    // The `agg.timestamp <= ?4` bound keeps out-of-window aggregates from
-    // suppressing in-window events (agg ts = max consolidated child ts).
+    // Aggregation is parent-local (see `consolidate_events`): an agg row sums
+    // exactly the raw direct-children events that existed when consolidation
+    // ran — never deeper descendants, and never events recorded afterwards.
+    // The anti-join therefore hides a raw event only when ALL of these hold:
+    //   1. it is a *direct child* of an in-subtree agg path. A raw grandchild
+    //      under an aggregated directory is NOT in the agg sum; suppressing it
+    //      (the old any-depth match) lost those deltas permanently whenever the
+    //      grandchild's own parent never consolidated. Agg rows also do not
+    //      suppress each other for the same reason.
+    //   2. the event's ts <= agg.ts. agg.ts is the max ts of consolidated
+    //      children, so anything recorded later arrived after consolidation
+    //      and must stay visible instead of waiting (up to a consolidation
+    //      interval) to be folded in.
+    //   3. agg.timestamp <= ?4 — an agg beyond the window's upper bound is
+    //      itself excluded by the outer WHERE, so it must not suppress.
     let total: i64 = conn.query_row(
         "SELECT COALESCE(SUM(delta_size), 0) FROM delta_events
          WHERE (path = ?1 OR substr(path, 1, length(?2)) = ?2)
@@ -197,6 +206,8 @@ pub fn query_delta_total(
                  AND delta_events.is_agg = 0
                  AND (agg.path = ?1 OR substr(agg.path, 1, length(?2)) = ?2)
                  AND substr(delta_events.path, 1, length(agg.path) + 1) = agg.path || '/'
+                 AND instr(substr(delta_events.path, length(agg.path) + 2), '/') = 0
+                 AND delta_events.timestamp <= agg.timestamp
                  AND agg.timestamp <= ?4
            )",
         params![path_str.as_ref(), prefix, from_ms, to_ms],
@@ -213,8 +224,8 @@ pub fn query_delta_detail(
 ) -> Result<Vec<DeltaEntry>, DbError> {
     let path_str = path.to_string_lossy();
     // Keep this filter in lockstep with `query_delta_total` (same agg
-    // non-suppression invariant and literal substr prefix matching — see the
-    // comment there for why LIKE is not used).
+    // direct-children-only suppression invariant and literal substr prefix
+    // matching — see the comment there for why LIKE is not used).
     let prefix = format!("{}/", path_str);
     let mut stmt = conn.prepare(
         "SELECT path, delta_size, event_type, timestamp, is_agg FROM delta_events
@@ -227,6 +238,8 @@ pub fn query_delta_detail(
                  AND delta_events.is_agg = 0
                  AND (agg.path = ?1 OR substr(agg.path, 1, length(?2)) = ?2)
                  AND substr(delta_events.path, 1, length(agg.path) + 1) = agg.path || '/'
+                 AND instr(substr(delta_events.path, length(agg.path) + 2), '/') = 0
+                 AND delta_events.timestamp <= agg.timestamp
                  AND agg.timestamp <= ?4
            )
          ORDER BY timestamp ASC",
@@ -855,43 +868,6 @@ mod tests {
         assert_eq!(consolidated, 0);
     }
 
-    #[test]
-    fn test_query_delta_detail_prefers_agg_over_descendants() {
-        let (mut conn, _) = setup_db();
-
-        conn.execute(
-            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
-            params!["/tmp/dir", 300, "agg", 1200],
-        )
-        .unwrap();
-
-        let events = vec![
-            DeltaEntry {
-                path: PathBuf::from("/tmp/dir/leaf-a.bin"),
-                delta_size: 100,
-                event_type: "create".into(),
-                timestamp: 1000,
-                is_agg: false,
-            },
-            DeltaEntry {
-                path: PathBuf::from("/tmp/dir/nested/leaf-b.bin"),
-                delta_size: 200,
-                event_type: "create".into(),
-                timestamp: 1100,
-                is_agg: false,
-            },
-        ];
-        insert_events(&mut conn, &events).unwrap();
-
-        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
-        assert_eq!(total, 300);
-
-        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].delta_size, 300);
-        assert!(entries[0].is_agg);
-    }
-
     /// An aggregate whose timestamp is beyond the queried window must not
     /// suppress in-window descendant events: the agg itself is excluded by the
     /// outer WHERE, so suppression would silently undercount the window.
@@ -953,6 +929,119 @@ mod tests {
 
         let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 3000).unwrap();
         assert_eq!(total, 300);
+    }
+
+    /// An aggregate row covers exactly its direct-children events: a raw
+    /// direct child at or below the agg's ts is suppressed (no double count),
+    /// while a raw *grandchild* — never folded into the agg by the
+    /// parent-local consolidation — stays visible. The old any-depth
+    /// descendant match suppressed the grandchild too, losing its delta for
+    /// as long as the agg stayed in the window.
+    #[test]
+    fn test_agg_covers_direct_children_only() {
+        let (mut conn, _) = setup_db();
+
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
+            params!["/tmp/dir", 300, "agg", 1200],
+        )
+        .unwrap();
+
+        let events = vec![
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/leaf-a.bin"),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000,
+                is_agg: false,
+            },
+            DeltaEntry {
+                path: PathBuf::from("/tmp/dir/nested/leaf-b.bin"),
+                delta_size: 200,
+                event_type: "create".into(),
+                timestamp: 1100,
+                is_agg: false,
+            },
+        ];
+        insert_events(&mut conn, &events).unwrap();
+
+        // 300 (agg) + 200 (grandchild raw); the covered direct child is hidden.
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 500);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Timestamp order: the grandchild raw row precedes the agg row.
+        assert_eq!(entries[0].path, PathBuf::from("/tmp/dir/nested/leaf-b.bin"));
+        assert!(!entries[0].is_agg);
+        assert!(entries[1].is_agg);
+        assert_eq!(entries[1].delta_size, 300);
+    }
+
+    /// A raw event recorded *after* consolidation ran (ts beyond agg.ts) is
+    /// not in the agg sum and must be visible immediately. The old query hid
+    /// it until the next consolidation folded it in (up to a full interval of
+    /// invisible churn in the TUI).
+    #[test]
+    fn test_post_consolidation_event_visible_immediately() {
+        let (mut conn, _) = setup_db();
+
+        conn.execute(
+            "INSERT INTO delta_events (path, delta_size, event_type, timestamp, is_agg) VALUES (?1, ?2, ?3, ?4, 1)",
+            params!["/tmp/dir", 300, "agg", 1200],
+        )
+        .unwrap();
+
+        let events = vec![DeltaEntry {
+            path: PathBuf::from("/tmp/dir/new.bin"),
+            delta_size: 100,
+            event_type: "create".into(),
+            timestamp: 2000,
+            is_agg: false,
+        }];
+        insert_events(&mut conn, &events).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 400);
+    }
+
+    /// End-to-end: consolidate a directory, then record a fresh event under
+    /// it. The agg keeps covering the consolidated children while the new
+    /// event adds on top — no double count, no visibility lag.
+    #[test]
+    fn test_consolidate_then_new_event_adds_on_top() {
+        let (mut conn, _) = setup_db();
+
+        let mut events = Vec::new();
+        for i in 0..15 {
+            events.push(DeltaEntry {
+                path: PathBuf::from(format!("/tmp/dir/file_{}.txt", i)),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000 + i as u64,
+                is_agg: false,
+            });
+        }
+        insert_events(&mut conn, &events).unwrap();
+        let consolidated = consolidate_events(&mut conn, 10).unwrap();
+        assert_eq!(consolidated, 15);
+
+        // New churn after consolidation, same subtree (ts beyond the agg's
+        // max consolidated child ts of 1014).
+        let later = vec![DeltaEntry {
+            path: PathBuf::from("/tmp/dir/late.txt"),
+            delta_size: 250,
+            event_type: "create".into(),
+            timestamp: 1015,
+            is_agg: false,
+        }];
+        insert_events(&mut conn, &later).unwrap();
+
+        let total = query_delta_total(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(total, 1500 + 250);
+
+        let entries = query_delta_detail(&conn, Path::new("/tmp/dir"), 0, 5000).unwrap();
+        assert_eq!(entries.len(), 2);
     }
 
     /// Aggregate rows must not suppress each other. Consolidation is

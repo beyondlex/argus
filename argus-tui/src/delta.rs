@@ -394,11 +394,13 @@ mod tests {
     }
 
     #[test]
-    fn test_preaggregated_rows_double_count_subtree() {
+    fn test_preaggregated_rows_aggregate_covers_direct_children() {
         // Regression guard:
-        // An aggregate row at the parent path must cover the subtree by itself.
-        // If future changes start summing the parent row together with the child
-        // rows again, this test will fail and catch the double-count regression.
+        // An aggregate row covers exactly its direct-children events. A raw
+        // direct child at or below the agg ts stays suppressed (no double
+        // count), but a raw *grandchild* under the aggregated directory was
+        // never folded into the agg and must stay visible — the old
+        // any-depth suppression hid it, undercounting the subtree.
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("argus");
 
@@ -448,25 +450,14 @@ mod tests {
             "nested".into(),
         ];
 
-        let leaf_sum: i64 = events
-            .iter()
-            .filter(|event| !event.is_agg)
-            .map(|event| event.delta_size)
-            .sum();
         let build_total = delta_cache.get(&build_path).copied().unwrap_or_default();
         let nested_total = delta_cache.get(&nested_path).copied().unwrap_or_default();
 
-        eprintln!("pre-aggregated simulation:");
-        eprintln!("  leaf sum    = {leaf_sum}");
-        eprintln!("  query total  = {query_total}");
-        eprintln!("  build delta  = {build_total}");
-        eprintln!("  nested delta = {nested_total}");
-
-        assert_eq!(leaf_sum, 300);
-        assert_eq!(query_total, 300);
-        assert_eq!(build_total, 300);
-        assert_eq!(nested_total, 0);
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].is_agg);
+        // 300 (agg, covers leaf-a) + 200 (grandchild leaf-b, still raw).
+        assert_eq!(query_total, 500);
+        assert_eq!(build_total, 500);
+        assert_eq!(nested_total, 200);
+        // The agg row plus the surviving grandchild raw row.
+        assert_eq!(entries.len(), 2);
     }
 }
