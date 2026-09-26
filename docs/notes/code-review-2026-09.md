@@ -1,9 +1,7 @@
 # 代码审查记录 — 2026-09
 
 全库检视（argus-core / argus-cli / argus-tui / argusd）的结果归档。
-已修复的问题有对应 commit；"存疑/记录" 类问题保持现状，等出现实际症状或专门排期再处理。
-
-## 已修复（第一轮）
+已修复的问题有对应 commit；"存疑/记录" 类问题保持现状，等出现实际症状或专门排期再处理。## 已修复（第一轮）
 
 | 问题 | 位置 | 影响 | Commit |
 |------|------|------|--------|
@@ -72,6 +70,7 @@
 
 ### 1. 聚合行覆盖下，新事件的可见性滞后
 consolidate 之后某子树已有 agg 覆盖行，新到达的子路径事件在查询层被 agg 反连接抑制，要等下一次 consolidation（默认间隔 60 分钟）才折入 agg。期间 TUI delta 面板看不到这部分变化。嵌套 agg 场景的**永久性**丢失已由 5fd47ec 修复，本条只剩窗口期滞后。可选修法：新事件插入时若祖先存在 agg 行，直接以小粒度行写入并在查询层做"agg 截止到 agg.ts，其后事件单独计"的语义；或缩短 consolidate 间隔。
+**已解决（第五轮，c9c33ea）**：反连接增加 `事件 ts <= agg.ts` 条件——consolidation 之后到达的事件（ts 超出 agg 的 max 子事件 ts）立即可见，无需等下一次聚合。仅剩"迟到写入且事件 ts 早于 agg.ts"的极端场景（去抖落库晚于聚合）仍会被抑制，与原行为一致。
 
 ### 2. SQLite `LIKE` 对 ASCII 不区分大小写
 `query_delta_total/detail` 的路径前缀匹配 `path LIKE '/users/%'` 会命中 `/Users/...`。macOS 默认文件系统大小写不敏感，跨大小写路径冲突的场景罕见，但理论上会造成串数据。若要严格，可改 `GLOB` 或 `PRAGMA case_sensitive_like`。
@@ -184,3 +183,26 @@ rename 只处理 `From`（记删）与 `To`（记增）。macOS FSEvents 与 ino
 
 - `find_installed_apps` 保留逐 app `mdls` + bundle 尺寸遍历——这是"按最近使用排序/展示大小"功能的必要成本（Uninstall 面板真正需要这些数据），orphan 扫描侧已豁免。
 - `consolidate_events` 每周期全表扫描原始事件行（`WHERE is_agg = 0`）。事件表在保留期（默认 30 天）+ consolidation 下有界，个人量级无感；若将来默认保留期变长，考虑按 `timestamp` 分段扫描。
+
+## 已修复（第五轮）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| agg 反连接按「任意深度后代」抑制 raw 事件，但 consolidation 是 parent-local 的（agg 只汇总直接子级）：已聚合目录下的**孙辈 raw 事件**被祖先 agg 抑制——若其直接父目录从不聚合（低于阈值），这部分 delta **永久丢失** | `argus-core/db.rs` `query_delta_total/detail` | delta 记账错误（永久少算） | c9c33ea |
+| 同一反连接不比较事件 ts 与 agg ts：consolidate 之后到达的子路径事件要等下一轮聚合才可见（旧存疑 #1 的窗口期滞后，默认最长 60 分钟） | 同上 | delta 可见性滞后 | 同上 |
+| `classify_risk` 用裸 `starts_with("/tmp")`：`/tmpbackup` 被当成临时目录（Medium 而非 Low）；与第三轮修掉的 home 边界同型。`/var/tmp`、`/Library` 同步改为带分隔符的前缀判断 | `argus-core/safety.rs` | 风险分级 | 67f6a46 |
+| `parse_human_size("GB")` 返回 `Ok(0)`：split 助手对空数字部分回退 "0"，纯单位字符串是唯一能走到该回退并成功解析的输入。删除回退后纯单位按错别字拒绝；`.5KB` 等合法前导点输入不受影响 | `argus-core/model.rs` | 输入校验 | 同上 |
+| `list_brew_packages` 对每个包全量重扫两份 shell 历史：O(包数 × 历史行数)，重 zsh 历史（数十万行）× 百级包 = 数亿次行检查。改为加载时单遍建 token 索引（精确 + 去尾数字两张表，镜像 `command_matches_pkg` 三段匹配语义），每包查询降为常数次 HashMap 探测；新增暴力扫描等价性测试钉住匹配语义 | `argus-core/brew.rs` | brew 扫描性能 | fdf14cc |
+| `spotlight_last_used` 中 mdls spawn 失败经 `?` 直接放弃整个 app 目录查找（其余 app 全部跳过）。改为 continue 到下一个 app | `argus-core/brew.rs` | 健壮性 | 同上 |
+| `:scan docs`、`:consolidate now` 等带参数形式绕过裸命令拦截后落到 `App::cmd_scan`/`cmd_consolidate`，返回"scan started"/"consolidation requested"但**什么都不做**。cmd_scan 真正调用 start_scan；cmd_consolidate 委托新提取的 `App::request_consolidation`（顺带去重裸 `:Consolidate` 分支的内联 spawn） | `argus-tui/command.rs` `handler/command.rs` | 静默 no-op | d8687f6 |
+
+## 存疑 / 记录在案（第五轮新增，未改动）
+
+### 26. watcher 的硬链接去重是"装饰性"的
+`WatcherState::file_size` 在 `nlink > 1` 且命中 hardlink_cache 时返回已缓存尺寸——但同一 inode 的 `stat.len()` 恒等，dedup 命中与直读 metadata 返回值完全一样，create 事件照样全额记账。净效果：硬链接组每次 create 都 +size、每次 delete 都 -size，**全生命周期净额正确**，但存在窗口期内瞬时虚高（如 pnpm 全局 store + 项目 node_modules 同时计入）。真正按 inode 记账需要存 nlink 并做"末链接删除才计负增量"的引用计数模型，涉及记账语义重设计，且当前净额方向正确，暂不动。
+
+### 27. 命令栏中 j/k 被导航抢占
+`:Command` 输入态下 `j`/`k` 优先用于上下选择补全项（matches 几乎对任何输入都非空），因此命令参数里实际上打不出 j/k 字符。现有命令集（scan/sort/time/delta/…）参数不含 j/k，未构成实际问题；若将来命令参数需要这两个字母，需改为仅上/下箭头导航。
+
+### 28. AI 分块发送时单个超限 context 无法再切分
+`find_chunk_boundary` 的二分下界是 1：单个目录指纹本身就超过 `max_tokens_per_request` 时，chunk=1 依然发送并按 API 错误重试后失败。目录指纹只有两个短字段，触发条件不现实（路径长达数十 KB），留观。

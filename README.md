@@ -112,48 +112,54 @@ Launch from any directory — the TUI starts with a pure filesystem tree view.
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Move cursor up/down |
-| `l` / Right | Expand directory / enter child |
-| `h` / Left | Collapse / navigate to parent |
-| `H` | Collapse all children |
-| `u` | Go up one directory root |
+| `j` / `k` | Move cursor down / up |
+| `l` / Right | Enter selected directory |
+| `h` / Left | Go to parent directory |
+| `H` | Go to view root |
+| `u` | Go up: parent inside the tree; at tree root, re-root to the filesystem parent |
 | `g` `g` | Jump to top |
 | `G` | Jump to bottom |
-| `.` | Set current directory as tree root |
-| `s` | Scan current root |
-| `o` | Toggle sort mode (Name / Size / Delta) |
-| `d` | Delete (move to trash) |
-| `D` | Permanently delete (requires confirmation) |
+| `b` / `f` | Navigate back / forward (position history) |
+| `s` | Scan current directory |
+| `.` | Toggle hidden files |
+| `o` | Cycle sort mode (Name / Size / Delta) |
+| `Space` | Enter multi-select / toggle selection (`Esc` exits) |
+| `d` | Delete (move to trash); in multi-select: delete selected |
+| `D` | Permanently delete (requires confirmation); multi-select aware |
 | `i` | Show file info popup |
 | `y` | Copy file path to clipboard |
+| `x` | Delete cached AI analysis for the selected path |
+| `K` | Delta event detail popup (daemon mode) |
+| `a` / `A` | AI review (cursor item / multi-selected items) |
+| `C` / `P` / `U` / `B` | Clean / Purge / Uninstall / Brew panels |
 | `?` | Toggle help overlay |
 | `/` | Enter search mode |
 | `n` / `N` | Next / previous search match |
-| `f` | Focus filter pane |
 | `c` | Clear delta filter |
 | `t` | Cycle time preset (daemon mode) |
-| `R` | Reconnect to daemon |
-| `Tab` | Cycle filter pane fields |
+| `R` | Reconnect to daemon (standalone mode) |
 | `:` | Enter command mode |
-| `q` / `Ctrl+C` | Quit |
+| `q` | Quit (with confirmation) / `Ctrl+C` quit |
 
 ### Command Mode (`:` prefix)
+
+`Tab` cycles completion candidates; `Enter` runs the selected command.
 
 | Command | Description |
 |---------|-------------|
 | `:Scan` | Scan current directory |
+| `:Clean` / `:Purge` / `:Uninstall` / `:Brew` | Open the cleanup / purge / uninstall / brew panels |
+| `:Connect` | Connect to the daemon |
+| `:Consolidate` | Request daemon event consolidation |
+| `:Finder` | Open the go-to-path finder |
 | `:Help` | Show help overlay |
 | `:Sort n` / `:Sort s` / `:Sort d` | Sort by Name / Size / Delta |
 | `:sd` / `:ss` / `:sn` | Quick sort: delta / size / name |
 | `:Delta <N>[k\|m\|g]` | Set delta filter threshold (e.g., `:Delta 10m`) |
-| `:Delta off` | Disable delta filter |
-| `:Time <N>[h\|d\|w]` | Set relative time range (e.g., `:Time 2h`) |
+| `:Time <N>[m\|h\|d\|w]` | Set relative time range (e.g., `:Time 2h`; bare number = hours) |
 | `:Time HH:MM` | Absolute time today |
 | `:Time MM-DD [HH:MM]` | Absolute date |
 | `:Time <from> to <to>` | Custom time range |
-| `:FilterClear` | Clear all filters |
-| `:FilterFocus` | Focus filter pane |
-| `:Consolidate` | Request daemon event consolidation |
 
 ## Configuration
 
@@ -201,7 +207,7 @@ max_tokens_per_request = 4096
 - **Snapshots**: session-only, in-memory. Compact arena (`FileNode` + name blob + CSR children), serialized as bincode+gzip (v4).
 - **Delta events**: daemon-persisted in SQLite (`~/.config/argus/argus.db`). Events have path, delta_size, event_type (create/modify/delete/agg), and timestamp.
 - **IPC**: UDS with bincode-serialized `DaemonRequest`/`DaemonResponse` enums. Length-prefixed frames.
-- **Double-count prevention**: `is_agg` rows consolidate child events; SQL queries use `NOT EXISTS` to exclude descendants covered by aggregate rows.
+- **Double-count prevention**: `is_agg` rows consolidate the direct-child events that existed when consolidation ran; SQL anti-joins exclude only those covered rows (direct children with `timestamp <= agg.ts`), so deeper raw events and post-consolidation events still show.
 
 ## Project Structure
 

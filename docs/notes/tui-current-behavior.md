@@ -21,7 +21,7 @@ This note captures the stable behavior of `argus-tui` as implemented now. It is 
 ## Scanning
 
 - Press `s` to scan the current directory (the directory being browsed, not necessarily view_root).
-- Scan uses `jwalk` (parallel walker, replaces old `ignore` scanner). Respects `.gitignore`.
+- Scan uses `jwalk` in serial mode (`Parallelism::Serial`), recursive, hidden files included (no `.gitignore` handling).
 - Progress shown in a centered popup: current path, file count, bytes, spinner, cancel hint.
 - After scan completes, the snapshot is cached in `scan_cache` keyed by its path.
 - Summary (total size, disk usage, file count, duration) appears in the **title bar**.
@@ -76,13 +76,13 @@ Shows breadcrumb path for the current directory.
 | Sort: Name / Size (disk_usage) / Delta | ✅ |
 | Hidden file toggle (.) | ✅ |
 | Search with highlight (no hide) | ✅ |
-| Multi-select (Tab) + batch delete | ✅ |
+| Multi-select (Space) + batch delete | ✅ |
 | Delete (Trash / Permanent) | ✅ |
 | Delta display (daemon mode) | ✅ |
 | Time range filter (daemon mode) | ✅ |
 | Delta filter (daemon mode) | ✅ |
 | Delta detail popup (K) | ✅ |
-| Go to Path (finder, Ctrl-P) | ✅ |
+| Go to Path (finder, `:Finder`) | ✅ |
 | Color theme (light/dark auto) | ✅ |
 | Command mode (:) | ✅ |
 | Status messages (error/info) | ✅ |
@@ -107,6 +107,6 @@ Shows breadcrumb path for the current directory.
 ## Good README / Wiki Targets
 
 - README "TUI" overview: flat directory browsing, scan-on-demand, in-memory cache.
-- Wiki "How scanning works": jwalk parallel walker, scan_cache, session scope.
+- Wiki "How scanning works": jwalk serial walker, scan_cache, session scope.
 - Wiki "Search vs Filter": search highlights, delta filter hides non-matching.
 - README/daemon notes: directory delta is subtree-wide coverage, not sum of visible leaf rows.
