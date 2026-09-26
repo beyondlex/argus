@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::ipc_client::IpcClient;
 use crate::time_utils::*;
 use crate::types::*;
 use ratatui::widgets::BorderType;
@@ -204,6 +205,11 @@ impl App {
         if self.scanning {
             return Err("already scanning".into());
         }
+        // Actually start the scan: this path is reachable with arguments
+        // (":scan docs"), where the bare "Scan" intercept in the command
+        // handler does not fire. Returning "scan started" without starting
+        // was a silent no-op.
+        crate::handler::start_scan(self);
         Ok("scan started".into())
     }
 
@@ -239,6 +245,37 @@ impl App {
         if !self.server_mode {
             return Err("not in server mode".into());
         }
+        // Same reasoning as cmd_scan: with arguments this bypasses the bare
+        // "Consolidate" intercept and must still request consolidation.
+        self.request_consolidation();
         Ok("consolidation requested".into())
+    }
+
+    /// Fire-and-forget consolidation request to the daemon. Shared by the
+    /// bare `:Consolidate` command and the argument-carrying path.
+    pub fn request_consolidation(&mut self) {
+        let uds_path = self.config.daemon.uds_path.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            match IpcClient::connect(&uds_path).await {
+                Ok(mut client) => match client.request_consolidation().await {
+                    Ok(count) => {
+                        let _ = tx
+                            .send(AppMessage::Info(format!("consolidated {count} events")))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppMessage::Info(format!("consolidation failed: {e}")))
+                            .await;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx
+                        .send(AppMessage::Info(format!("daemon connect failed: {e}")))
+                        .await;
+                }
+            }
+        });
     }
 }

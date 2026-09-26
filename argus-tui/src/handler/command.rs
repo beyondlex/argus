@@ -147,35 +147,7 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
     if cmd.eq_ignore_ascii_case("Consolidate") {
         app.clear_command_state();
         if app.server_mode {
-            let uds_path = app.config.daemon.uds_path.clone();
-            let tx = app.tx.clone();
-            tokio::spawn(async move {
-                match IpcClient::connect(&uds_path).await {
-                    Ok(mut client) => match client.request_consolidation().await {
-                        Ok(count) => {
-                            let _ = tx
-                                .send(crate::app::AppMessage::Info(format!(
-                                    "consolidated {count} events"
-                                )))
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = tx
-                                .send(crate::app::AppMessage::Info(format!(
-                                    "consolidation failed: {e}"
-                                )))
-                                .await;
-                        }
-                    },
-                    Err(e) => {
-                        let _ = tx
-                            .send(crate::app::AppMessage::Info(format!(
-                                "daemon connect failed: {e}"
-                            )))
-                            .await;
-                    }
-                }
-            });
+            app.request_consolidation();
         } else {
             app.set_error("not in server mode".into(), 3);
         }

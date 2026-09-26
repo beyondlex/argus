@@ -366,11 +366,17 @@ fn test_update_command_matches_fuzzy() {
     assert!(app.command_matches.contains(&"Scan"));
 }
 
-#[test]
-fn test_cmd_scan_not_scanning() {
+/// cmd_scan must actually start a scan (it used to only claim to). Runs in
+/// a tokio runtime because start_scan spawns a blocking task, and points at
+/// an empty temp dir so the test does not scan the repository.
+#[tokio::test]
+async fn test_cmd_scan_not_scanning() {
     let (tx, _) = mpsc::channel(1);
     let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+    let tmp = tempfile::TempDir::new().unwrap();
+    app.view_root_path = tmp.path().to_path_buf();
     assert!(app.cmd_scan().is_ok());
+    assert!(app.scanning);
 }
 
 #[test]
@@ -487,11 +493,14 @@ fn test_execute_sort_shortcuts() {
     assert_eq!(app.sort_mode, SortMode::Name);
 }
 
-#[test]
-fn test_execute_scan() {
+#[tokio::test]
+async fn test_execute_scan() {
     let (tx, _) = mpsc::channel(1);
     let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+    let tmp = tempfile::TempDir::new().unwrap();
+    app.view_root_path = tmp.path().to_path_buf();
     assert!(app.execute_command("scan").is_ok());
+    assert!(app.scanning);
 }
 
 #[test]
