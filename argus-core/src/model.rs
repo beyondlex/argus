@@ -690,15 +690,7 @@ pub fn parse_human_size(input: &str) -> Result<u64, ParseSizeError> {
 fn split_number_unit(s: &str) -> (&str, &str) {
     let unit_start = s.find(|c: char| !(c.is_ascii_digit() || c == '.'));
     match unit_start {
-        Some(idx) => {
-            let num_part = &s[..idx];
-            let unit_part = &s[idx..];
-            if num_part.is_empty() {
-                ("0", unit_part)
-            } else {
-                (num_part, unit_part)
-            }
-        }
+        Some(idx) => (&s[..idx], &s[idx..]),
         None => (s, ""),
     }
 }
@@ -760,6 +752,19 @@ mod tests {
     #[test]
     fn test_parse_human_size_empty() {
         assert!(parse_human_size("").is_err());
+    }
+
+    /// A bare unit with no digits is a typo, not zero.
+    #[test]
+    fn test_parse_human_size_unit_only_rejected() {
+        assert!(parse_human_size("GB").is_err());
+        assert!(parse_human_size("MB").is_err());
+    }
+
+    /// A leading decimal point is still a valid number.
+    #[test]
+    fn test_parse_human_size_leading_dot() {
+        assert_eq!(parse_human_size(".5KB").unwrap(), 512);
     }
 
     #[test]

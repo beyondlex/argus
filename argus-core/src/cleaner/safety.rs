@@ -102,10 +102,13 @@ pub fn classify_risk(path: &Path) -> RiskLevel {
     // /Users/lexx/... as inside /Users/lex's home.
     let under_home = path_str.starts_with(&format!("{}/", home_str)) || path_str == home_str;
     if !under_home {
-        if path_str.starts_with("/var/tmp")
-            || path_str.starts_with("/tmp")
-            || path_str.starts_with("/Library")
-        {
+        // Boundary-checked prefixes: a bare starts_with("/tmp") would also
+        // classify sibling names like /tmpbackup as temp space.
+        let is_tmp = path_str == "/tmp"
+            || path_str.starts_with("/tmp/")
+            || path_str == "/var/tmp"
+            || path_str.starts_with("/var/tmp/");
+        if is_tmp || path_str.starts_with("/Library/") || path_str == "/Library" {
             return RiskLevel::Medium;
         }
         return RiskLevel::Low;
@@ -214,6 +217,22 @@ mod tests {
                 assert_ne!(classify_risk(&sibling), RiskLevel::Safe);
             }
         }
+    }
+
+    /// Prefix boundaries matter: /tmpbackup is not temp space, it is an
+    /// ordinary top-level directory (Low, not Medium).
+    #[test]
+    fn test_risk_tmp_prefix_boundary() {
+        assert_ne!(
+            classify_risk(Path::new("/tmpbackup/data")),
+            RiskLevel::Medium
+        );
+        // The real temp dirs still classify as Medium.
+        assert_eq!(classify_risk(Path::new("/tmp/x.bin")), RiskLevel::Medium);
+        assert_eq!(
+            classify_risk(Path::new("/var/tmp/x.bin")),
+            RiskLevel::Medium
+        );
     }
 
     #[test]
