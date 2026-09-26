@@ -15,18 +15,25 @@ argus status
 
 # 本地 SQLite delta 汇总（不经 daemon）
 argus delta-summary --path ~/Downloads
+argus delta-summary --path ~/Downloads --from_ms 1700000000000 --to_ms 1700005000000
 
 # daemon 增量整理 / 清空（危险操作，直接生效）
 argus consolidate
 argus clear
 
+# 清理套件（cleanup feature，默认启用）
+argus clean [--dry-run] [-y]            # 缓存/日志/废纸篓分类清理（shell 命令在确认后执行）
+argus uninstall [--dry-run]             # 交互选择应用卸载 + 残留清理
+argus purge [--paths <DIR>...] [--dry-run]  # 构建产物发现与移除（node_modules/target 等）
+argus brew [--formula] [--cask] [--dry-run] [-y]  # brew 包按最近使用排序卸载
+
 # daemon 使用非默认 socket 时，所有 daemon 子命令可通过全局参数指定
 argus --uds-path /tmp/argus.sock status
 ```
 
-### 1.2 阈值参数
+### 1.2 体积解析
 
-`--threshold` 参数接受人类可读的体积格式，由 `argus-core` 提供解析函数 `parse_human_size`：
+`argus-core` 提供 `parse_human_size` 解析人类可读体积格式（当前 CLI 子命令未直接暴露 `--threshold` 参数，函数作为库 API 保留）：
 
 | 输入 | 实际值（字节） |
 |------|---------------|
@@ -35,9 +42,7 @@ argus --uds-path /tmp/argus.sock status
 | `50MB` | 52,428,800 |
 | `2.5GB` | 2,684,354,560 |
 
-默认值 `0` 表示显示所有变动（不过滤）。
-
-> **Phase 1 实现**：`argus-core` 中实现 `parse_human_size` 函数，`argus-cli` 在解析参数时调用。
+纯单位输入（如 `GB`）与负数、溢出值均返回错误。
 
 ### 1.3 退出码契约
 
@@ -90,16 +95,19 @@ CLI 退出码标准化，支持脚本化管道和 CI 集成：
 | `h` / `←` | 返回上级目录（导航栈 pop） |
 | `H` | 返回 view_root |
 | `u` | 树内返回父级 / 在根跳转到 filesystem 父目录 |
+| `b` / `f` | 导航历史后退 / 前进 |
 | `s` | 扫描当前目录（进度弹窗居中显示） |
 | `o` | 循环切换排序：Name → Size → Delta |
 | `.` | 切换隐藏文件显示 |
 | `/` | 搜索文件/目录（高亮匹配，不隐藏非匹配） |
 | `n` / `N` | 下一个/上一个搜索匹配 |
-| `Tab` | 进入/退出多选模式 |
-| `d` | 删除到废纸篓 |
-| `D` | 永久删除 |
-| `w` | 将当前目录设为新 view_root |
-| `g` | 跳到第一项（双击回到顶部） |
+| `Space` | 进入多选 / 切换选中（有选中时 `Esc` 需确认退出） |
+| `d` | 删除到废纸篓（多选下批量删除） |
+| `D` | 永久删除（多选下批量删除） |
+| `x` | 删除选中路径的 AI 分析缓存 |
+| `a` / `A` | AI 审阅（光标项 / 多选项） |
+| `C` / `P` / `U` / `B` | Clean / Purge / Uninstall / Brew 面板 |
+| `g` | 跳到第一项（双击 `gg` 回到顶部） |
 | `G` | 跳到最后一项 |
 | `i` | 显示文件/目录元信息（大小、权限、修改时间） |
 | `K` | 显示 Delta 详情弹窗（daemon 模式） |
@@ -108,9 +116,11 @@ CLI 退出码标准化，支持脚本化管道和 CI 集成：
 | `?` | 帮助面板 |
 | `t` | 循环切换时间范围（daemon 模式） |
 | `c` | 清除 delta filter |
+| `R` | 重连 daemon（standalone 模式） |
 | `q` / `Esc` | 退出 / 取消当前操作 |
 | `Ctrl-C` | 强制退出 |
-| `Ctrl-P` | 打开 Go to Path 导航 |
+
+Go to Path（目录跳转）通过命令模式 `:Finder` 进入，无直接快捷键。
 
 ### 2.4 时间筛选（Daemon 模式）
 
@@ -122,7 +132,7 @@ Delta 列在语义上表示"当前目录子树的覆盖性变化值"，不是当
 - **启动行为**：启动时展示当前目录的平面文件树。按 `s` 触发扫描后展示精确汇总大小。
 - **扫描行为**：按 `s` 后，居中弹窗显示扫描进度（当前路径、文件数、大小、旋转动画），`Esc` 可取消。
 - **搜索行为**：按 `/` 进入搜索输入模式，`Enter` 激活。匹配项高亮显示，非匹配项保留可见。
-- **多选模式**：按 `Tab` 进入多选，逐个选择条目。按 `d`/`D` 批量删除，`Esc` 退出。
+- **多选模式**：按 `Space` 进入多选并选中当前项，继续 `Space`/移动逐个选择。按 `d`/`D` 批量删除，`Esc` 退出（有选中项时需确认）。
 - **光标**：`gg`（双击 g）跳回顶部，`G` 跳到底部。
 
 ## 3. GUI 端（跨平台现代桌面版 - 后期）
