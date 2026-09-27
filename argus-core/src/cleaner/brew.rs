@@ -64,13 +64,22 @@ fn brew_bin() -> PathBuf {
 }
 
 pub fn brew_prefix() -> PathBuf {
-    let out = Command::new(brew_bin())
-        .arg("--prefix")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    PathBuf::from(out.unwrap_or_else(|| "/opt/homebrew".to_string()))
+    // `brew --prefix` is a Ruby script (~100ms). It is called from the TUI's
+    // message-handling path (BrewScanComplete / enter_brew_ai_review), where
+    // a blocking spawn stalled the UI on every brew scan completion; the
+    // prefix cannot change within a process lifetime, so cache it.
+    static PREFIX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PREFIX
+        .get_or_init(|| {
+            let out = Command::new(brew_bin())
+                .arg("--prefix")
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            PathBuf::from(out.unwrap_or_else(|| "/opt/homebrew".to_string()))
+        })
+        .clone()
 }
 
 fn brew_list_json(package_type: &str) -> Vec<BrewInfo> {
