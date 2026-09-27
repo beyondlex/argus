@@ -18,7 +18,7 @@ use argus_core::{
 
 use argus_core::{
     default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
-    DeltaSummary, NodeIndex, ROOT_NODE,
+    DeltaSummary,
 };
 #[cfg(feature = "shell-cmds")]
 use argus_core::{default_shell_cmd_targets, try_exec_shell_cmd};
@@ -155,7 +155,7 @@ fn cmd_scan(path: &Path) -> Result<i32> {
     println!(
         "{} {}",
         "total files:".bold(),
-        count_files(&snapshot, ROOT_NODE).to_string().green()
+        snapshot.total_files.to_string().green()
     );
     println!(
         "{} {}",
@@ -1061,17 +1061,6 @@ fn print_clean_report(report: &CleanReport) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn count_files(snap: &argus_core::Snapshot, idx: NodeIndex) -> u64 {
-    let mut count = 0u64;
-    if !snap.node(idx).is_dir() {
-        count += 1;
-    }
-    for &child_idx in snap.children(idx) {
-        count += count_files(snap, child_idx);
-    }
-    count
-}
 
 fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
