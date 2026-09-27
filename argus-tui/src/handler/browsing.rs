@@ -120,13 +120,25 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.command_history_idx = None;
             app.update_command_matches();
         }
-        KeyCode::Char('t') if app.server_mode => {
-            if app.multi_select {
-                app.exit_multi_select();
+        KeyCode::Char('t') => {
+            if app.server_mode {
+                if app.multi_select {
+                    app.exit_multi_select();
+                }
+                handle_time_toggle(app);
+            } else {
+                // Time presets query the daemon's delta log; say so instead
+                // of silently dropping the keypress in standalone mode.
+                app.set_info("time range requires daemon mode (R to connect)".into(), 3);
             }
-            handle_time_toggle(app);
         }
-        KeyCode::Char('R') if !app.server_mode => handle_daemon_reconnect(app),
+        KeyCode::Char('R') => {
+            if app.server_mode {
+                app.set_info("already connected to daemon".into(), 2);
+            } else {
+                handle_daemon_reconnect(app);
+            }
+        }
         KeyCode::Char('i') => handle_info_popup(app),
         KeyCode::Char('x') => handle_delete_ai_analysis(app),
         KeyCode::Char('K') => handle_delta_detail_popup(app),

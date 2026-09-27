@@ -808,6 +808,44 @@ mod tests {
         assert!(!app.pending_gg);
     }
 
+    /// Time presets are daemon-only; in standalone mode the key must say so
+    /// instead of doing nothing.
+    #[test]
+    fn test_browsing_key_time_in_standalone_mode_hints() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+        app.server_mode = false;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!app.status_is_error);
+        let msg = app.last_error.clone().unwrap_or_default();
+        assert!(msg.contains("daemon mode"), "got: {msg}");
+    }
+
+    /// Reconnecting while already connected must not spawn a second
+    /// connection; the keypress gets an informational hint instead.
+    #[test]
+    fn test_browsing_key_reconnect_when_connected_hints() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+        app.server_mode = true;
+
+        handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(!app.status_is_error);
+        let msg = app.last_error.clone().unwrap_or_default();
+        assert!(msg.contains("already connected"), "got: {msg}");
+    }
+
     #[test]
     fn test_delete_common_yes_runs_success_flow() {
         let tmp = TempDir::new().unwrap();
