@@ -3,6 +3,11 @@ use std::path::Path;
 
 use argus_core::{DaemonRequest, DaemonResponse, DeltaEntry};
 
+/// Upper bound for a single framed response, mirroring the daemon's request
+/// cap. A corrupt or hostile stream must not turn a 4-byte length into a
+/// multi-gigabyte allocation.
+const MAX_RESPONSE_LEN: usize = 64 * 1024 * 1024;
+
 pub struct IpcClient {
     stream: tokio::net::UnixStream,
 }
@@ -105,6 +110,9 @@ impl IpcClient {
             .await
             .map_err(|e| format!("read len: {e}"))?;
         let resp_len = u32::from_be_bytes(len_buf) as usize;
+        if resp_len > MAX_RESPONSE_LEN {
+            return Err(format!("oversized response ({resp_len} bytes)"));
+        }
         let mut resp_buf = vec![0u8; resp_len];
         self.stream
             .read_exact(&mut resp_buf)

@@ -260,10 +260,15 @@ async fn daemon_request(
 
 /// One framed request/response exchange on an open daemon connection.
 /// Previously copy-pasted across consolidate/status/clear.
+///
+/// The response length is capped like the daemon's request cap: a corrupt
+/// or hostile stream must not turn 4 bytes into a multi-gigabyte alloc.
 async fn send_daemon_request(
     stream: &mut UnixStream,
     req: DaemonRequest,
 ) -> anyhow::Result<DaemonResponse> {
+    const MAX_RESPONSE_LEN: usize = 64 * 1024 * 1024;
+
     let payload = bincode::serialize(&req).map_err(|e| anyhow::anyhow!("serialize: {e}"))?;
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
@@ -273,6 +278,9 @@ async fn send_daemon_request(
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let resp_len = u32::from_be_bytes(len_buf) as usize;
+    if resp_len > MAX_RESPONSE_LEN {
+        anyhow::bail!("oversized response ({resp_len} bytes)");
+    }
     let mut resp_buf = vec![0u8; resp_len];
     stream.read_exact(&mut resp_buf).await?;
 
