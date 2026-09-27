@@ -79,7 +79,16 @@ pub(crate) fn is_time_only(s: &str) -> bool {
         && parts[1].chars().all(|c| c.is_ascii_digit())
 }
 
-pub(crate) fn datetime_to_millis(month: u32, day: u32, hour: u32, minute: u32) -> u64 {
+/// Local-time timestamp for a month/day[/hour:minute] in the current or
+/// previous year. Errors on impossible dates (Feb 30, hour 24, minute 99):
+/// returning 0 used to silently mean "from epoch", disabling the time
+/// filter while the label still showed the typo.
+pub(crate) fn datetime_to_millis(
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+) -> Result<u64, String> {
     let now = Local::now();
     let year = now.year();
     for y in [year, year - 1] {
@@ -89,11 +98,13 @@ pub(crate) fn datetime_to_millis(month: u32, day: u32, hour: u32, minute: u32) -
         {
             let ms = dt.timestamp_millis() as u64;
             if ms <= now.timestamp_millis() as u64 || y < year {
-                return ms;
+                return Ok(ms);
             }
         }
     }
-    0
+    Err(format!(
+        "invalid date/time: {month:02}-{day:02} {hour:02}:{minute:02}"
+    ))
 }
 
 pub(crate) fn format_time_label(left: &str, right: &str) -> String {
@@ -137,7 +148,7 @@ pub fn parse_single_time_arg(arg: &str) -> Result<ParsedTimeArg, String> {
             .map_err(|_| format!("invalid minute: {arg}"))?;
         let (m, d) = today_md();
         Ok(ParsedTimeArg {
-            ms: datetime_to_millis(m, d, h, min),
+            ms: datetime_to_millis(m, d, h, min)?,
             label: format!("{:02}:{:02}", h, min),
             date: Some((m, d)),
         })
@@ -151,7 +162,7 @@ pub fn parse_single_time_arg(arg: &str) -> Result<ParsedTimeArg, String> {
     } else {
         let (m, d, h, min) = parse_date_time(arg).map_err(|e| format!("invalid date-time: {e}"))?;
         Ok(ParsedTimeArg {
-            ms: datetime_to_millis(m, d, h, min),
+            ms: datetime_to_millis(m, d, h, min)?,
             label: format_absolute_label(m, d, h, min),
             date: Some((m, d)),
         })
@@ -161,4 +172,56 @@ pub fn parse_single_time_arg(arg: &str) -> Result<ParsedTimeArg, String> {
 pub(crate) fn today_md() -> (u32, u32) {
     let now = Local::now();
     (now.month(), now.day())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration_units() {
+        assert_eq!(parse_duration("90m").unwrap(), 90 * 60_000);
+        assert_eq!(parse_duration("2h").unwrap(), 2 * 3_600_000);
+        assert_eq!(parse_duration("3d").unwrap(), 3 * 86_400_000);
+        assert_eq!(parse_duration("1w").unwrap(), 604_800_000);
+        // Unit-less defaults to hours.
+        assert_eq!(parse_duration("5").unwrap(), 5 * 3_600_000);
+    }
+
+    #[test]
+    fn test_parse_duration_rejects_garbage_and_overflow() {
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("d").is_err());
+        assert!(parse_duration("99999999999999999999d").is_err());
+    }
+
+    /// Impossible calendar dates must error, not fall back to epoch (which
+    /// silently disabled the time filter while the label showed the typo).
+    #[test]
+    fn test_datetime_to_millis_rejects_impossible_dates() {
+        assert!(datetime_to_millis(2, 30, 0, 0).is_err());
+        assert!(datetime_to_millis(13, 1, 0, 0).is_err());
+        assert!(datetime_to_millis(1, 1, 24, 0).is_err());
+        assert!(datetime_to_millis(1, 1, 12, 99).is_err());
+    }
+
+    #[test]
+    fn test_datetime_to_millis_accepts_real_dates() {
+        // Jan 1 00:00 is always in the past (or clamps to last year).
+        assert!(datetime_to_millis(1, 1, 0, 0).is_ok());
+        assert!(datetime_to_millis(12, 31, 23, 59).is_ok());
+    }
+
+    #[test]
+    fn test_parse_single_time_arg_rejects_impossible_time() {
+        assert!(parse_single_time_arg("12:99").is_err());
+    }
+
+    #[test]
+    fn test_parse_single_time_arg_duration_ok() {
+        let parsed = parse_single_time_arg("3d").unwrap();
+        assert_eq!(parsed.label, "3d");
+        assert!(parsed.date.is_none());
+        assert!(parsed.ms <= now_in_millis());
+    }
 }

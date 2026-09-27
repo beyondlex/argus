@@ -146,10 +146,14 @@ impl App {
                     .date
                     .ok_or("cannot inherit date for time-only right side")?;
                 let parts: Vec<&str> = right.split(':').collect();
-                let h: u32 = parts[0].parse().unwrap_or(0);
-                let min: u32 = parts[1].parse().unwrap_or(0);
+                let h: u32 = parts[0]
+                    .parse()
+                    .map_err(|_| format!("invalid hour: {right}"))?;
+                let min: u32 = parts[1]
+                    .parse()
+                    .map_err(|_| format!("invalid minute: {right}"))?;
                 (
-                    datetime_to_millis(date.0, date.1, h, min),
+                    datetime_to_millis(date.0, date.1, h, min)?,
                     format!("{:02}:{:02}", h, min),
                 )
             } else {
