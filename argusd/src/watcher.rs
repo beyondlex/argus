@@ -39,51 +39,68 @@ impl WatcherState {
         trim_map_half_if_over(&mut self.hardlink_cache, MAX_CACHE_ENTRIES);
     }
 
+    /// Current size of `path`, observing it into the caches. Directories and
+    /// symlinks never take part in size accounting: a directory's stat size
+    /// (~4 KiB of entry data) is not user data, and `stat` on a symlink
+    /// reports the *target's* size, which booked phantom deltas whenever a
+    /// link was created or removed (Homebrew and `node_modules/.bin` create
+    /// many). Matches the scanner, which counts symlinks as size 0.
     pub fn file_size(&mut self, path: &Path) -> Option<u64> {
-        if let Ok(meta) = std::fs::metadata(path) {
-            // Directories never take part in size accounting: their stat size
-            // (~4 KiB of directory entry data) is not user data, and modify
-            // events on a directory would otherwise inject noise deltas every
-            // time a child is created or renamed inside it.
-            if meta.is_dir() {
-                return None;
-            }
-            let ino = {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    (meta.dev(), meta.ino())
-                }
-                #[cfg(not(unix))]
-                {
-                    (0, 0)
-                }
-            };
-
-            #[cfg(unix)]
-            {
-                if meta.nlink() > 1 {
-                    if let Some(existing) = self.hardlink_cache.get(&ino) {
-                        if existing != path {
-                            tracing::trace!("hardlink detected: {existing:?} -> {path:?}");
-                            if let Some(&cached_size) = self.size_cache.get(existing) {
-                                self.size_cache.insert(path.to_path_buf(), cached_size);
-                                self.trim_caches_if_needed();
-                                return Some(cached_size);
-                            }
-                        }
-                    }
-                    self.hardlink_cache.insert(ino, path.to_path_buf());
-                }
-            }
-
-            let size = meta.len();
-            self.size_cache.insert(path.to_path_buf(), size);
-            self.trim_caches_if_needed();
-            Some(size)
-        } else {
-            None
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if meta.is_dir() || meta.is_symlink() {
+            return None;
         }
+        #[cfg(unix)]
+        {
+            // Track every observed inode, not only nlink > 1: the first link
+            // of a pair is observed while it still looks like a regular file,
+            // and create-dedup needs that first path recorded.
+            self.hardlink_cache
+                .insert((meta.dev(), meta.ino()), path.to_path_buf());
+        }
+        let size = meta.len();
+        self.size_cache.insert(path.to_path_buf(), size);
+        self.trim_caches_if_needed();
+        Some(size)
+    }
+
+    /// Size delta to book for a Create event. `None` when the path is a
+    /// duplicate hard link of an already-accounted file: the shared data was
+    /// counted under the first link, and booking the full size again
+    /// double-counted (`cp -l big.bin link.bin` booked +size for a no-op).
+    /// The scanner dedups the same case — see `SeenInodes` in argus-core.
+    ///
+    /// A stale inode mapping must not suppress the create: renames often
+    /// surface as remove+create and the mapping still points at the vanished
+    /// source path, so the mapped path is verified to still exist *and* hold
+    /// the same (device, inode) before treating the event as a dup link.
+    pub fn create_size(&mut self, path: &Path) -> Option<u64> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if meta.is_dir() || meta.is_symlink() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            let ino = (meta.dev(), meta.ino());
+            if let Some(existing) = self.hardlink_cache.get(&ino).cloned() {
+                let still_same_file = std::fs::symlink_metadata(&existing)
+                    .map(|m| m.dev() == ino.0 && m.ino() == ino.1)
+                    .unwrap_or(false);
+                if existing != path && still_same_file {
+                    // Seed the new path's baseline so later modifies measure
+                    // against the shared size, but book no delta.
+                    let size = meta.len();
+                    self.size_cache.insert(path.to_path_buf(), size);
+                    self.trim_caches_if_needed();
+                    return None;
+                }
+            }
+            self.hardlink_cache.insert(ino, path.to_path_buf());
+        }
+        let size = meta.len();
+        self.size_cache.insert(path.to_path_buf(), size);
+        self.trim_caches_if_needed();
+        Some(size)
     }
 
     pub fn remove(&mut self, path: &Path) -> Option<u64> {
@@ -133,7 +150,7 @@ fn event_to_delta(
 
         let event = match kind {
             EventKind::Create(CreateKind::File) | EventKind::Create(CreateKind::Any) => {
-                state.file_size(path).map(|size| DeltaEvent {
+                state.create_size(path).map(|size| DeltaEvent {
                     path: path.clone(),
                     delta_size: size as i64,
                     event_type: "create".into(),
@@ -643,6 +660,125 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].delta_size, -9);
         assert_eq!(events[0].event_type, "delete");
+    }
+
+    /// A second hard link to an already-accounted inode must not book the
+    /// shared data a second time (the scanner dedups the same case). Its
+    /// baseline must still be seeded so later modifies measure correctly.
+    #[cfg(unix)]
+    #[test]
+    fn test_hardlink_create_not_double_counted() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&a),
+            &mut state,
+            1000,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, 5);
+
+        let b = dir.path().join("b.bin");
+        fs::hard_link(&a, &b).unwrap();
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&b),
+            &mut state,
+            1001,
+        );
+        assert!(events.is_empty(), "duplicate link must book no delta");
+        assert_eq!(state.last_known_size(&b), Some(5), "baseline seeded");
+
+        // Modify on the new link measures against its own baseline.
+        fs::write(&b, b"1234567890").unwrap();
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Any),
+            std::slice::from_ref(&b),
+            &mut state,
+            1002,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, 5);
+    }
+
+    /// A rename often surfaces as remove+create; the inode mapping then
+    /// points at the vanished source path and must NOT suppress the create,
+    /// or the rename would book a permanent -size.
+    #[cfg(unix)]
+    #[test]
+    fn test_rename_as_remove_create_still_books() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&a),
+            &mut state,
+            1000,
+        );
+        assert_eq!(events.len(), 1);
+
+        let b = dir.path().join("b.bin");
+        fs::rename(&a, &b).unwrap();
+
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&a),
+            &mut state,
+            1001,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, -5);
+
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&b),
+            &mut state,
+            1002,
+        );
+        assert_eq!(events.len(), 1, "rename's create half must book");
+        assert_eq!(events[0].delta_size, 5);
+    }
+
+    /// Creating a symlink must not book the target's size (`stat` follows
+    /// links; the scanner counts symlinks as size 0 too), and removing one
+    /// must not subtract anything.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_create_not_accounted() {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.bin");
+        fs::write(&target, vec![0u8; 100]).unwrap();
+        let link = dir.path().join("link");
+        symlink(&target, &link).unwrap();
+
+        let mut state = WatcherState::new();
+        let events = event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&link),
+            &mut state,
+            1000,
+        );
+        assert!(
+            events.is_empty(),
+            "symlink create must not book target size"
+        );
+        assert!(state.last_known_size(&link).is_none());
+
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            &[link],
+            &mut state,
+            1001,
+        );
+        assert!(events.is_empty());
     }
 
     #[test]
