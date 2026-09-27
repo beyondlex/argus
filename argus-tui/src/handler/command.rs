@@ -69,10 +69,15 @@ pub(crate) fn handle_command_key(key: KeyEvent, app: &mut App) {
             app.command_scroll = 0;
         }
         KeyCode::Enter => {
-            let cmd = if !app.command_matches.is_empty() {
-                app.command_matches[app.command_selected].to_string()
-            } else {
-                app.command_input.clone()
+            let input = app.command_input.trim().to_string();
+            let Some(cmd) =
+                resolve_enter_command(&input, &app.command_matches, app.command_selected)
+            else {
+                // Empty input: close the bar instead of executing whatever
+                // happens to be the first completion (used to open Brew).
+                app.clear_command_state();
+                app.mode = AppMode::Browsing;
+                return;
             };
             app.mode = AppMode::Browsing;
             execute_command(app, &cmd);
@@ -83,6 +88,28 @@ pub(crate) fn handle_command_key(key: KeyEvent, app: &mut App) {
         }
         _ => {}
     }
+}
+
+/// Decide what Enter executes. The typed input wins unless it is a
+/// case-insensitive prefix of the highlighted completion (plain
+/// abbreviations like `cle` still expand to `Clean`). Selection by fuzzy
+/// subsequence alone used to replace typed aliases with an unrelated
+/// command: `sn` (sort-by-name) is a subsequence of `Scan`, so Enter
+/// started a full scan instead.
+pub(crate) fn resolve_enter_command(
+    input: &str,
+    matches: &[&'static str],
+    selected: usize,
+) -> Option<String> {
+    if input.is_empty() {
+        return None;
+    }
+    if let Some(&m) = matches.get(selected) {
+        if m.to_lowercase().starts_with(&input.to_lowercase()) {
+            return Some(m.to_string());
+        }
+    }
+    Some(input.to_string())
 }
 
 pub(crate) fn execute_command(app: &mut App, cmd: &str) {

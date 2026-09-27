@@ -646,6 +646,83 @@ mod tests {
         assert_eq!(app.command_input.len(), 200);
     }
 
+    // ── resolve_enter_command ────────────────────────────────────────────
+
+    /// `sn` is a fuzzy subsequence of `Scan`, but Enter must run the typed
+    /// alias (sort-by-name), not the highlighted completion.
+    #[test]
+    fn test_resolve_enter_alias_not_replaced_by_completion() {
+        let resolved = super::command::resolve_enter_command("sn", &["Scan"], 0);
+        assert_eq!(resolved.as_deref(), Some("sn"));
+    }
+
+    #[test]
+    fn test_resolve_enter_prefix_expands_to_completion() {
+        let resolved = super::command::resolve_enter_command("cle", &["Clean"], 0);
+        assert_eq!(resolved.as_deref(), Some("Clean"));
+    }
+
+    #[test]
+    fn test_resolve_enter_case_insensitive_prefix() {
+        let resolved = super::command::resolve_enter_command("con", &["Connect", "Consolidate"], 1);
+        assert_eq!(resolved.as_deref(), Some("Consolidate"));
+    }
+
+    #[test]
+    fn test_resolve_enter_empty_input_closes() {
+        assert_eq!(
+            super::command::resolve_enter_command("", &["Brew", "Clean"], 0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_enter_typed_args_survive() {
+        // Matches would be empty for "Time 3d" in practice, but even with a
+        // stale match list the typed text must win.
+        let resolved = super::command::resolve_enter_command("Time 3d", &["Time"], 0);
+        assert_eq!(resolved.as_deref(), Some("Time 3d"));
+    }
+
+    #[test]
+    fn test_command_enter_runs_typed_alias() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "sn".to_string();
+        app.command_matches = vec!["Scan"];
+        app.command_selected = 0;
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert_eq!(app.sort_mode, crate::types::SortMode::Name);
+    }
+
+    #[test]
+    fn test_command_enter_empty_input_closes_bar() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input.clear();
+        app.command_matches = App::COMMANDS.to_vec();
+        app.command_selected = 0;
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Browsing);
+        // No command must have fired.
+        assert!(app.last_error.is_none());
+        assert!(app.brew_state.is_none());
+        assert!(!app.should_quit);
+    }
+
     // ── handle_browsing_key dispatch ─────────────────────────────────────
 
     #[test]
