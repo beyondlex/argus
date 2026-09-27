@@ -5,13 +5,13 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-07-12
+- 2026-09-28
 
 ## Current State
 
 - Phase 1: complete
-- Phase 2: code complete, doc updated, integration tests pending
-- Phase 3: code complete (argusd, IPC, DB, TUI client), integration tests pending
+- Phase 2: complete (integration tests in `argus-tui/tests/integration.rs`)
+- Phase 3: code complete (argusd, IPC, DB, TUI client); end-to-end daemon integration tests (Step 10) still pending
 
 ## Active Work
 
@@ -38,7 +38,7 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - [x] `argus-tui/file_tree.rs`: `"- "` rendering for unscanned dirs
 - [x] `argus-tui/config.rs`: BrowsingConfig
 - [x] `argus-tui/main.rs`: auto_scan_on_start
-- [ ] Integration tests, manual acceptance
+- [x] Integration tests (state-logic level, `argus-tui/tests/integration.rs`); manual acceptance performed across review rounds
 
 ### Phase 3 — Daemon Automation
 
