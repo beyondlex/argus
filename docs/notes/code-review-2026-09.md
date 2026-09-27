@@ -200,9 +200,30 @@ rename 只处理 `From`（记删）与 `To`（记增）。macOS FSEvents 与 ino
 
 ### 26. watcher 的硬链接去重是"装饰性"的
 `WatcherState::file_size` 在 `nlink > 1` 且命中 hardlink_cache 时返回已缓存尺寸——但同一 inode 的 `stat.len()` 恒等，dedup 命中与直读 metadata 返回值完全一样，create 事件照样全额记账。净效果：硬链接组每次 create 都 +size、每次 delete 都 -size，**全生命周期净额正确**，但存在窗口期内瞬时虚高（如 pnpm 全局 store + 项目 node_modules 同时计入）。真正按 inode 记账需要存 nlink 并做"末链接删除才计负增量"的引用计数模型，涉及记账语义重设计，且当前净额方向正确，暂不动。
+**create 侧已修复（第六轮，229711f）**：hardlink_cache 改为记录所有观察过的文件（不再只记 nlink>1，首链接因此可被命中），Create 事件若命中已存在且 inode 仍指向同一文件的映射则记账 0（基线照常播种）。`cp -l` 等新建链接不再虚增 delta，生命周期净额与瞬时值都正确；rename 以 remove+create 形式到达时靠「映射路径存在且 inode 相同」守卫避免误吞 create 的一半。**delete 侧未动**：删除硬链接组中的一个链接仍计全额 -size（组内还有其他链接时磁盘占用并未减少），引用计数模型仍然缺位。另：hardlink_cache 与 size_cache 同为每文件一项，watcher 内存占用约翻倍（同样受 10 万条上限约束）。
 
 ### 27. 命令栏中 j/k 被导航抢占
 `:Command` 输入态下 `j`/`k` 优先用于上下选择补全项（matches 几乎对任何输入都非空），因此命令参数里实际上打不出 j/k 字符。现有命令集（scan/sort/time/delta/…）参数不含 j/k，未构成实际问题；若将来命令参数需要这两个字母，需改为仅上/下箭头导航。
 
 ### 28. AI 分块发送时单个超限 context 无法再切分
 `find_chunk_boundary` 的二分下界是 1：单个目录指纹本身就超过 `max_tokens_per_request` 时，chunk=1 依然发送并按 API 错误重试后失败。目录指纹只有两个短字段，触发条件不现实（路径长达数十 KB），留观。
+
+## 已修复（第六轮）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| 命令栏 Enter 总是用高亮补全项**替换**已输入文本（matches 非空即触发）：`sn`（按名称排序）恰是 `Scan` 的子序列 → 回车全量重扫；`sd` → 执行 `Consolidate`；空输入回车直接打开 Brew。改为仅当输入是高亮项的（大小写不敏感）前缀时才展开补全，否则执行输入原文 | `argus-tui/handler/command.rs` | 交互 bug（可触发意外重扫） | c11dd25 |
+| retention 周期计算 `retention_days * 86_400_000`、`interval_minutes * 60` 用裸乘法：config 填入超大值时 release 下回绕使 `prune_before` 落到近 past——**一次保留任务即可清空整个 delta 库**（debug 构建 panic）。改 saturating，interval 钳到最小 60s；提取纯函数并补测试 | `argusd/retention.rs` | 数据丢失（极端 config） | 3d8fe93 |
+| watcher Create 事件对重复硬链接全额记账（与 scanner 的 `SeenInodes` 去重语义不一致），且旧 hardlink_cache 只记 nlink>1 的观察、首链接永不入表、去重分支几乎不命中（见 #26，create 侧已修）。符号链接同样修正：`stat` 跟随链接，创建/删除 symlink 曾按 target 尺寸记账幽灵 delta（Homebrew、`node_modules/.bin` 会创建大量链接），改为与 scanner 一致按 0 处理 | `argusd/watcher.rs` | delta 记账虚增 | 229711f |
+| `datetime_to_millis` 对不存在的日期（2-30、13-01、24:00、12:99）静默返回 0=epoch：`:time` 过滤器实际变成"从 1970 起"（显示全部事件），状态栏却显示着错误日期。改为返回 `Result`，`:time` 及 `from to HH:MM` 右侧解析把错误报给用户（右侧 `unwrap_or(0)` 一并消除） | `argus-tui/time_utils.rs` `command.rs` | 时间过滤静默失效 | cb0cfc7 |
+| TUI/CLI 客户端读 daemon 响应帧不校验长度上限（daemon 侧请求上限在 0a63ee2 已加，客户端漏了）：损坏/恶意流可用 4 字节长度让客户端分配最多 4 GiB。两端补齐与 daemon 相同的 64 MiB 上限 | `argus-tui/ipc_client.rs` `argus-cli/main.rs` | 健壮性 | b4ba818 |
+| `brew_prefix()` 每次调用同步 spawn `brew --prefix`（Ruby 脚本约 100ms），且在 TUI 消息处理路径（BrewScanComplete / enter_brew_ai_review）调用——每次 brew 扫描完成卡一次 UI。前缀进程内不变，改 `OnceLock` 缓存 | `argus-core/brew.rs` | TUI 卡顿 | 995f15e |
+| CLI `count_files` 手写递归与 `Snapshot.total_files` 重复（builder 已算好）。删递归用字段 | `argus-cli/main.rs` | DRY | 9277b7e |
+
+## 存疑 / 记录在案（第六轮新增，未改动）
+
+### 29. 命令栏历史导航几乎不可达
+Up/Down（及 j/k）在 matches 非空时优先导航补全列表，而 matches 仅在输入匹配不到任何命令时为空——即历史上下翻只在"输入的是无效命令"时可达。vim 风格的"空输入 + Up = 历史"会更顺手；当前选择器行为自洽，暂不改（行为变更收益低）。
+
+### 30. watcher 硬链接 delete 侧引用计数缺位
+见 #26 第六轮更新：create 侧已去重，删除硬链接组中的一个链接仍计全额 -size（组内其他链接的数据仍在盘上）。完整修复需要 nlink 引用计数模型。
