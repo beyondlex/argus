@@ -37,7 +37,6 @@ impl CleanPlan {
 
 pub fn plan_clean(targets: &[CleanTarget]) -> Result<CleanPlan, String> {
     let mut items = Vec::new();
-    let mut total_bytes = 0u64;
 
     for target in targets {
         let mut existing_paths = Vec::new();
@@ -52,7 +51,6 @@ pub fn plan_clean(targets: &[CleanTarget]) -> Result<CleanPlan, String> {
         // Per-path size: assigning the target total to every path item used
         // to inflate each item's label and multiply freed_bytes by the number
         // of existing paths once exec_clean summed them.
-        let mut target_total = 0u64;
         for p in existing_paths {
             let size = dir_size(&p);
             let risk = classify_risk(&p).max(target.risk);
@@ -62,10 +60,25 @@ pub fn plan_clean(targets: &[CleanTarget]) -> Result<CleanPlan, String> {
                 risk,
                 target_id: target.id.clone(),
             });
-            target_total += size;
         }
-        total_bytes += target_total;
     }
+
+    // Drop paths equal to or nested inside an earlier item's path. Targets
+    // legitimately overlap (`~/Library/Logs` umbrella vs its
+    // `DiagnosticReports`/`PowerManagement` sub-targets); selecting both must
+    // count and delete the subtree once, not twice with a guaranteed ENOENT
+    // on the second, already-removed path. The outermost (earliest-listed)
+    // path wins; `Path::starts_with` compares component-wise, so sibling
+    // names like `/logs-extra` never match.
+    let mut deduped: Vec<CleanItem> = Vec::with_capacity(items.len());
+    for item in items {
+        if !deduped.iter().any(|kept| item.path.starts_with(&kept.path)) {
+            deduped.push(item);
+        }
+    }
+    let items = deduped;
+
+    let total_bytes: u64 = items.iter().map(|i| i.size).sum();
 
     Ok(CleanPlan {
         targets: targets.to_vec(),
@@ -200,6 +213,81 @@ mod tests {
         // exec_clean's freed-bytes sum over the plan items equals the plan total.
         let items_sum: u64 = plan.items.iter().map(|i| i.size).sum();
         assert_eq!(items_sum, plan.total_bytes);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Overlapping targets (an umbrella dir and a path inside it, or the same
+    /// path in two targets) must plan the subtree once: one item, one size.
+    /// Both used to appear, double-counting total_bytes and guaranteeing an
+    /// ENOENT failure on the second exec.
+    #[test]
+    fn test_plan_clean_dedupes_nested_and_duplicate_paths() {
+        let dir = std::env::temp_dir().join("_argus_plan_clean_dedup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("logs/nested")).unwrap();
+        std::fs::write(dir.join("logs").join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("logs/nested").join("b.bin"), vec![0u8; 200]).unwrap();
+
+        let umbrella = CleanTarget {
+            id: "umbrella".into(),
+            label: "Umbrella".into(),
+            paths: vec![dir.join("logs")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+        let nested = CleanTarget {
+            id: "nested".into(),
+            label: "Nested".into(),
+            paths: vec![dir.join("logs/nested")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+        let duplicate = CleanTarget {
+            id: "duplicate".into(),
+            label: "Duplicate".into(),
+            paths: vec![dir.join("logs")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+
+        let plan = plan_clean(&[umbrella, nested, duplicate]).unwrap();
+        assert_eq!(plan.items.len(), 1, "nested and duplicate paths must dedup");
+        assert_eq!(plan.items[0].path, dir.join("logs"));
+        assert_eq!(plan.total_bytes, 300);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sibling paths sharing a name prefix must both survive dedup
+    /// (`/logs` vs `/logs-extra` are different subtrees).
+    #[test]
+    fn test_plan_clean_keeps_sibling_prefix_paths() {
+        let dir = std::env::temp_dir().join("_argus_plan_clean_sibling");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::create_dir_all(dir.join("logs-extra")).unwrap();
+        std::fs::write(dir.join("logs").join("a.bin"), vec![0u8; 10]).unwrap();
+        std::fs::write(dir.join("logs-extra").join("b.bin"), vec![0u8; 20]).unwrap();
+
+        let t1 = CleanTarget {
+            id: "logs".into(),
+            label: "Logs".into(),
+            paths: vec![dir.join("logs")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+        let t2 = CleanTarget {
+            id: "logs-extra".into(),
+            label: "Logs Extra".into(),
+            paths: vec![dir.join("logs-extra")],
+            risk: RiskLevel::Safe,
+            category: TargetCategory::TempFiles,
+        };
+
+        let plan = plan_clean(&[t1, t2]).unwrap();
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.total_bytes, 30);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

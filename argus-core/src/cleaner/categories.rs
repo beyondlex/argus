@@ -266,13 +266,10 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
             category: TargetCategory::SystemLogs,
         });
 
-        targets.push(CleanTarget {
-            id: "system-diagnostic-logs".into(),
-            label: "System Diagnostic Logs".into(),
-            paths: vec![home.join("Library/Logs/DiagnosticReports")],
-            risk: RiskLevel::Medium,
-            category: TargetCategory::SystemLogs,
-        });
+        // NOTE: `~/Library/Logs/DiagnosticReports` is covered by
+        // system-crash-reports above. A second "System Diagnostic Logs" target
+        // pointing at the same directory double-counted it in plan totals and
+        // trashed it twice (second attempt always failed).
 
         targets.push(CleanTarget {
             id: "system-power-logs".into(),
@@ -283,13 +280,9 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
         });
 
         // ── User Essentials ───────────────────────────────────────────────────
-        targets.push(CleanTarget {
-            id: "user-app-logs".into(),
-            label: "User App Logs".into(),
-            paths: vec![home.join("Library/Logs")],
-            risk: RiskLevel::Low,
-            category: TargetCategory::UserData,
-        });
+        // NOTE: `~/Library/Logs` is already the "system-logs" target above; a
+        // second "User App Logs" entry with the same path used to exist here
+        // and double-counted it in plan totals (and trashed it twice).
 
         targets.push(CleanTarget {
             id: "user-siri-suggestions".into(),
@@ -327,13 +320,9 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
             category: TargetCategory::CloudStorage,
         });
 
-        targets.push(CleanTarget {
-            id: "cloud-icloud".into(),
-            label: "iCloud Cache".into(),
-            paths: vec![home.join("Library/Caches/CloudKit")],
-            risk: RiskLevel::Medium,
-            category: TargetCategory::CloudStorage,
-        });
+        // NOTE: `~/Library/Caches/CloudKit` is covered by
+        // system-icloud-session above; a "cloud-icloud" target repeating it
+        // used to exist here and double-counted it in plan totals.
 
         // ── Office Applications ───────────────────────────────────────────────
         targets.push(CleanTarget {
@@ -436,6 +425,25 @@ mod tests {
         for t in &targets {
             assert!(!t.id.is_empty(), "target id empty: {:?}", t.label);
             assert!(!t.paths.is_empty(), "target {:?} has no paths", t.id);
+        }
+    }
+
+    /// Two targets sharing the same path double-count it in plan totals and
+    /// trash it twice (the second exec always fails). A past regression had
+    /// `system-diagnostic-logs` duplicating the user DiagnosticReports path
+    /// already owned by `system-crash-reports`.
+    #[test]
+    fn test_default_targets_have_no_duplicate_paths() {
+        let targets = default_clean_targets();
+        let mut seen = std::collections::HashSet::new();
+        for t in &targets {
+            for p in &t.paths {
+                assert!(
+                    seen.insert(p.clone()),
+                    "path {p:?} appears in more than one target (target {:?})",
+                    t.id
+                );
+            }
         }
     }
 
