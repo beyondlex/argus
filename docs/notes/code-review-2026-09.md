@@ -229,3 +229,51 @@ Up/Down（及 j/k）在 matches 非空时优先导航补全列表，而 matches 
 
 ### 30. watcher 硬链接 delete 侧引用计数缺位
 见 #26 第六轮更新：create 侧已去重，删除硬链接组中的一个链接仍计全额 -size（组内其他链接的数据仍在盘上）。完整修复需要 nlink 引用计数模型。
+
+## 已修复（第七轮，2026-09-29）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| 三个清理 target 的路径与其它 target 完全重复：`system-diagnostic-logs`（= system-crash-reports 的用户 DiagnosticReports 路径）、`user-app-logs`（= system-logs 的 `~/Library/Logs`）、`cloud-icloud`（= system-icloud-session 的 CloudKit 缓存）→ 同时选中时 plan 总量双计、同一目录 trash 两次（第二次必 ENOENT）。删除三个冗余 target，并在 `plan_clean` 增加组件级去重：路径相等或嵌套于更早条目（组件级 `Path::starts_with`，`/logs` 与 `/logs-extra` 互不影响）时只保留外层一条，剩余的伞形/子 target 重叠（`~/Library/Logs` ⊃ DiagnosticReports/PowerManagement）也因此只计一次 | `argus-core/cleaner/categories.rs` `cleaner.rs` | 清理总量虚报 + 必现删除报错 | d4e05b5 |
+| `classify_risk` 用 `contains("/Library/")` 判定 Library 归属：`~/Library` 本体（Library 后无组件）不匹配 → 整个用户 Library 目录被判为 **Safe**（最低风险）。补 `ends_with("/Library")`；系统 `/Library` 维持 Medium | `argus-core/cleaner/safety.rs` | 风险分级（最敏感路径反而最低风险） | cf98b0c |
+| DeltaData / AiAnalysisComplete / DeleteComplete 到达时重载 children 会清空搜索状态：daemon 推送增量或 AI 批次完成的一瞬，用户正在输入（Input）或 n/N 导航（Active）的查询静默消失。新增 `reload_children_preserving_search` 保留查询与模式并按新 children 重算匹配 | `argus-tui/app.rs` | 交互 bug（搜索被后台刷新吞掉） | 041b468 |
+| 被删路径恰好是某个 scan_cache 根时缓存项残留：`remove_path_from_snapshot` 对根自身无组件可删、返回 false，陈旧快照留在缓存里；`enter_directory` 优先命中缓存 → 删除后再进入该目录显示已删内容。改为直接丢弃该缓存项，下次访问回退 `list_dir` | `argus-tui/tree_ops.rs` | 浏览陈旧数据 | da063bb |
+| `search::fuzzy_match`（子序列匹配，命令补全用）与 `fuzzy_match_indices`（子串匹配，树搜索高亮用）名字几乎相同而语义不同。改名 `fuzzy_subsequence_match` | `argus-tui/search.rs` | 命名歧义 | 4025a13 |
+
+## 存疑 / 记录在案（第七轮新增，未改动）
+
+### 31. debounce 落库重试无上限
+`flush`/`flush_expired` 失败后以 3s 过期时间重插 pending，若 DB 永久不可写（磁盘满、文件权限、库损坏），pending 无限累积且只有 error 日志，无放弃阈值、无用户可见告警。进程退出时最后的 `flush()` 同样可能静默丢事件。概率低（daemon 单写者 + WAL），真正修复需要重试上限 + 丢弃策略决策，出现实际症状再排期。
+
+### 32. brew `spotlight_last_used` 匹配过松
+`pkg_name.contains(&stem.to_lowercase())` 双向包含：cask `iterm2` 会命中 `iTerm.app`（读错 last-used），反之短名包可能命中大量无关 app。仅在 shell 历史、opt atime 两级都无命中时作为 cask 回退，影响面是显示值；收紧匹配会让部分 cask 从"可能有误的值"变成"无值（never）"，属产品取舍，未动。
+
+### 33. `find_orphaned_data` 双向 contains 归类过松
+`fc.contains(&kc) || kc.contains(&fc)`：极短目录名（如 `go`）会被任何 bundle id 含该串的已装应用"认领"，孤儿判定漏报；同样机制也可能误报。启发式的固有模糊性，修需要更精细的名称相似度策略。
+
+### 34. `dir_size` 顶层符号链接跟随目标
+函数对遍历中的条目跳过 symlink，但传入的 `path` 本身若是 symlink→dir，`path.is_dir()` 跟随链接并统计 target 全树——与函数注释"symlinks are skipped entirely"矛盾。当前所有调用方（keg、app bundle、清理 target）都传真实目录，未构成实际问题；修复应在入口处用 `symlink_metadata` 短路。
+
+### 35. watcher RenameMode::To 缺 From 半账时虚增
+rename 的 To 事件按 create 全额记账；若 From 半账丢失（监控启动窗口、事件洪峰丢弃、跨文件系统 rename 只报 create），净效果虚增 +size 且无对冲负账。事件流固有窗口，修复需配对缓冲，复杂度高于收益，留观。
+
+### 36. `fuzzy_match_indices` 非 ASCII 分支的字符索引可能偏移
+`to_lowercase()` 可能改变字符数（如 `İ` → `i̇` 两字符），按小写串计算出的字符区间套回原串时高亮错位。仅影响显示层高亮，CJK（1:1 映射）不受影响。
+
+### 37. TUI `i`/`x` 按键在 UI 线程同步 open_db
+`handle_info_popup` / `handle_delete_ai_analysis` 每次按键同步 `open_db`（建目录、WAL pragma、CREATE TABLE IF NOT EXISTS），毫秒级阻塞。可把 `Connection` 缓存在 App 生命周期内（UI 单线程，无 Sync 问题），属小优化，当前无可感知卡顿。
+
+### 38. `freed_bytes` 语义与"释放"不符
+`exec_items` 把进废纸篓的尺寸计入 freed_bytes，但废纸未清空前磁盘占用不变。UI 文案是 "freed"。改文案（"removed"/"移入废纸篓"）或区分两种统计是产品决策。
+
+### 39. 两套 `RiskLevel` 枚举并存
+`argus_core::cleaner::safety::RiskLevel`（带 Ord，安全分级）与 `argus_tui::types::RiskLevel`（带 serde，AI verdict 用）字段同名、转换靠手写 match。可下沉到 core 统一，但牵动 AI 缓存序列化格式（已落库的 verdict JSON），迁移成本大于当前收益。
+
+### 40. TUI 配置解析失败静默回退默认值
+`argus-tui/config.rs load_config` 对 TOML 解析错误与 daemon 侧不同——直接返回默认值且无任何输出。用户 typo（如 `[daemons]`）后所有自定义项悄悄失效。可在进入 TUI 前 `eprintln!` 一行警告。
+
+## 性能观察（第七轮）
+
+- `has_ai_analysis_batch` 仍是每路径一次查询（预编译语句复用），批量 AI 面板路径多时是 N 次探测。SQLite 本地点查微秒级，未构成瓶颈；若将来路径上千，可换临时表 join。
+- `plan_clean` 的嵌套去重是 O(n²)（n = 现存 target 路径数，几十量级），可忽略。
+- `query_delta_total/detail` 的反连接子查询依赖 `idx_delta_agg_path_time`，EXPLAIN 过；量大时的替代方案（预计算覆盖表）在 `scan-memory-optimization-csr.md` 的思路之外，暂无必要。
