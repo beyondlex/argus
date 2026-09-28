@@ -66,7 +66,12 @@ pub fn apply_deletion_to_state(app: &mut App, deleted_path: &Path) -> u64 {
     }
 
     for key in keys_to_remove {
-        if key == app.view_root_path || deleted_path.starts_with(&key) {
+        if key == deleted_path {
+            // The deleted path IS a cached scan root: the snapshot cannot be
+            // pruned (its root is gone), so drop it — keeping it would serve
+            // stale content if the user enters that directory again.
+            app.scan_cache.remove(&key);
+        } else if key == app.view_root_path || deleted_path.starts_with(&key) {
             if let Some(arc) = app.scan_cache.get_mut(&key) {
                 let snapshot = Arc::make_mut(arc);
                 remove_path_from_snapshot(snapshot, deleted_path);
@@ -608,6 +613,31 @@ mod tests {
 
         let TreeNode::Snapshot(snap_arc, _) = app.tree_root.as_ref().unwrap();
         assert_eq!(snap_arc.node(ROOT_NODE).size(), 80);
+    }
+
+    /// A cached scan whose root IS the deleted path cannot be pruned (its
+    /// root node is the deleted entry) — it must be dropped, or entering that
+    /// directory afterwards serves the stale snapshot showing deleted
+    /// content (enter_directory prefers a cached scan).
+    #[test]
+    fn test_delete_drops_cached_scan_rooted_at_deleted_path() {
+        let mut sub_b = SnapshotBuilder::new("gone");
+        sub_b.push_file(ROOT_NODE, "old.txt", FileType::File, 10, 10);
+        let sub_snap = sub_b.finish(PathBuf::from("/tmp/test/gone"), 10, 10);
+
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.scan_cache
+            .insert(PathBuf::from("/tmp/test/gone"), Arc::new(sub_snap));
+
+        apply_deletion_to_state(&mut app, Path::new("/tmp/test/gone"));
+
+        assert!(
+            !app.scan_cache
+                .contains_key(&PathBuf::from("/tmp/test/gone")),
+            "stale scan cache rooted at the deleted path must be dropped"
+        );
     }
 
     #[test]
