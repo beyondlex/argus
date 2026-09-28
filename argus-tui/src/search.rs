@@ -27,8 +27,10 @@ pub fn fuzzy_match_indices(query: &str, target: &str) -> Option<Vec<usize>> {
     Some((start..end).collect())
 }
 
-/// Fuzzy substring match for command autocomplete filtering.
-pub(crate) fn fuzzy_match(query: &str, target: &str) -> bool {
+/// Fuzzy subsequence match for command autocomplete filtering: every query
+/// char must appear in order in the target (unlike the substring-based
+/// `fuzzy_match_indices`).
+pub(crate) fn fuzzy_subsequence_match(query: &str, target: &str) -> bool {
     let mut chars = target.chars();
     for qc in query.chars() {
         loop {
@@ -74,17 +76,17 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_match_basic() {
-        assert!(fuzzy_match("sc", "scan"));
+    fn test_fuzzy_subsequence_match_basic() {
+        assert!(fuzzy_subsequence_match("sc", "scan"));
     }
 
     #[test]
-    fn test_fuzzy_match_no_match() {
-        assert!(!fuzzy_match("xyz", "scan"));
+    fn test_fuzzy_subsequence_match_no_match() {
+        assert!(!fuzzy_subsequence_match("xyz", "scan"));
     }
 
     #[test]
-    fn test_fuzzy_match_exact() {
-        assert!(fuzzy_match("Scan", "Scan"));
+    fn test_fuzzy_subsequence_match_exact() {
+        assert!(fuzzy_subsequence_match("Scan", "Scan"));
     }
 }

@@ -28,7 +28,7 @@ impl App {
             let lower = self.command_input.to_lowercase();
             self.command_matches = Self::COMMANDS
                 .iter()
-                .filter(|&c| crate::search::fuzzy_match(&lower, &c.to_lowercase()))
+                .filter(|&c| crate::search::fuzzy_subsequence_match(&lower, &c.to_lowercase()))
                 .copied()
                 .collect();
         }
