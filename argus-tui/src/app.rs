@@ -481,7 +481,7 @@ impl App {
                 if let Some(client) = returned_client {
                     self.daemon_client = Some(client);
                 }
-                self.load_current_children();
+                self.reload_children_preserving_search();
                 log_msg(
                     &self.log_path,
                     &format!("DeltaData applied in {:?}", t0.elapsed()),
@@ -510,7 +510,7 @@ impl App {
                     total_freed = total_freed.saturating_add(freed);
                 }
                 self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
-                self.load_current_children();
+                self.reload_children_preserving_search();
                 self.exit_multi_select();
 
                 if !errors.is_empty() {
@@ -537,7 +537,7 @@ impl App {
                     };
                     state.status = AiStatus::Ready;
                 }
-                self.load_current_children();
+                self.reload_children_preserving_search();
             }
             AppMessage::AiAnalysisError(msg) => {
                 self.set_error(format!("AI analysis error: {}", msg), 10);
@@ -1037,6 +1037,23 @@ impl App {
         self.current_filtered
             .get(self.cursor)
             .and_then(|&idx| self.current_children.get(idx))
+    }
+
+    /// Reload children without discarding an in-progress search.
+    /// Background refreshes (delta data arriving from the daemon, AI analysis
+    /// completing, deletions finishing) rebuild `current_children`; the plain
+    /// reload resets search state, so a query the user was typing or
+    /// navigating with n/N silently vanished whenever such a message landed.
+    pub(crate) fn reload_children_preserving_search(&mut self) {
+        let saved_word = self.search_word.clone();
+        let saved_mode = self.search_mode;
+        self.load_current_children();
+        if saved_word.is_empty() {
+            return;
+        }
+        self.search_word = saved_word;
+        self.search_mode = saved_mode;
+        self.apply_search();
     }
 
     /// Rebuild `current_filtered` from `current_children` based on delta filter

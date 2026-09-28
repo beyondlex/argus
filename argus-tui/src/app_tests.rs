@@ -897,3 +897,47 @@ fn test_refresh_current_filtered_delta_active() {
     let idx = app.current_filtered[0];
     assert_eq!(app.current_children[idx].node.name(), "src");
 }
+
+/// A background refresh (delta data from the daemon) must not wipe a search
+/// the user is typing or navigating: the query, its mode, and the match
+/// highlight survive the children reload.
+#[test]
+fn test_reload_children_preserves_active_search() {
+    let mut app = make_flat_app();
+    app.search_word = "re".into();
+    app.search_mode = SearchMode::Active;
+    app.apply_search();
+    assert!(!app.search_match_indices.is_empty());
+    let matched_cursor = app.cursor;
+
+    app.reload_children_preserving_search();
+
+    assert_eq!(app.search_word, "re");
+    assert_eq!(app.search_mode, SearchMode::Active);
+    assert!(!app.search_match_indices.is_empty());
+    assert_eq!(app.cursor, matched_cursor);
+}
+
+/// Same guarantee while the user is still typing (Input mode) — a daemon
+/// push mid-keystroke used to clear the half-typed query.
+#[test]
+fn test_reload_children_preserves_input_mode_search() {
+    let mut app = make_flat_app();
+    app.search_word = "s".into();
+    app.search_mode = SearchMode::Input;
+
+    app.reload_children_preserving_search();
+
+    assert_eq!(app.search_word, "s");
+    assert_eq!(app.search_mode, SearchMode::Input);
+}
+
+/// With no search underway the plain reload semantics are unchanged.
+#[test]
+fn test_reload_children_without_search_stays_inactive() {
+    let mut app = make_flat_app();
+    app.reload_children_preserving_search();
+    assert!(app.search_word.is_empty());
+    assert_eq!(app.search_mode, SearchMode::Inactive);
+    assert!(!app.current_children.is_empty());
+}
