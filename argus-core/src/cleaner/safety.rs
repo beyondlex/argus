@@ -114,7 +114,10 @@ pub fn classify_risk(path: &Path) -> RiskLevel {
         return RiskLevel::Low;
     }
 
-    let under_library = path_str.contains("/Library/");
+    // The trailing slash matters: `~/Library` itself (no component after it)
+    // must classify as Library too, not fall through to Safe — deleting the
+    // whole user Library directory is exactly the case this branch exists for.
+    let under_library = path_str.contains("/Library/") || path_str.ends_with("/Library");
     if under_library {
         if path_str.contains("/Caches")
             || path_str.contains("/Logs")
@@ -185,6 +188,19 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         let p = Path::new(&home).join("Library/Caches/com.example.app");
         assert_eq!(classify_risk(&p), RiskLevel::Low);
+    }
+
+    /// `~/Library` itself has no component after "Library", so a
+    /// `contains("/Library/")` check missed it and classified the whole user
+    /// Library directory as Safe — the most dangerous path in the home.
+    #[test]
+    fn test_risk_home_library_itself_is_not_safe() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let lib = Path::new(&home).join("Library");
+        assert_eq!(classify_risk(&lib), RiskLevel::Low);
+
+        // The system-level /Library keeps its Medium classification.
+        assert_eq!(classify_risk(Path::new("/Library")), RiskLevel::Medium);
     }
 
     #[test]
