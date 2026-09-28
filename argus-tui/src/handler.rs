@@ -723,6 +723,126 @@ mod tests {
         assert!(!app.should_quit);
     }
 
+    // ── command bar history vs completion navigation ─────────────────────
+
+    fn command_app_with_history() -> App {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.push_command_history("Time 3d");
+        app.push_command_history("Scan");
+        app
+    }
+
+    /// Up recalls history newest-first regardless of the completion list
+    /// (which used to capture Up/Down for almost any input, review #29).
+    #[test]
+    fn test_command_up_recalls_history_newest_first() {
+        let mut app = command_app_with_history();
+
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.command_input, "Scan");
+        assert_eq!(app.command_history_idx, Some(1));
+
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.command_input, "Time 3d");
+        assert_eq!(app.command_history_idx, Some(0));
+
+        // Oldest entry: Up again stays put.
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.command_input, "Time 3d");
+        assert_eq!(app.command_history_idx, Some(0));
+    }
+
+    #[test]
+    fn test_command_down_walks_back_and_clears() {
+        let mut app = command_app_with_history();
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        assert_eq!(app.command_input, "Time 3d");
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.command_input, "Scan");
+
+        // Past the newest entry: back to the empty draft.
+        handle_command_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert!(app.command_input.is_empty());
+        assert_eq!(app.command_history_idx, None);
+    }
+
+    /// With no history (Up/Down are no-ops) and matches shown, Up/Down must
+    /// not move the completion selection — that is Tab/BackTab's job now.
+    #[test]
+    fn test_command_up_down_do_not_move_completion_selection() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "s".to_string();
+        app.update_command_matches();
+        assert!(!app.command_matches.is_empty());
+        app.command_selected = 1;
+
+        handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()), &mut app);
+        handle_command_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.command_selected, 1);
+        assert!(app.command_history.is_empty());
+    }
+
+    /// Completion cycling moved to Tab/BackTab.
+    #[test]
+    fn test_command_tab_and_backtab_cycle_matches() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "s".to_string();
+        app.update_command_matches();
+        assert!(!app.command_matches.is_empty());
+        let first = app.command_selected;
+
+        handle_command_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()), &mut app);
+        let second = app.command_selected;
+        assert_ne!(first, second);
+        assert_eq!(app.command_input, app.command_matches[second]);
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.command_selected, first);
+    }
+
+    /// j/k are literal characters in the command bar now (review #27) —
+    /// args like `:Time 3d` must remain typeable.
+    #[test]
+    fn test_command_jk_type_literally() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Command;
+        app.command_input = "Time 3".to_string();
+        app.command_selected = 2;
+
+        handle_command_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+            &mut app,
+        );
+        handle_command_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.command_input, "Time 3jk");
+    }
+
     // ── handle_browsing_key dispatch ─────────────────────────────────────
 
     #[test]

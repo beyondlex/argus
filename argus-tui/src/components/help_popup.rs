@@ -71,6 +71,19 @@ pub fn render(f: &mut Frame, area: Rect, theme: &ColorTheme) {
         )]),
         Line::from(vec![Span::raw("  Press 'c' to reset all filters")]),
         Line::from(vec![Span::raw("")]),
+        Line::from(vec![Span::styled(
+            "Command Bar (:):",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(key_hints(
+            &[("Tab / Shift+Tab", "Cycle completions")],
+            theme,
+        )),
+        Line::from(key_hints(&[("Up / Down", "Command history")], theme)),
+        Line::from(key_hints(&[("Enter", "Run command")], theme)),
+        Line::from(vec![Span::raw("")]),
         Line::from(key_hints(&[("? / Esc", "Close")], theme)),
     ];
 

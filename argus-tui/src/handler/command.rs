@@ -33,19 +33,12 @@ pub(crate) fn handle_command_key(key: KeyEvent, app: &mut App) {
             app.command_history_idx = None;
             app.command_scroll = app.command_selected.saturating_sub(7);
         }
-        KeyCode::Up | KeyCode::Char('k') if !app.command_matches.is_empty() => {
-            app.command_selected = if app.command_selected == 0 {
-                app.command_matches.len() - 1
-            } else {
-                app.command_selected - 1
-            };
-            app.command_scroll = app.command_selected.saturating_sub(7);
-        }
-        KeyCode::Down | KeyCode::Char('j') if !app.command_matches.is_empty() => {
-            app.command_selected = (app.command_selected + 1) % app.command_matches.len();
-            app.command_scroll = app.command_selected.saturating_sub(7);
-        }
-        KeyCode::Up | KeyCode::Char('k') if !app.command_history.is_empty() => {
+        // Up/Down are reserved for history recall — they used to navigate the
+        // completion list, which is non-empty for almost any input, making
+        // history effectively unreachable (review note #29). Completion
+        // cycling stays on Tab/BackTab; j/k now type literally, so command
+        // arguments can contain them (review note #27).
+        KeyCode::Up if !app.command_history.is_empty() => {
             let idx = match app.command_history_idx {
                 Some(i) if i > 0 => i - 1,
                 None => app.command_history.len() - 1,
@@ -56,7 +49,7 @@ pub(crate) fn handle_command_key(key: KeyEvent, app: &mut App) {
             app.update_command_matches();
             app.command_scroll = 0;
         }
-        KeyCode::Down | KeyCode::Char('j') if app.command_history_idx.is_some() => {
+        KeyCode::Down if app.command_history_idx.is_some() => {
             let idx = app.command_history_idx.unwrap();
             if idx + 1 < app.command_history.len() {
                 app.command_history_idx = Some(idx + 1);

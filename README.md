@@ -143,9 +143,10 @@ Launch from any directory — the TUI starts with a pure filesystem tree view.
 
 ### Command Mode (`:` prefix)
 
-`Tab` cycles completion candidates. `Enter` runs what you typed; if the
-input is only a prefix of the highlighted candidate (e.g. `cle`), it
-expands to that command first.
+`Tab` / `Shift+Tab` cycle completion candidates; `Up` / `Down` recall
+command history. `Enter` runs what you typed; if the input is only a
+prefix of the highlighted candidate (e.g. `cle`), it expands to that
+command first.
 
 | Command | Description |
 |---------|-------------|
