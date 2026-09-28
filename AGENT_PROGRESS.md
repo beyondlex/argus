@@ -5,7 +5,7 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-09-28
+- 2026-09-29
 
 ## Current State
 

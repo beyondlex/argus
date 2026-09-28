@@ -59,6 +59,10 @@ Shows breadcrumb path for the current directory.
 - `n` / `N` cycle through match indices (within `search_match_indices`).
 - `Esc` clears search; `Enter` (in active mode) re-edits the query.
 - Search is constrained to the current directory's children only (O(C) not O(N)).
+- A query in progress (typing or active) **survives background refreshes** —
+  delta data arriving from the daemon, AI analysis completion, and delete
+  completion all reload children without discarding it; match indices are
+  recomputed against the fresh children.
 
 ## Theme
 
