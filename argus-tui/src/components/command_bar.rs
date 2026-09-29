@@ -8,6 +8,7 @@ use ratatui::{
 use ratatui::layout::Rect;
 
 use crate::theme::ColorTheme;
+use unicode_width::UnicodeWidthStr;
 
 fn command_desc(name: &str) -> &'static str {
     match name {
@@ -134,8 +135,10 @@ pub fn render(
         input_area,
     );
 
+    // Cursor x from display width: byte length put the caret past the end
+    // of CJK input (2 rendered columns per 3 bytes).
     let cursor_x = area.x
-        + (input.len() as u16)
+        + (input.width() as u16)
             .min(area.width.saturating_sub(2))
             .saturating_add(1);
     f.set_cursor_position((cursor_x, input_y));
