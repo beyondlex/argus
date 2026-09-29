@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Everything the status bar needs from the app, gathered by the caller.
 /// Keeps `render`'s signature manageable as indicators grow.
@@ -136,7 +137,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &StatusCtx) {
             .add_modifier(ratatui::style::Modifier::BOLD),
     ));
     right_spans.push(Span::raw(" "));
-    let right_width: u16 = right_spans.iter().map(|s| s.content.len() as u16).sum();
+    let right_width: u16 = right_spans.iter().map(|s| s.content.width() as u16).sum();
     let right_line = Line::from(right_spans);
 
     let block = Block::default().style(Style::default().bg(theme.bg));
