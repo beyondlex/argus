@@ -232,15 +232,28 @@ pub fn find_orphaned_data() -> Result<OrphanedData, String> {
     // Names and bundle ids only: sizes and Spotlight last-used dates are
     // irrelevant here and cost a full bundle walk plus one mdls per app.
     let apps = collect_app_bundles(None, false);
+    find_orphaned_data_in(&home, &apps)
+}
 
+/// Injectable core of [`find_orphaned_data`]: home dir and the installed-app
+/// list are parameters so tests run against a temp `HOME` — the old test
+/// called the real function, whose `dir_size` pass over every unknown entry
+/// under the developer's actual `~/Library` kept a test binary spinning for
+/// tens of minutes.
+fn find_orphaned_data_in(home: &Path, apps: &[AppInfo]) -> Result<OrphanedData, String> {
     let known_names: Vec<String> = apps
         .iter()
         .flat_map(|a| {
-            let mut names = Vec::new();
-            names.push(a.name.to_lowercase());
-            let id_clean = a.id.to_lowercase().replace('.', "");
-            names.push(id_clean);
-            names
+            // Both id spellings: sandbox containers and vendor dirs on disk
+            // keep the dotted bundle id ("com.vendor.app"), while some
+            // vendors strip the dots. Matching only the stripped form used
+            // to flag every sandbox container whose app name was not a
+            // substring of the id as orphaned data.
+            vec![
+                a.name.to_lowercase(),
+                a.id.to_lowercase(),
+                a.id.to_lowercase().replace('.', ""),
+            ]
         })
         .collect();
 
@@ -339,7 +352,10 @@ mod tests {
 
     #[test]
     fn test_find_apps_returns_list() {
-        let apps = find_installed_apps(None).unwrap();
+        // Cheap listing only (Info.plist reads): the `with_details` variant
+        // additionally walks every real app bundle for sizes and spawns one
+        // mdls per app — minutes of work the assertions below never use.
+        let apps = collect_app_bundles(None, false);
         for app in &apps {
             assert!(!app.name.is_empty());
             assert!(app.path.to_string_lossy().ends_with(".app"));
@@ -372,11 +388,79 @@ mod tests {
         assert_eq!(leftovers.total_leftover_bytes, 0);
     }
 
+    /// Orphan classification must run against the injected temp home: entries
+    /// matching an installed app (name or bundle id) are known, everything
+    /// else in the leftover dirs is orphaned.
     #[test]
-    fn test_find_orphaned_data_returns_ok() {
-        let result = find_orphaned_data();
-        assert!(result.is_ok());
-        let data = result.unwrap();
-        assert!(data.item_count == 0 || data.total_bytes > 0);
+    fn test_find_orphaned_data_classifies_against_injected_apps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let app_support = home.join("Library/Application Support");
+        fs::create_dir_all(&app_support).unwrap();
+        fs::create_dir_all(home.join("Library/Caches")).unwrap();
+
+        // Known: name match, bundle-id match (dots stripped), and the raw
+        // dotted id — the standard sandbox-container naming.
+        fs::write(app_support.join("Firefox"), "x").unwrap();
+        fs::write(app_support.join("com.example.KnownApp"), "x").unwrap();
+        // Case-insensitive match on the bundle id.
+        fs::write(app_support.join("COM.EXAMPLE.KNOWNAPP"), "x").unwrap();
+        // A container directory named by the raw dotted bundle id must stay
+        // known even when the app name is not a substring of the id.
+        let containers = home.join("Library/Containers");
+        fs::create_dir_all(&containers).unwrap();
+        fs::write(containers.join("com.pixelmatorteam.pixelmator.x"), "x").unwrap();
+        // Unknown: orphaned.
+        fs::write(app_support.join("OrphanJunk"), "hello").unwrap();
+        fs::write(home.join("Library/Caches/LeftoverData"), "yy").unwrap();
+
+        let apps = vec![
+            AppInfo {
+                id: "com.mozilla.firefox".into(),
+                name: "Firefox".into(),
+                path: PathBuf::from("/Applications/Firefox.app"),
+                size: 0,
+                last_used: None,
+                is_from_app_store: false,
+            },
+            AppInfo {
+                id: "com.example.KnownApp".into(),
+                name: "KnownApp".into(),
+                path: PathBuf::from("/Applications/KnownApp.app"),
+                size: 0,
+                last_used: None,
+                is_from_app_store: false,
+            },
+            AppInfo {
+                id: "com.pixelmatorteam.pixelmator.x".into(),
+                name: "Pixelmator Pro".into(),
+                path: PathBuf::from("/Applications/Pixelmator Pro.app"),
+                size: 0,
+                last_used: None,
+                is_from_app_store: false,
+            },
+        ];
+
+        let data = find_orphaned_data_in(home, &apps).unwrap();
+        assert_eq!(data.installed_app_count, 3);
+        assert_eq!(data.item_count, 2, "known entries must not be orphaned");
+        assert_eq!(data.total_bytes, 5 + 2);
+        let names: Vec<String> = data
+            .paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"OrphanJunk".to_string()));
+        assert!(names.contains(&"LeftoverData".to_string()));
+    }
+
+    /// A nonexistent leftover base directory is skipped, not an error.
+    #[test]
+    fn test_find_orphaned_data_missing_home_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = find_orphaned_data_in(tmp.path(), &[]).unwrap();
+        assert_eq!(data.item_count, 0);
+        assert_eq!(data.total_bytes, 0);
+        assert_eq!(data.installed_app_count, 0);
     }
 }

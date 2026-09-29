@@ -23,12 +23,20 @@ fn interval_secs(minutes: u64) -> u64 {
     minutes.max(1).saturating_mul(60)
 }
 
+/// Retention window in days. `0` would make `prune_before` land at "now",
+/// wiping the whole delta log on the first tick — a typo like
+/// `delta_retention_days = 0` must not behave as "delete everything"
+/// (that is what `argus clear` is for), so it clamps to one day.
+fn retention_days(days: u64) -> u64 {
+    days.max(1)
+}
+
 pub fn start_retention_worker(
     db: Arc<Mutex<Connection>>,
     config: DaemonConfig,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let retention_days = config.delta_retention_days;
+        let retention_days = retention_days(config.delta_retention_days);
         let threshold = config.consolidation.sibling_threshold;
         let interval = Duration::from_secs(interval_secs(config.consolidation.interval_minutes));
 
@@ -95,5 +103,13 @@ mod tests {
         assert_eq!(interval_secs(0), 60);
         assert_eq!(interval_secs(60), 3_600);
         assert_eq!(interval_secs(u64::MAX), u64::MAX);
+    }
+
+    /// `delta_retention_days = 0` must clamp to 1: with the raw value,
+    /// `prune_before = now` and the first tick wipes the entire delta log.
+    #[test]
+    fn test_retention_days_clamps_zero() {
+        assert_eq!(retention_days(0), 1);
+        assert_eq!(retention_days(30), 30);
     }
 }
