@@ -135,7 +135,17 @@ pub fn load_config(path: &Path) -> TuiConfig {
 
     let raw: RawConfig = match toml::from_str(&content) {
         Ok(r) => r,
-        Err(_) => return TuiConfig::default(),
+        Err(e) => {
+            // Printed before the TUI enters the alternate screen, so the line
+            // is still in the terminal scrollback after quitting. A silent
+            // fallback made typos like `[daemons]` disable every custom
+            // option without a trace (review note #40).
+            eprintln!(
+                "argus: failed to parse config {}: {e}, using defaults",
+                path.display()
+            );
+            return TuiConfig::default();
+        }
     };
 
     let mut config = TuiConfig::default();

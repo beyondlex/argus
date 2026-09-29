@@ -258,8 +258,10 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let mut header_spans: Vec<Span> = vec![
+        // Kept in sync with the crate version; a literal here drifted from
+        // `--version` once features shipped between releases.
         Span::styled(
-            " Argus v0.1.0 ",
+            concat!(" Argus v", env!("CARGO_PKG_VERSION"), " "),
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
