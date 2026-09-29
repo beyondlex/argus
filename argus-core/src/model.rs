@@ -188,16 +188,6 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Build from a finished [`SnapshotBuilder`].
-    pub fn from_builder(
-        root_path: PathBuf,
-        builder: SnapshotBuilder,
-        total_size: u64,
-        total_disk_usage: u64,
-    ) -> Self {
-        builder.finish(root_path, total_size, total_disk_usage)
-    }
-
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }

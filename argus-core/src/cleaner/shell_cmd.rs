@@ -188,10 +188,6 @@ pub fn try_exec_shell_cmd(target: &ShellCmdTarget) -> ShellCmdResult {
     }
 }
 
-pub fn exec_all_shell_cmds(targets: &[ShellCmdTarget]) -> Vec<ShellCmdResult> {
-    targets.iter().map(try_exec_shell_cmd).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

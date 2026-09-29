@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use super::dir_size;
 use super::safety::RiskLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -402,21 +401,10 @@ pub fn default_clean_targets() -> Vec<CleanTarget> {
     Vec::new()
 }
 
-pub fn scan_target_size(target: &CleanTarget) -> Result<(u64, Vec<PathBuf>), std::io::Error> {
-    let mut total = 0u64;
-    let mut existing = Vec::new();
-    for p in &target.paths {
-        if p.exists() {
-            existing.push(p.clone());
-            total += dir_size(p);
-        }
-    }
-    Ok((total, existing))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cleaner::dir_size;
     use std::path::Path;
 
     #[test]
@@ -466,19 +454,5 @@ mod tests {
         std::fs::write(&f, b"hello").unwrap();
         assert_eq!(dir_size(&f), 5);
         let _ = std::fs::remove_file(&f);
-    }
-
-    #[test]
-    fn test_scan_target_size_nonexistent() {
-        let target = CleanTarget {
-            id: "nonexistent".into(),
-            label: "Nonexistent".into(),
-            paths: vec![PathBuf::from("/_nonexistent_path_xyz99/")],
-            risk: RiskLevel::Safe,
-            category: TargetCategory::TempFiles,
-        };
-        let (size, paths) = scan_target_size(&target).unwrap();
-        assert_eq!(size, 0);
-        assert!(paths.is_empty());
     }
 }

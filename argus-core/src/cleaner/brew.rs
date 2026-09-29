@@ -165,79 +165,6 @@ struct BrewInfo {
     ptype: String,
 }
 
-#[allow(dead_code)]
-fn brew_info_json(name: &str) -> Option<BrewDetailedInfo> {
-    let out = Command::new(brew_bin())
-        .args(["info", "--json=v2", name])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    parse_brew_info_json(&stdout)
-}
-
-#[allow(dead_code)]
-fn parse_brew_info_json(json_str: &str) -> Option<BrewDetailedInfo> {
-    let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
-
-    // formulae 和 casks 都可能在顶层数组中
-    let item = v
-        .get("formulae")
-        .and_then(|a| a.as_array())
-        .and_then(|arr| arr.first())
-        .or_else(|| {
-            v.get("casks")
-                .and_then(|a| a.as_array())
-                .and_then(|arr| arr.first())
-        })?;
-
-    let desc = item
-        .get("desc")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let deps_count = item
-        .get("dependencies")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-
-    let aliases_count = item
-        .get("build_dependencies")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-
-    // 获取大小: installed bottle 的下载大小
-    let size = item
-        .get("bottle")
-        .and_then(|b| b.get("stable"))
-        .and_then(|b| b.get("files"))
-        .and_then(|f| f.as_object())
-        .and_then(|m| {
-            // 取第一个平台的 size
-            m.values().next()
-        })
-        .and_then(|f| f.get("size"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    Some(BrewDetailedInfo {
-        desc,
-        deps_count: deps_count + aliases_count,
-        installed_bottle_size: size,
-    })
-}
-
-#[allow(dead_code)]
-struct BrewDetailedInfo {
-    desc: String,
-    deps_count: usize,
-    installed_bottle_size: u64,
-}
-
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -675,21 +602,6 @@ pub fn brew_cache_size() -> u64 {
     let cache_dir =
         PathBuf::from(out.unwrap_or_else(|| "/opt/homebrew/Library/Caches/Homebrew".to_string()));
     dir_size(&cache_dir)
-}
-
-/// 清理 brew 缓存
-pub fn clean_brew_cache() -> Result<u64, String> {
-    let before = brew_cache_size();
-    let output = Command::new(brew_bin())
-        .arg("cleanup")
-        .output()
-        .map_err(|e| format!("failed to run brew cleanup: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("brew cleanup failed: {}", stderr.trim()));
-    }
-    let after = brew_cache_size();
-    Ok(before.saturating_sub(after))
 }
 
 /// 检查 brew 是否可用

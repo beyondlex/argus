@@ -107,32 +107,6 @@ pub fn get_ai_analysis(conn: &Connection, path: &str) -> Result<Option<Vec<u8>>,
     }
 }
 
-pub fn has_ai_analysis(conn: &Connection, path: &str) -> Result<bool, DbError> {
-    let path_hash = path_hash(path);
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2",
-        params![path_hash, path],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
-}
-
-pub fn has_ai_analysis_batch(conn: &Connection, paths: &[String]) -> Result<Vec<bool>, DbError> {
-    let mut results = Vec::with_capacity(paths.len());
-    let mut stmt =
-        conn.prepare("SELECT 1 FROM ai_analysis_cache WHERE path_hash = ?1 AND path = ?2 LIMIT 1")?;
-    for path in paths {
-        let path_hash = path_hash(path);
-        let exists: bool = stmt
-            .query(params![path_hash, path])?
-            .next()
-            .map(|r| r.is_some())
-            .unwrap_or(false);
-        results.push(exists);
-    }
-    Ok(results)
-}
-
 pub fn delete_ai_analysis(conn: &Connection, path: &str) -> Result<(), DbError> {
     let path_hash = path_hash(path);
     conn.execute(
@@ -140,15 +114,6 @@ pub fn delete_ai_analysis(conn: &Connection, path: &str) -> Result<(), DbError> 
         params![path_hash, path],
     )?;
     Ok(())
-}
-
-pub fn load_all_ai_analyzed_paths(conn: &Connection) -> Result<Vec<String>, DbError> {
-    let mut stmt = conn.prepare("SELECT path FROM ai_analysis_cache")?;
-    let paths: Vec<String> = stmt
-        .query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(paths)
 }
 
 /// Load every cached AI analysis as `(path, data)` pairs in one query.
