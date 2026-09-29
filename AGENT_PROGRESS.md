@@ -5,13 +5,14 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-09-29
+- 2026-09-30
 
 ## Current State
 
 - Phase 1: complete
 - Phase 2: complete (integration tests in `argus-tui/tests/integration.rs`)
 - Phase 3: code complete (argusd, IPC, DB, TUI client); end-to-end daemon integration tests (Step 10) still pending
+- Review rounds 1-8 complete (see `docs/notes/code-review-2026-09.md`); full suite: 373 tests, clippy --all-targets 0 warnings, fmt clean
 
 ## Active Work
 
@@ -61,3 +62,4 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - Phase 3 design: `docs/plans/phase3-daemon-design.md`
 - Phase 3 (code): db.rs schema + query, ipc.rs protocol, argusd (watcher/debounce/ipc_server/config/retention), TUI ipc_client + delta overlay
 - docs/requirements/index.md: added P3 reference
+- Review round 8 (2026-09-30): fixed hung orphan-scan unit test (injectable home/apps), sandbox-container false orphans (dotted bundle ids), retention=0 purge, cleanup/uninstall scan escape, TUI config parse warning, AI-review protected-path gate + failed-delete accounting, delta-detail ghost socket, CJK/symbol display-width metrics, dead public API cleanup; open items #41-#45 recorded
