@@ -79,7 +79,12 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
         return;
     };
 
+    // Allow q/Esc to leave during the (potentially minutes-long) target scan;
+    // late CleanupScanComplete messages hit the None state guard and no-op.
     if state.scanning {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            app.exit_cleanup();
+        }
         return;
     }
 
@@ -198,7 +203,12 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
         return;
     };
 
+    // Allow q/Esc to leave during the app-list scan (one mdls spawn per app);
+    // late AppListReady messages hit the None state guard and no-op.
     if state.scanning {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            app.exit_uninstall();
+        }
         return;
     }
 
