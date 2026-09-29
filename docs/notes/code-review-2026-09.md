@@ -272,6 +272,45 @@ rename 的 To 事件按 create 全额记账；若 From 半账丢失（监控启�
 ### 40. TUI 配置解析失败静默回退默认值
 `argus-tui/config.rs load_config` 对 TOML 解析错误与 daemon 侧不同——直接返回默认值且无任何输出。用户 typo（如 `[daemons]`）后所有自定义项悄悄失效。可在进入 TUI 前 `eprintln!` 一行警告。
 
+## 已修复（第八轮，2026-09-30）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| `test_find_orphaned_data_returns_ok` 直接扫真实 `$HOME/Library`：对每个未知条目做完整 `dir_size` 递归，开发机上 Application Support 动辄几十 GB，测试二进制挂起数十分钟、`cargo test --workspace` 永远完不成。抽出 `find_orphaned_data_in(home, apps)` 可注入核心，测试改用临时目录 | `argus-core/cleaner/uninstaller.rs` | 测试套件挂起（违反"单测不碰真实文件系统"约定） | e90e16e |
+| 孤儿扫描已知名单只收录**去点** bundle id：沙盒容器目录（`~/Library/Containers/com.vendor.app`）和大量 Application Support 目录都按带点 id 命名，等值必不匹配 → 凡应用名不是 id 子串的已装应用，其容器被误报为孤儿数据。已知名单同时收录原始带点 id | 同上 | 孤儿数据误报 | 同上 |
+| `delta_retention_days = 0`（或漏配）使 `prune_before = now`：首个 retention tick 把整个 delta 库清空。钳到最小 1 天（"清空"是 `argus clear` 的职责） | `argusd/retention.rs` | 配置笔误 → 数据丢失 | 同上 |
+| cleanup / uninstall 面板扫描期间丢弃所有按键，而这两处恰是全应用最慢的扫描（全目标 dir_size、逐 app mdls）；brew 面板早有 Esc/q 逃生通道。补齐 | `argus-tui/handler/cleanup.rs` | 用户被困在转圈界面 | 5cccea9 |
+| TUI 配置解析失败静默回退默认值（第七轮存疑 #40）：typo 后所有自定义项悄悄失效。解析失败 `eprintln!` 一行警告（进 TUI 前打印，退出后仍可见） | `argus-tui/config.rs` | 可诊断性 | b8cbfbc |
+| header 版本号硬编码 `v0.1.0`，与 `--version` 脱节。改 `CARGO_PKG_VERSION` | `argus-tui/render.rs` | 版本漂移 | 同上 |
+| 列宽/截断/光标全部按**字节**计量：`⚡`/`⎋`/`⏎` 等 3 字节符号使 info 列多预留 2 列、右对齐块偏移，中文文件名被过早截断，命令栏输入中文时光标飞出词尾。列宽、截断、光标改用 `unicode-width` 显示宽度 | `flat_tree.rs` `render.rs` `status_bar.rs` `command_bar.rs` | CJK/符号场景排版 | 32ad4e8 及后续 |
+| 删除进行中每 tick 无条件整屏重绘（10 次/秒），而进度数字只在收到消息时变化。删除冗余 dirty | `argus-tui/event.rs` | 微性能 | 同上 |
+| **AI review 删除确认绕过保护路径闸**：浏览模式删除在弹窗前检查 `is_protected_path`，AI review 面板 d/D + y 直接 `remove_dir_all`，无此检查——/etc 等路径可经此删除。同时删除失败也照样剪视图、把全部标记尺寸计入 freed。现在逐路径跳过受保护项并报错，仅成功者更新状态与计数，补回归测试 | `argus-tui/handler/ai_review.rs` | 删除安全 + 统计正确性 | f54a97e |
+| `load_delta_detail` 仍从 `TuiConfig::default()` 取 socket 路径——c190c0e 修的同类幽灵配置的漏网点，自定义 `[daemon].uds_path` 时弹窗连错 socket。独立模式下按 K 现在给提示而不是弹无解释的空窗口 | `argus-tui/components/delta_detail.rs` | server 模式连接 bug + 体验 | 5d51237 |
+| 死公共 API 清理（第三轮存疑 #14 约定"下次清理删除"）：`scan_target_size`（被 plan_clean 取代）、`exec_all_shell_cmds`、`has_ai_analysis`/`_batch`（被 load_ai_cache_entries 取代）、`load_all_ai_analyzed_paths`、`clean_brew_cache`、`brew_info_json`/`parse_brew_info_json`/`BrewDetailedInfo` 死链、`Snapshot::from_builder`（零引用） | `argus-core` 多处 | -173 行死代码 | 58e9cbe |
+
+## 存疑 / 记录在案（第八轮新增，未改动）
+
+### 41. 永久删除大目录时全量 materialize 条目 + 递归收集
+`delete_dir_progressive` 的 `collect_items` 递归收集目录下所有路径再排序删除：数百万条目的大树会占用 O(条目数) 内存且递归深度受栈限制（数千层才见险）。交互式永久删除频率低，迭代器化收益有限，留观。
+
+### 42. `classify_risk` 的 `contains("/Caches")` 类子串匹配过宽
+`~/Library/MyCachesStuff` 也会命中 Caches 分支（Low）。方向保守（比真实风险低一级的分支都是 Low/Safe 间的保守侧），且删除入口均有 `.max(target.risk)` 兜底；与 #23 同域，改动需连 UI 文案一起评估。
+
+### 43. `datetime_to_millis` 未来时刻回退到去年
+`:time from 12-25`（今年 12-25 尚未到）返回**去年** 12-25 的时间戳，标签仍显示 `12-25`——窗口起点比标签早一年。语义上"今年还没到的时刻"作为 from 无意义，回退去年是可辩护的选择，但标签未反映年份，记录备查。
+
+### 44. watcher `RemoveKind::Folder` 未显式处理
+remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落入 `_ => None`。目录本身不参与记账户（dir 不入 size_cache），漏掉的只是"清缓存"机会，文件级删除事件各平台仍独立到达，净额不受影响。与 #24 同域，实测未见缺账。
+
+### 45. `request_consolidation` / delta detail 每次新建 UDS 连接
+低频路径（用户显式命令），不复用 `daemon_client` 的代价是一次额外 connect（本机 UDS 亚毫秒级）。若将来加入轮询类调用再考虑复用。
+
+## 性能观察（第八轮）
+
+- `find_orphaned_data` 对每个未知条目 `dir_size` 是孤儿体积展示的必要成本；真正的问题是此前单测直接跑真实 HOME（已修）。生产路径在 CLI/TUI 均为后台/一次性调用，保持现状。
+- `plan_clean` 的嵌套去重 O(n²)、`load_current_children` 的 graft 克隆等既有观察维持不变（见前几轮）。
+- brew `list_brew_packages` 每包 `keg_size` 全树遍历是尺寸展示的必要成本；历史索引（第五轮）已消除主要热点。
+
 ## 性能观察（第七轮）
 
 - `has_ai_analysis_batch` 仍是每路径一次查询（预编译语句复用），批量 AI 面板路径多时是 N 次探测。SQLite 本地点查微秒级，未构成瓶颈；若将来路径上千，可换临时表 join。
