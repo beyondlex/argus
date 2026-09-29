@@ -169,6 +169,8 @@ command first.
 Config file: `~/.config/argus/config.toml`
 
 Only implemented options are shown; unknown/legacy sections are ignored.
+A config file that fails to parse makes the TUI print a warning (visible in
+the terminal scrollback after quitting) and fall back to defaults.
 
 ```toml
 [theme]
@@ -190,7 +192,7 @@ watch_dirs = [
     { path = "/var/log", include = "*.log", exclude = "*.gz" },
 ]
 debounce_seconds = 10
-delta_retention_days = 30
+delta_retention_days = 30   # clamped to >= 1; 0 would otherwise purge everything on the first tick
 
 [daemon.consolidation]
 sibling_threshold = 500
