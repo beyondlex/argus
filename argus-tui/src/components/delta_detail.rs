@@ -21,16 +21,18 @@ use crate::util::{display_path, format_delta};
 /// Groups raw events by direct child: exact-match → individual rows, deeper → aggregated.
 pub fn load_delta_detail(app: &mut App, path: &Path) {
     if !app.server_connected {
-        app.delta_detail = Some(DeltaDetailState {
-            path: path.to_path_buf(),
-            entries: vec![],
-            scroll: 0,
-        });
+        // An unexplained empty popup read as "no delta events"; say what the
+        // popup needs instead of opening it.
+        app.set_info("delta detail requires daemon mode (R to connect)".into(), 3);
+        app.mode = AppMode::Browsing;
         return;
     }
 
     app.set_info("loading delta detail...".into(), 1);
-    let uds_path = crate::config::TuiConfig::default().daemon.uds_path;
+    // The user-configured socket path: TuiConfig::default() ignores a custom
+    // [daemon].uds_path and connected to the wrong socket (same ghost-config
+    // bug as the request_delta_refresh / :R / :Consolidate call sites).
+    let uds_path = app.config.daemon.uds_path.clone();
     let from = app.time_from;
     let to = app.time_to;
     let tx = app.tx.clone();
