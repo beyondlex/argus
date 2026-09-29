@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Clear, Gauge, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Render the entire TUI
 pub fn render(f: &mut Frame, app: &mut App, cursor_visible: bool) {
@@ -323,8 +324,10 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let daemon_span = Span::styled(daemon_text, Style::default().fg(daemon_color));
     let daemon_line = Line::from(vec![Span::raw(" "), daemon_span, Span::raw(" ")]);
 
-    let summary_width: u16 = summary_spans.iter().map(|s| s.content.len() as u16).sum();
-    let daemon_width: u16 = daemon_text.len() as u16 + 2;
+    // Display width (⏎/⎋ symbols and CJK are multi-byte): byte counts
+    // over-reserved the right-aligned block and squeezed the left side early.
+    let summary_width: u16 = summary_spans.iter().map(|s| s.content.width() as u16).sum();
+    let daemon_width: u16 = daemon_text.width() as u16 + 2;
     let right_total = summary_width + daemon_width;
 
     if right_total + 4 < area.width {

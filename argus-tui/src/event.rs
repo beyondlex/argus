@@ -143,9 +143,10 @@ fn advance_timers(
         dirty = true;
     }
 
-    if app.deleting {
-        dirty = true;
-    }
+    // Delete progress only changes on DeleteProgress messages, which
+    // already mark the frame dirty in drain_messages — no per-tick redraw
+    // needed here (it used to repaint the whole UI 10x/second while a
+    // deletion ran with the gauge unchanged).
 
     if let Some(clear_at) = app.error_clear_at {
         if Instant::now() >= clear_at {

@@ -14,6 +14,7 @@ use crate::search::fuzzy_match_indices;
 use crate::theme::ColorTheme;
 use crate::util;
 use crate::util::key_hints;
+use unicode_width::UnicodeWidthStr;
 
 const SCROLL_MARGIN: usize = 3;
 const DELTA_WIDTH: usize = 12;
@@ -129,7 +130,10 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
         height: 1,
     };
 
-    let status_right_width: u16 = status_right.iter().map(|s| s.content.len() as u16).sum();
+    // Display width, not byte length: key symbols (⎋, ⇥) and CJK text are
+    // multi-byte in UTF-8, and byte counts over-reserved columns / truncated
+    // names visibly early.
+    let status_right_width: u16 = status_right.iter().map(|s| s.content.width() as u16).sum();
     if status_right_width > 0 {
         let [left_area, right_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Length(status_right_width)])
@@ -198,7 +202,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
             );
         }
 
-        let info_width: u16 = info_spans.iter().map(|s| s.content.len() as u16).sum();
+        let info_width: u16 = info_spans.iter().map(|s| s.content.width() as u16).sum();
         let name_max_width = row_area.width.saturating_sub(info_width);
         truncate_name_spans(&mut name_spans, name_max_width as usize);
         let [info_area, name_area] =
@@ -569,14 +573,14 @@ fn match_highlight_spans(
     spans
 }
 
-/// Truncate name spans so they fit within `max_width` characters.
+/// Truncate name spans so they fit within `max_width` display columns.
 fn truncate_name_spans(spans: &mut Vec<Span<'static>>, max_width: usize) {
-    let total: usize = spans.iter().map(|s| s.content.len()).sum();
+    let total: usize = spans.iter().map(|s| s.content.width()).sum();
     if total <= max_width {
         return;
     }
 
-    let prefix_len = spans.first().map(|s| s.content.len()).unwrap_or(0);
+    let prefix_len = spans.first().map(|s| s.content.width()).unwrap_or(0);
     let avail = max_width.saturating_sub(prefix_len).saturating_sub(3);
 
     if avail < 1 {
