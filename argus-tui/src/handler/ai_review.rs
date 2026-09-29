@@ -19,24 +19,29 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
         );
 
         if confirmed {
-            let (paths, permanent, total_size) = {
+            let (paths, permanent) = {
                 let s = app.ai_state.as_ref().unwrap();
-                let total_size: u64 = s
-                    .mark_for_delete
-                    .iter()
-                    .filter_map(|&i| s.results.get(i))
-                    .map(|r| r.size)
-                    .sum();
                 let (paths, permanent) = s.delete_confirm.as_ref().unwrap().clone();
-                (paths, permanent, total_size)
+                (paths, permanent)
             };
             {
                 let s = app.ai_state.as_mut().unwrap();
                 s.delete_confirm = None;
             }
 
+            // Browsing-mode deletes refuse protected paths before the prompt;
+            // the AI-review confirm must not become a side door around that
+            // gate. Failures must not prune the view or count freed bytes —
+            // the old loop applied state updates (and the full marked size)
+            // regardless of per-path success.
             let mut errors: Vec<String> = Vec::new();
+            let mut freed: u64 = 0;
+            let mut deleted_paths: Vec<PathBuf> = Vec::new();
             for path in &paths {
+                if crate::util::is_protected_path(path) {
+                    errors.push(format!("{}: protected path, skipped", path.display()));
+                    continue;
+                }
                 let result = if permanent {
                     if path.is_dir() {
                         std::fs::remove_dir_all(path)
@@ -47,18 +52,28 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
                 } else {
                     trash::delete(path).map_err(|e| e.to_string())
                 };
-                if let Err(e) = result {
-                    errors.push(format!("{}: {}", path.display(), e));
+                match result {
+                    Ok(()) => {
+                        freed += app
+                            .ai_state
+                            .as_ref()
+                            .and_then(|s| s.results.iter().find(|r| &r.path == path))
+                            .map(|r| r.size)
+                            .unwrap_or(0);
+                        deleted_paths.push(path.clone());
+                        let _ = crate::tree_ops::apply_deletion_to_state(app, path);
+                    }
+                    Err(e) => errors.push(format!("{}: {}", path.display(), e)),
                 }
-                let _ = crate::tree_ops::apply_deletion_to_state(app, path);
             }
 
-            app.deleted_bytes = app.deleted_bytes.saturating_add(total_size);
+            app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
             app.load_current_children();
 
             // Remove deleted items from results
             if let Some(ref mut s) = app.ai_state {
-                s.results.retain(|r| !paths.iter().any(|p| p == &r.path));
+                s.results
+                    .retain(|r| !deleted_paths.iter().any(|p| p == &r.path));
                 s.mark_for_delete.clear();
                 if s.cursor >= s.results.len() {
                     s.cursor = s.results.len().saturating_sub(1);
@@ -74,7 +89,7 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
                     5,
                 );
             } else {
-                app.set_info(format!("deleted {} item(s)", paths.len()), 3);
+                app.set_info(format!("deleted {} item(s)", deleted_paths.len()), 3);
             }
         } else if cancelled {
             if let Some(ref mut s) = app.ai_state {

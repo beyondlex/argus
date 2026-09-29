@@ -993,4 +993,63 @@ mod tests {
         assert_eq!(app.mode, AppMode::Browsing);
         assert!(app.delete_target_path.is_none());
     }
+
+    // ── ai_review delete confirm ─────────────────────────────────────────
+
+    /// Confirming an AI-review delete must respect the protected-path gate:
+    /// browsing-mode deletes refuse these before the prompt, and the review
+    /// confirm used to be a side door around it (permanent remove_dir_all
+    /// included).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ai_review_delete_confirm_refuses_protected_paths() {
+        use crate::app::{AiPathVerdict, AiReviewState, AiStatus, RiskLevel};
+        use std::collections::HashSet;
+
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, _rx);
+        app.mode = AppMode::AiReview;
+        app.ai_state = Some(AiReviewState {
+            results: vec![AiPathVerdict {
+                path: PathBuf::from("/etc"),
+                size: 4096,
+                label: String::new(),
+                label_detail: String::new(),
+                purpose: String::new(),
+                risk_level: RiskLevel::High,
+                suggestion: String::new(),
+                background: String::new(),
+                deletable: false,
+                source: crate::app::AI_SOURCE_MODEL.into(),
+            }],
+            pending_paths: Vec::new(),
+            pending_total_size: 0,
+            cursor: 0,
+            scroll_offset: 0,
+            mark_for_delete: HashSet::new(),
+            status: AiStatus::Ready,
+            delete_confirm: Some((vec![PathBuf::from("/etc")], true)),
+            info_item: None,
+        });
+
+        super::handle_key(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(
+            std::path::Path::new("/etc").exists(),
+            "protected path must survive"
+        );
+        let state = app.ai_state.as_ref().unwrap();
+        assert!(state.delete_confirm.is_none());
+        assert!(
+            app.last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("protected"),
+            "expected a protected-path error, got: {:?}",
+            app.last_error
+        );
+    }
 }
