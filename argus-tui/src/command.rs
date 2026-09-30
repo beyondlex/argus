@@ -132,7 +132,11 @@ impl App {
             }
         };
         let rest: String = parts[1..].join(" ");
-        let to_lower = rest.to_lowercase();
+        // ASCII-only lowering keeps byte offsets stable: `to_lowercase()` can
+        // rescale (İ → i̇), and slicing `rest` at an offset found in that
+        // string could panic on a non-char boundary. The separator is ASCII,
+        // so ASCII lowering finds it just as well.
+        let to_lower = rest.to_ascii_lowercase();
         let to_marker = " to ";
         if let Some(pos) = to_lower.find(to_marker) {
             let left = rest[..pos].trim();

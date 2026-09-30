@@ -153,6 +153,20 @@ fn test_execute_time_range_duration_to_date_errors() {
     assert!(result.is_err());
 }
 
+/// Locating the " to " separator must use a length-preserving lowering:
+/// `to_lowercase()` rescales some characters (İ → i̇), so a byte offset found
+/// in the lowered string can split a character when sliced back into the
+/// original — a panic instead of a clean parse error.
+#[test]
+fn test_execute_time_range_non_ascii_no_panic() {
+    let (tx, _) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, mpsc::channel(1).1);
+    app.server_mode = true;
+    // Whatever the outcome, this must return, not panic.
+    let _ = app.execute_command("time İ0-1İ to 09:00");
+    let _ = app.execute_command("time 09:00 to İ0-1İ");
+}
+
 #[test]
 fn test_execute_time_invalid_duration() {
     let (tx, _) = mpsc::channel(1);
