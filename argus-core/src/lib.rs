@@ -30,8 +30,8 @@ pub use cleaner::{
     purge::{find_artifacts, remove_artifacts, Artifact, ArtifactKind},
     safety::{check_deletion_allowed, classify_risk, is_protected, RiskLevel},
     uninstaller::{
-        find_installed_apps, find_leftovers, find_orphaned_data, uninstall_app, AppInfo,
-        AppLeftovers, OrphanedData,
+        find_installed_apps, find_leftovers, find_orphaned_data, uninstall_app,
+        uninstall_app_with_leftovers, AppInfo, AppLeftovers, OrphanedData,
     },
 };
 

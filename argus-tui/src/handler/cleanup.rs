@@ -167,17 +167,32 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
     {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let (app_info, remove_leftovers) = {
+                // The confirm panel's per-item leftover toggles are the source
+                // of truth: the bool-only core call re-ran find_leftovers and
+                // trashed everything, silently deleting items the user had
+                // deselected (and re-walking every subtree it had just sized).
+                let (app_info, leftover_paths) = {
                     let s = app.uninstall_state.as_ref().unwrap();
                     let app_idx = s.selected_app.unwrap_or(0);
                     let app_info = s.apps.get(app_idx).cloned();
-                    (app_info, s.remove_leftovers)
+                    let leftover_paths = match (s.remove_leftovers, s.leftovers.as_ref()) {
+                        (true, Some(leftovers)) => leftovers
+                            .leftover_paths
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| s.selected_leftovers.contains(i))
+                            .map(|(_, p)| p.clone())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    (app_info, leftover_paths)
                 };
                 let Some(app_info) = app_info else { return };
                 let tx = app.tx.clone();
                 app.uninstall_state.as_mut().unwrap().confirm_pending = false;
                 std::thread::spawn(move || {
-                    let report = argus_core::uninstall_app(&app_info, remove_leftovers);
+                    let report =
+                        argus_core::uninstall_app_with_leftovers(&app_info, &leftover_paths);
                     match report {
                         Ok(r) => {
                             let _ = tx.blocking_send(AppMessage::UninstallComplete(r));
@@ -223,7 +238,9 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
 
     if is_filter_mode {
         match key.code {
-            KeyCode::Esc => {
+            // Enter closes the filter like the brew panel: it used to be
+            // swallowed, forcing Esc-then-Enter to act on the filtered list.
+            KeyCode::Esc | KeyCode::Enter => {
                 if let Some(ref mut s) = app.uninstall_state {
                     s.filter_mode = false;
                 }

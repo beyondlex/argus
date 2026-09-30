@@ -304,6 +304,24 @@ fn find_orphaned_data_in(home: &Path, apps: &[AppInfo]) -> Result<OrphanedData, 
 }
 
 pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanReport, String> {
+    let leftover_paths = if remove_leftovers {
+        find_leftovers(app)?.leftover_paths
+    } else {
+        Vec::new()
+    };
+    uninstall_app_with_leftovers(app, &leftover_paths)
+}
+
+/// Uninstall `app` plus exactly the given leftover paths.
+///
+/// The TUI confirm panel lets users deselect individual leftovers; the bool
+/// variant re-ran `find_leftovers` here and trashed everything the scan
+/// found, silently ignoring that selection (and repeating the per-path
+/// `dir_size` walk the panel had just paid for).
+pub fn uninstall_app_with_leftovers(
+    app: &AppInfo,
+    leftover_paths: &[PathBuf],
+) -> Result<CleanReport, String> {
     let mut items = vec![CleanItem {
         path: app.path.clone(),
         size: app.size,
@@ -311,17 +329,13 @@ pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanRepor
         target_id: "uninstall".into(),
     }];
 
-    if remove_leftovers {
-        let leftovers = find_leftovers(app)?;
-        for p in leftovers.leftover_paths {
-            let size = dir_size(&p);
-            items.push(CleanItem {
-                path: p,
-                size,
-                risk: RiskLevel::Low,
-                target_id: "uninstall-leftover".into(),
-            });
-        }
+    for p in leftover_paths {
+        items.push(CleanItem {
+            path: p.clone(),
+            size: dir_size(p),
+            risk: RiskLevel::Low,
+            target_id: "uninstall-leftover".into(),
+        });
     }
 
     // Shared check + trash + audit loop (same as clean and purge).
