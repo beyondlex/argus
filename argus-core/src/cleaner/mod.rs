@@ -20,13 +20,23 @@ use std::path::Path;
 /// drifted across purge/categories/brew/uninstaller. Exported so clients
 /// (TUI detail panels) reuse it instead of growing yet another copy.
 pub fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if path.is_file() {
-        return std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    }
-    if !path.is_dir() {
+    // Entry point must not follow a symlink either: `Path::is_dir`/`is_file`
+    // stat through links, so a `link -> /some/huge/dir` argument counted the
+    // whole target subtree despite the walk below skipping every symlink.
+    let Ok(top) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if top.is_symlink() {
         return 0;
     }
+    if top.is_file() {
+        return top.len();
+    }
+    if !top.is_dir() {
+        return 0;
+    }
+
+    let mut total = 0u64;
     let mut dirs = vec![path.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         let Ok(read_dir) = std::fs::read_dir(&dir) else {
@@ -79,5 +89,31 @@ mod tests {
         std::fs::write(&tmp, b"hello").unwrap();
         assert_eq!(dir_size(&tmp), 5);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// A symlink argument must count as 0, whatever it points at: the walk
+    /// skips symlink entries, but the old entry checks (`is_file`/`is_dir`)
+    /// stat *through* the top-level link and summed the whole target.
+    #[cfg(unix)]
+    #[test]
+    fn test_dir_size_symlink_argument_counts_zero() {
+        use std::os::unix::fs::symlink;
+        let tmp = std::env::temp_dir().join("_argus_dir_size_symlink");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("real")).unwrap();
+        std::fs::write(tmp.join("real").join("big.bin"), vec![0u8; 4096]).unwrap();
+
+        let dir_link = tmp.join("dir-link");
+        symlink(tmp.join("real"), &dir_link).unwrap();
+        assert_eq!(dir_size(&dir_link), 0, "symlink to dir must count 0");
+
+        let file_link = tmp.join("file-link");
+        symlink(tmp.join("real").join("big.bin"), &file_link).unwrap();
+        assert_eq!(dir_size(&file_link), 0, "symlink to file must count 0");
+
+        // The real directory behind the links still measures normally.
+        assert_eq!(dir_size(&tmp.join("real")), 4096);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
