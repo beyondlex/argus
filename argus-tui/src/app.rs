@@ -389,6 +389,10 @@ impl App {
                         // Subdirectory was scanned: update view_root_path so
                         // rebuild_tree() finds the scan result in the cache.
                         self.view_root_path = root_path.clone();
+                        // Selection keys are relative to the view root; a new
+                        // root would resolve the old keys against the wrong
+                        // base (multi-delete would target wrong paths).
+                        self.exit_multi_select();
                     }
                     // Only restore saved_dir when scanning the root (not a subdirectory),
                     // because a subdirectory scan changes view_root_path and invalidates
@@ -1112,6 +1116,9 @@ impl App {
         // If this subdirectory was previously scanned, switch to that scan
         if self.scan_cache.contains_key(&full_path) {
             self.view_root_path = full_path;
+            // Selection keys are relative to the old view root; they would
+            // resolve against the new (deeper) root to wrong paths.
+            self.exit_multi_select();
             self.dir_stack.clear();
             self.rebuild_tree();
             self.push_nav_history();
@@ -1170,6 +1177,9 @@ impl App {
         let parent = self.view_root_path.parent().map(|p| p.to_path_buf());
         if let Some(parent) = parent {
             self.view_root_path = parent;
+            // Selection keys are relative to the old root; keep them only
+            // valid for the view they were made in.
+            self.exit_multi_select();
             self.rebuild_tree();
             self.push_nav_history();
             self.set_info(
@@ -1180,7 +1190,7 @@ impl App {
     }
 
     /// Record current position in nav history (called after navigation).
-    fn push_nav_history(&mut self) {
+    pub(crate) fn push_nav_history(&mut self) {
         let pos = NavPosition {
             current_dir_path: self.current_dir_path.clone(),
             view_root_path: self.view_root_path.clone(),

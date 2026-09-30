@@ -955,3 +955,67 @@ fn test_reload_children_without_search_stays_inactive() {
     assert_eq!(app.search_mode, SearchMode::Inactive);
     assert!(!app.current_children.is_empty());
 }
+
+/// Selection keys are relative to the view root. Switching to a cached
+/// subdir scan changes the root; keeping the selection would resolve the
+/// old keys against the new (deeper) root — multi-delete would target
+/// wrong paths.
+#[test]
+fn test_enter_directory_cached_scan_clears_multi_select() {
+    let mut app = make_flat_app();
+    // A cached scan for the subdirectory makes enter_directory switch roots.
+    let mut sub = SnapshotBuilder::new("src");
+    sub.push_file(ROOT_NODE, "lib.rs", FileType::File, 10, 10);
+    let sub_snap = Arc::new(sub.finish(PathBuf::from("/tmp/test/src"), 10, 10));
+    app.scan_cache
+        .insert(PathBuf::from("/tmp/test/src"), sub_snap);
+
+    app.multi_select = true;
+    app.selected_paths
+        .insert(vec![String::from("test"), String::from("readme.md")]);
+    app.cursor = app
+        .current_children
+        .iter()
+        .position(|e| e.node.name() == "src")
+        .unwrap();
+
+    app.enter_directory();
+
+    assert!(!app.multi_select, "root switch must exit multi-select");
+    assert!(app.selected_paths.is_empty());
+    assert_eq!(app.view_root_path, PathBuf::from("/tmp/test/src"));
+}
+
+/// Same invariant for the filesystem-level root change (`u` at tree root).
+#[test]
+fn test_go_up_fs_clears_multi_select() {
+    let mut app = make_flat_app();
+    app.multi_select = true;
+    app.selected_paths
+        .insert(vec![String::from("test"), String::from("readme.md")]);
+
+    app.go_up_fs();
+
+    assert_eq!(app.view_root_path, PathBuf::from("/tmp"));
+    assert!(!app.multi_select, "root change must exit multi-select");
+    assert!(app.selected_paths.is_empty());
+}
+
+/// The finder's confirmed root must land in nav history so `b`/`f` can
+/// traverse to and from it.
+#[test]
+fn test_push_nav_history_records_position() {
+    let mut app = make_flat_app();
+    let before = app.nav_history.len();
+
+    app.view_root_path = PathBuf::from("/tmp");
+    app.rebuild_tree();
+    app.push_nav_history();
+
+    assert_eq!(app.nav_history.len(), before + 1);
+    assert_eq!(app.nav_history_idx, app.nav_history.len() - 1);
+    assert_eq!(
+        app.nav_history.last().unwrap().view_root_path,
+        PathBuf::from("/tmp")
+    );
+}

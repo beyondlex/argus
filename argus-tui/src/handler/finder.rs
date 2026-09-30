@@ -39,7 +39,12 @@ pub(crate) fn handle_finder_key(key: KeyEvent, app: &mut App) {
             app.view_root_path = normalized;
             app.finder_state = None;
             app.mode = AppMode::Browsing;
+            // Selection keys are relative to the old root — drop them with it.
+            app.exit_multi_select();
             app.rebuild_tree();
+            // Record the new position: without this, `b` skipped over the
+            // finder root and `f` could never return to it.
+            app.push_nav_history();
             app.set_info(
                 format!("changed root to {}", app.view_root_path.display()),
                 3,
