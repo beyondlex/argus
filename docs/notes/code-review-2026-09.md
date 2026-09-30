@@ -253,6 +253,7 @@ Up/Down（及 j/k）在 matches 非空时优先导航补全列表，而 matches 
 
 ### 34. `dir_size` 顶层符号链接跟随目标
 函数对遍历中的条目跳过 symlink，但传入的 `path` 本身若是 symlink→dir，`path.is_dir()` 跟随链接并统计 target 全树——与函数注释"symlinks are skipped entirely"矛盾。当前所有调用方（keg、app bundle、清理 target）都传真实目录，未构成实际问题；修复应在入口处用 `symlink_metadata` 短路。
+**已解决（第九轮，b4472bd）**：入口 `symlink_metadata` 短路，link→dir 与 link→file 均计 0，有测试钉住。
 
 ### 35. watcher RenameMode::To 缺 From 半账时虚增
 rename 的 To 事件按 create 全额记账；若 From 半账丢失（监控启动窗口、事件洪峰丢弃、跨文件系统 rename 只报 create），净效果虚增 +size 且无对冲负账。事件流固有窗口，修复需配对缓冲，复杂度高于收益，留观。
@@ -316,3 +317,41 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 - `has_ai_analysis_batch` 仍是每路径一次查询（预编译语句复用），批量 AI 面板路径多时是 N 次探测。SQLite 本地点查微秒级，未构成瓶颈；若将来路径上千，可换临时表 join。
 - `plan_clean` 的嵌套去重是 O(n²)（n = 现存 target 路径数，几十量级），可忽略。
 - `query_delta_total/detail` 的反连接子查询依赖 `idx_delta_agg_path_time`，EXPLAIN 过；量大时的替代方案（预计算覆盖表）在 `scan-memory-optimization-csr.md` 的思路之外，暂无必要。
+
+## 已修复（第九轮，2026-10-01）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| `pid_alive`/`stop()` 在 `kill(pid, 0)` **成功**后仍读 errno：成功调用不清 errno，读到的是任意早前失败的陈旧值——恰好为 ESRCH 时活着的 daemon 被判死，单实例守卫被静默绕过。改为先看返回码，失败才解读 errno | `argusd/daemonize.rs` | 单实例守卫失效（双重记账风险） | 9461d8a |
+| `dir_size` 顶层符号链接跟随目标：入口用 `is_file`/`is_dir`（stat 穿透链接），link→大目录会把整个目标子树计入，与函数自身"symlinks are skipped"契约矛盾（第七轮存疑 #34 落地）。入口改 `symlink_metadata` 短路 | `argus-core/cleaner/mod.rs` | 尺寸统计错误 | b4472bd |
+| `:time A to B` 用 `to_lowercase()` 定位分隔符再按字节下标切原串：`İ`→`i̇` 等字符变长时下标错位，可 panic 在非字符边界。分隔符是 ASCII，改用保长的 `to_ascii_lowercase()` | `argus-tui/command.rs` | 输入崩溃（低概率） | 590f300 |
+| **uninstall 确认面板的逐项残留勾选从未生效**：确认时调用 `uninstall_app(app, remove_leftovers)`，core 内部重跑 `find_leftovers` 并删除**全部**残留——用户取消勾选的项照样进废纸篓，且每棵子树被重复 `dir_size` 一遍。core 新增 `uninstall_app_with_leftovers(app, paths)`（`uninstall_app` 保留为 CLI 用的薄封装），TUI 按 `remove_leftovers` + `selected_leftovers` 解析出确切路径传入 | `argus-core/cleaner/uninstaller.rs` `argus-tui/handler/cleanup.rs` | 误删用户明确保留的数据 | 6f60208 |
+| uninstall 应用列表过滤态 Enter 被吞（brew 面板 Enter 退出过滤），必须 Esc 再 Enter | `argus-tui/handler/cleanup.rs` | 交互不一致 | 同上 |
+| **视图根切换后多选残留**：选择键是相对视图根的 `Vec<String>`；finder 换根、进入缓存扫描子目录、`u` 上跳、子目录扫描完成切换根时旧选择仍在，多选删除会按**新根**解析旧键 → 删错路径。四处根变更点统一退出多选 | `argus-tui/app.rs` `handler/finder.rs` | 删除落点错误 | a6b4368 |
+| finder 确认的新根不进导航历史：`b` 跳过 finder 位置、`f` 回不去。补 `push_nav_history` | `argus-tui/handler/finder.rs` | 导航历史缺口 | 同上 |
+
+## 存疑 / 记录在案（第九轮新增，未改动）
+
+### 46. `AiConfig::max_tokens_per_request` 一语两义
+该值既用作**提示词**分块预算（估算 prompt token 超限就切块），又原样作为 API 请求的 `max_tokens`（**响应**上限）。批量分析的响应 JSON 随路径数线性增长，几十条路径的批次可能被响应截断触发整批重试。语义上应是两个独立配置；当前默认批次小，未观察到症状，留观。
+
+### 47. 删除入口按「名字 == 根名」挡根目录，误伤同名子目录
+`handle_delete_action` 与批量删除都用 `file_name == view_root 的根名` 阻止删根；浏览 `/tmp/test` 时其下恰好有 `/tmp/test/test/` 子目录会被误判为根而拒绝删除。改为路径等值比较需要把 entry 相对键还原成绝对路径再比（现有 `selected_node_full_path` 可复用），改动小但牵动两处提示文案，等实际撞上再修。
+
+### 48. AI 审阅 `lookup_scan_size` 对每个路径线性扫整个 scan_cache
+`compute_pending_total_size` × `lookup_scan_size` 是 O(路径数 × 缓存根数 × 深度)。AI 审阅通常几十条路径、缓存根个位数，微秒级；路径上千才值得按公共前缀建索引。
+
+### 49. `alloc_name_into` 对 >64 KiB 的名字静默截断
+`name_len` 钳到 `u16::MAX`，blob 仍写入完整字节，读回得到前 64 KiB。真实文件系统的单组件名上限是 255 字节，触发不了；记录以免将来 `INLINE_NAME_MAX`/编码格式变动时踩回去。
+
+### 50. `DaemonGuard::acquire` 的检查-写入竞态（TOCTOU）
+`running_daemon_pid()` 探测与 PID 文件写入之间没有原子性：两个 `argusd` 同时启动都能通过探测（PID 文件原子创建可缓解写入侧，但探测侧无锁）。当前用「先探测后写」+ 既有 PID 即拒绝把窗口压到毫秒级；彻底修复需要 flock 锁文件，收益低。
+
+### 51. CLI `clean` 的孤儿应用数据只展示不清理
+`argus clean` 的 "Uninstalled App Data" 节扫描并展示孤儿路径与体积，但后续 `exec_clean` 只删计划内 target——孤儿数据在 CLI 侧没有任何清理路径（TUI 卸载面板走的是逐应用 leftovers）。要么把孤儿纳入可选清理集，要么在文案里写明"仅提示"，现状两头不靠。
+
+## 第九轮性能观察
+
+- `dir_size` 入口短路消除了「link→大目录被整树遍历」的最坏路径（b4472bd），遍历主体不变。
+- 第八轮的 `plan_clean` O(n²) 去重、`load_current_children` graft 克隆等既有观察维持不变。
+- TUI `i`/`x` 每次按键同步 `open_db`（第八轮 #37）维持原判：毫秒级，缓存 Connection 的收益要等出现可感知卡顿。
