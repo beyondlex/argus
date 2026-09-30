@@ -52,7 +52,7 @@ impl DaemonGuard {
             .trim()
             .parse()
             .ok()?;
-        if pid_alive(pid) {
+        if process_alive(pid) {
             Some(pid)
         } else {
             None
@@ -132,8 +132,7 @@ impl DaemonGuard {
         eprintln!("argusd: sent SIGTERM to pid {pid}");
 
         for _ in 0..50 {
-            unsafe { libc::kill(pid, 0) };
-            let alive = std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+            let alive = process_alive(pid);
             if !alive {
                 fs::remove_file(&pid_path).ok();
                 eprintln!("argusd: stopped");
@@ -181,8 +180,17 @@ fn config_dir() -> PathBuf {
 
 /// Existence probe: signal 0 delivers nothing but reports ESRCH when the
 /// process does not exist. EPERM (process exists, not ours) counts as alive.
-fn pid_alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) };
+///
+/// The errno must only be read when the call *failed*: a successful
+/// `kill(pid, 0)` leaves the thread-local errno holding a stale value from
+/// an arbitrary earlier syscall, and reading it anyway made a live daemon
+/// report as dead whenever that stale value happened to be ESRCH —
+/// silently defeating the single-instance guard.
+fn process_alive(pid: i32) -> bool {
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return true;
+    }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
@@ -255,8 +263,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pid_alive_detects_live_and_reaped_process() {
-        assert!(pid_alive(std::process::id() as i32));
+    fn test_process_alive_detects_live_and_reaped_process() {
+        assert!(process_alive(std::process::id() as i32));
 
         // A fully reaped child must report ESRCH.
         let mut child = std::process::Command::new("true")
@@ -264,6 +272,24 @@ mod tests {
             .expect("spawn true");
         let pid = child.id() as i32;
         child.wait().expect("reap child");
-        assert!(!pid_alive(pid));
+        assert!(!process_alive(pid));
+    }
+
+    /// A successful probe must not read the thread-local errno left by the
+    /// previous *failed* probe: a stale ESRCH made a live daemon report as
+    /// dead, silently defeating the single-instance guard.
+    #[test]
+    fn test_process_alive_not_confused_by_stale_errno() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id() as i32;
+        child.wait().expect("reap child");
+
+        // Fails with ESRCH, leaving that value in the thread-local errno.
+        assert!(!process_alive(pid));
+        // Immediately after: the live self-probe succeeds, and the return
+        // code (not the stale errno) must decide.
+        assert!(process_alive(std::process::id() as i32));
     }
 }
