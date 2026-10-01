@@ -1215,17 +1215,8 @@ impl App {
             return;
         }
         self.nav_history_idx -= 1;
-        if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
-            let root_changed = pos.view_root_path != self.view_root_path;
-            self.current_dir_path = pos.current_dir_path.clone();
-            self.view_root_path = pos.view_root_path.clone();
-            self.cursor = pos.cursor;
-            self.scroll_offset = pos.scroll_offset;
-            if root_changed {
-                self.rebuild_tree();
-            } else {
-                self.load_current_children();
-            }
+        if let Some(pos) = self.nav_history.get(self.nav_history_idx).cloned() {
+            self.apply_nav_position(pos);
         }
     }
 
@@ -1235,17 +1226,27 @@ impl App {
             return;
         }
         self.nav_history_idx += 1;
-        if let Some(pos) = self.nav_history.get(self.nav_history_idx) {
-            let root_changed = pos.view_root_path != self.view_root_path;
-            self.current_dir_path = pos.current_dir_path.clone();
-            self.view_root_path = pos.view_root_path.clone();
-            self.cursor = pos.cursor;
-            self.scroll_offset = pos.scroll_offset;
-            if root_changed {
-                self.rebuild_tree();
-            } else {
-                self.load_current_children();
-            }
+        if let Some(pos) = self.nav_history.get(self.nav_history_idx).cloned() {
+            self.apply_nav_position(pos);
+        }
+    }
+
+    /// Restore a recorded history position. Selection keys are relative to the
+    /// view root; stepping to an entry with a different root would resolve the
+    /// old keys against the new base, so multi-delete could target wrong
+    /// paths — same hazard as every other root change (finder, cached-scan
+    /// enter, `u`), and multi-select is dropped here too.
+    fn apply_nav_position(&mut self, pos: NavPosition) {
+        let root_changed = pos.view_root_path != self.view_root_path;
+        self.current_dir_path = pos.current_dir_path;
+        self.view_root_path = pos.view_root_path;
+        self.cursor = pos.cursor;
+        self.scroll_offset = pos.scroll_offset;
+        if root_changed {
+            self.exit_multi_select();
+            self.rebuild_tree();
+        } else {
+            self.load_current_children();
         }
     }
 

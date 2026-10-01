@@ -1019,3 +1019,64 @@ fn test_push_nav_history_records_position() {
         PathBuf::from("/tmp")
     );
 }
+
+/// Nav history spans view roots (finder, `u`, cached-scan switches). Selection
+/// keys are relative to the view root, so stepping to an entry recorded under
+/// a different root must drop the selection — same invariant as the other
+/// root-change points; `b`/`f` were the missed fifth path to a new root.
+#[test]
+fn test_nav_back_across_roots_clears_multi_select() {
+    let mut app = make_flat_app();
+
+    // Record a position under a different root (as the finder would).
+    app.view_root_path = PathBuf::from("/tmp");
+    app.rebuild_tree();
+    app.push_nav_history();
+
+    // Back at the original root, select something and navigate back across
+    // the root boundary.
+    app.view_root_path = PathBuf::from("/tmp/test");
+    app.rebuild_tree();
+    app.push_nav_history();
+    app.multi_select = true;
+    app.selected_paths
+        .insert(vec![String::from("test"), String::from("readme.md")]);
+    assert!(app.multi_select);
+
+    app.nav_back();
+
+    assert_eq!(app.view_root_path, PathBuf::from("/tmp"));
+    assert!(!app.multi_select, "cross-root nav must exit multi-select");
+    assert!(app.selected_paths.is_empty());
+
+    // Forward again crosses the root the other way: still no residue.
+    app.multi_select = true;
+    app.selected_paths
+        .insert(vec![String::from("tmp"), String::from("whatever")]);
+    app.nav_forward();
+
+    assert_eq!(app.view_root_path, PathBuf::from("/tmp/test"));
+    assert!(!app.multi_select, "cross-root nav must exit multi-select");
+    assert!(app.selected_paths.is_empty());
+}
+
+/// Navigating within the same root keeps the selection: the keys stay valid
+/// for the view they were made in.
+#[test]
+fn test_nav_within_same_root_keeps_multi_select() {
+    let mut app = make_flat_app();
+    // Two history entries under the same root (e.g. cursor moved between them).
+    app.push_nav_history();
+    app.cursor = app.current_children.len() - 1;
+    app.push_nav_history();
+
+    app.multi_select = true;
+    app.selected_paths
+        .insert(vec![String::from("test"), String::from("readme.md")]);
+
+    app.nav_back();
+
+    assert_eq!(app.view_root_path, PathBuf::from("/tmp/test"));
+    assert!(app.multi_select, "same-root nav keeps the selection");
+    assert!(!app.selected_paths.is_empty());
+}
