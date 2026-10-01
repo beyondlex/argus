@@ -210,18 +210,14 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         app.set_error("all selected paths are protected".into(), 3);
         return;
     }
-    // Filter out root directory
-    let root_name = app
-        .view_root_path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // Filter out the view root itself. The comparison is by full path: the
+    // old per-name check (`file_name == root_name`) also blocked a legit
+    // child whose name merely matches the root's (browsing /tmp/test and its
+    // /tmp/test/test subdirectory). Selected keys always address children, so
+    // this is a belt-and-braces guard rather than a live path — but it must
+    // not over-block either.
     let before_root = paths.len();
-    paths.retain(|p| {
-        p.file_name()
-            .map(|n| n.to_string_lossy() != root_name)
-            .unwrap_or(true)
-    });
+    paths.retain(|p| p != &app.view_root_path);
     let root_skipped = before_root - paths.len();
     if paths.is_empty() {
         app.set_error("cannot delete root directory".into(), 3);
@@ -348,23 +344,18 @@ pub(crate) fn handle_copy_path(app: &mut App) {
 }
 
 pub(crate) fn handle_delete_action(app: &mut App, permanent: bool) {
-    let root_name = app
-        .view_root_path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let Some(entry) = app.selected_entry() else {
+    let Some(full_path) = app.selected_node_full_path() else {
         return;
     };
-    if entry.is_dir && entry.node.name() == root_name {
+    // Block the view root itself by full path. The old name-equality check
+    // (`entry.node.name() == root_name`) also rejected a legitimate child
+    // directory that merely shares the root's name (a `test/` inside
+    // `/tmp/test`), making it undeletable.
+    if full_path == app.view_root_path {
         app.set_error("cannot delete root directory".into(), 3);
         return;
     }
 
-    let Some(full_path) = app.selected_node_full_path() else {
-        return;
-    };
     if crate::util::is_protected_path(&full_path) {
         app.set_error("protected path, cannot delete".into(), 3);
         return;

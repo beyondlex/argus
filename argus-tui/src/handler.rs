@@ -994,6 +994,39 @@ mod tests {
         assert!(app.delete_target_path.is_none());
     }
 
+    /// A child directory that merely shares the view root's name must stay
+    /// deletable: the old guard compared names, so browsing `/tmp/test` made
+    /// its own `/tmp/test/test` subdirectory permanently undeletable. The
+    /// root itself is unreachable by selection (children only), so the guard
+    /// compares full paths instead.
+    #[test]
+    fn test_delete_child_named_like_root_is_allowed() {
+        use argus_core::FileType;
+        let mut b = SnapshotBuilder::new("test");
+        let inner = b.push_dir(ROOT_NODE, "test");
+        b.push_file(inner, "note.txt", FileType::File, 10, 10);
+        let root_path = PathBuf::from("/tmp/test");
+        let snap = b.finish(root_path.clone(), 10, 10);
+        // build_current_tree prefers the cached scan, so both views must
+        // contain the child.
+        let scan_snap = snap.clone();
+
+        let mut app = make_app(snap, scan_snap);
+        app.cursor = app
+            .current_children
+            .iter()
+            .position(|e| e.path == vec!["test".to_string(), "test".to_string()])
+            .expect("same-named child must be listed");
+
+        super::browsing::handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::DeletePrompt, "child must be deletable");
+        assert_eq!(app.delete_target_path, Some(root_path.join("test")));
+    }
+
     // ── ai_review delete confirm ─────────────────────────────────────────
 
     /// Confirming an AI-review delete must respect the protected-path gate:
