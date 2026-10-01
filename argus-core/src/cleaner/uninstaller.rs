@@ -48,12 +48,38 @@ fn bundle_id_for_app(app_path: &Path) -> Option<String> {
     if !plist_path.exists() {
         return None;
     }
-    let content = std::fs::read_to_string(&plist_path).ok()?;
+    if let Ok(content) = std::fs::read_to_string(&plist_path) {
+        if let Some(id) = bundle_id_from_plist_xml(&content) {
+            return Some(id);
+        }
+    }
+    // Binary plists fail the UTF-8 read (Xcode, Pages, Tunnelblick, …) and
+    // used to fall through to "unknown.<name>", losing bundle-id-based
+    // leftover detection for exactly the big vendor apps whose containers
+    // are named by the dotted id. plutil is the OS's plist converter — the
+    // same spawn-per-app cost class as the existing mdls call, and only
+    // reached for plists the plain scan could not read.
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("plutil")
+            .args(["-convert", "xml1", "-o", "-"])
+            .arg(&plist_path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return bundle_id_from_plist_xml(&String::from_utf8_lossy(&output.stdout));
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
 
-    // Plain-text plist scan. The offset must skip exactly the key tag —
-    // a hardcoded +30 used to eat one byte past '>', so a minified plist
-    // ("<key>…</key><string>…") failed the "<string>" lookup below and the
-    // app fell back to the "unknown.<name>" id, missing its leftovers.
+/// Scan plist XML (plain on disk, or plutil-converted) for the
+/// CFBundleIdentifier string value. The offset must skip exactly the key
+/// tag — a hardcoded +30 used to eat one byte past '>', so a minified plist
+/// ("<key>…</key><string>…") failed the "<string>" lookup below.
+fn bundle_id_from_plist_xml(content: &str) -> Option<String> {
     if let Some(start) = content.find(BUNDLE_ID_KEY) {
         let after = &content[start + BUNDLE_ID_KEY.len()..];
         if let Some(val_start) = after.find("<string>") {
@@ -361,6 +387,37 @@ mod tests {
         .unwrap();
         let id = bundle_id_for_app(tmp.parent().unwrap());
         assert_eq!(id.as_deref(), Some("com.example.min"));
+        let _ = fs::remove_dir_all(tmp.parent().unwrap().parent().unwrap());
+    }
+
+    /// A binary plist (invalid UTF-8) must still yield the bundle id: the
+    /// plain-text read fails, and the macOS plutil conversion rescues it.
+    /// Xcode/Pages/Tunnelblick all ship binary plists and used to degrade to
+    /// "unknown.<name>", losing every bundle-id-named leftover.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_bundle_id_binary_plist_via_plutil() {
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join("_argus_bundle_id_bin.app/Contents");
+        fs::create_dir_all(&tmp).unwrap();
+        let plist = tmp.join("Info.plist");
+        fs::write(
+            &plist,
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.binary</string></dict></plist>",
+        )
+        .unwrap();
+        let converted = Command::new("plutil")
+            .args(["-convert", "binary1", "-o", &plist.to_string_lossy()])
+            .arg(&plist)
+            .status()
+            .expect("run plutil");
+        assert!(converted.success(), "plutil must be able to binarize");
+
+        // Sanity: the file is now invalid UTF-8, i.e. the plain read fails.
+        assert!(fs::read_to_string(&plist).is_err());
+
+        let id = bundle_id_for_app(tmp.parent().unwrap());
+        assert_eq!(id.as_deref(), Some("com.example.binary"));
         let _ = fs::remove_dir_all(tmp.parent().unwrap().parent().unwrap());
     }
 
