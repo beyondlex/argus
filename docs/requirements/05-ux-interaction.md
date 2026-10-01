@@ -23,6 +23,8 @@ argus clear
 
 # 清理套件（cleanup feature，默认启用）
 argus clean [--dry-run] [-y]            # 缓存/日志/废纸篓分类清理（shell 命令在确认后执行）
+                                        # "Uninstalled App Data" 段仅扫描展示孤儿数据，
+                                        # 不随本命令删除（逐应用复核走 TUI 卸载面板）
 argus uninstall [--dry-run]             # 交互选择应用卸载 + 残留清理
 argus purge [--paths <DIR>...] [--dry-run]  # 构建产物发现与移除（node_modules/target 等）
 argus brew [--formula] [--cask] [--dry-run] [-y]  # brew 包按最近使用排序卸载

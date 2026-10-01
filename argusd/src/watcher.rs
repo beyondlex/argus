@@ -840,7 +840,7 @@ mod tests {
                 &mut state,
                 1002
             )[0]
-                .delta_size,
+            .delta_size,
             5
         );
 

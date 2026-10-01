@@ -355,3 +355,27 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 - `dir_size` 入口短路消除了「link→大目录被整树遍历」的最坏路径（b4472bd），遍历主体不变。
 - 第八轮的 `plan_clean` O(n²) 去重、`load_current_children` graft 克隆等既有观察维持不变。
 - TUI `i`/`x` 每次按键同步 `open_db`（第八轮 #37）维持原判：毫秒级，缓存 Connection 的收益要等出现可感知卡顿。
+
+## 已修复（第十轮，2026-10-02）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| **导航历史跨视图根切换后多选残留**：第九轮统一了 4 处根变更点退出多选，但 `b`/`f` 历史步进落到不同根的条目时漏了——选择键按新根解析旧值，多选删除落点错误。`nav_back`/`nav_forward` 收敛到 `apply_nav_position`，根变化即退出多选；同根步进保留选择 | `argus-tui/app.rs` | 删除落点错误（第九轮同类第 5 处） | fe100b9 |
+| **根目录拦截按名字相等误伤同名子目录**（第九轮存疑 #47 落地）：浏览 `/tmp/test` 时其子目录 `/tmp/test/test` 因名字与根相同被拒绝删除。单删守卫与批删过滤都改为完整路径与 `view_root_path` 等值；选择集只含子项，守卫保持兜底语义不再过宽 | `argus-tui/handler/browsing.rs` | 合法子目录不可删 | 63f8fcc |
+| **重复硬链接的删除记幽灵负账**：`create_size` 对 dup link 不入账 +size（防 `cp -l` 双算），但把全额 baseline 塞进 size_cache；`remove` 却按 baseline 全额入账 -size——`cp -l big.bin link.bin && rm link.bin` 凭空记一笔释放。新增 `dup_link_seeds` 集合，seed 路径的删除不入账；seed 被真实 modify 过则清除标记（此后按普通文件对冲）。`RenameMode::To` 同步从 `file_size` 改为 `create_size`：rename 落点是 dup link 时不再把共享数据重复入账；普通 rename 的源路径已消失、陈旧映射守卫放行，From/To 两半仍净额为零 | `argusd/watcher.rs` | daemon 记账错误（双向） | 01c27be |
+| **二进制 Info.plist 丢失 bundle id**：`bundle_id_for_app` 按 UTF-8 读 plist，二进制格式（实机 229 个应用里 Xcode、Pages、Tunnelblick 等）读取失败退回 `unknown.<name>`——恰是容器按带点 bundle id 命名的大厂应用，其残留数据对卸载面板与孤儿扫描全部不可见。明文扫描抽为 `bundle_id_from_plist_xml`，macOS 上读取失败回退 `plutil -convert xml1`（OS 转换器，与既有 `mdls` 同类每应用一次 spawn，且仅对非 UTF-8 plist 触发） | `argus-core/cleaner/uninstaller.rs` | 残留检测失效（大厂应用） | 62a0099 |
+| **AI `max_tokens_per_request` 一语两义**（第九轮存疑 #46 落地）：既是提示词分块预算又是 API 响应上限。批量响应带 5 个文本字段/路径、随路径数线性增长，沿用小的提示词预算会截断大批次 → JSON 解析失败 → 烧完 3 次重试返回残缺结果。响应上限拆为独立配置 `max_response_tokens`（默认 8192），经 `TuiConfig [ai]` 透传，文档同步 | `argus-core/ai.rs` `argus-tui/config.rs` + `04-configuration.md` + README | 大批次 AI 分析截断重试 | b2c3ee1 |
+| **CLI `clean` 孤儿数据段"两头不靠"**（第九轮存疑 #51 落地）：扫描展示孤儿路径与体积，但 `exec_clean` 只删计划内 target。批量删除在 `--yes` 下可能误删误判目录里的用户文档，维持"逐应用复核走 TUI 卸载面板"为唯一删除路径；标题与条目行明确标注 display-only，`05-ux-interaction.md` 同步 | `argus-cli/main.rs` + `05-ux-interaction.md` | 文案误导 | da24766 |
+
+## 存疑 / 记录在案（第十轮新增，未改动）
+
+### 52. 已修改过的 dup-link seed 再删除时按全额对冲
+`cp -l a b` 后通过 b 写入（modify 入账 +delta），再删除 b：seed 标记已被 modify 清除，删除按当前 size 全额 -size 记账，净额 `delta - size`。共享 inode 语义下"b 的修改"与"b 的删除"本就难以按路径精确归因（写穿 b 改变的是 a/b 共享的数据，删除 b 不释放数据）；当前处理把 b 从 modify 起当作普通文件对待，简单且不会静默丢账，极端场景留观。
+
+### 53. `Snapshot::find_node` 递归深度受路径深度约束
+与 #41（`collect_items` 递归）同类：按路径组件递归下降，数千层才见栈险，真实文件系统单组件 255 字节、深度远小于此。TUI 的 `find_node` 调用来自用户浏览路径，深度即用户所在层级，无实际风险。
+
+## 第十轮验证
+
+- `cargo test --workspace --all-features`：391 通过（新增 8 个回归测试：nav 跨根/同根多选、同名子目录可删、dup-link 删除/修改/重命名三态、AI 响应 token 独立配置、二进制 plist）
+- `cargo clippy --all-targets --all-features`：0 警告；`cargo fmt --check` 干净

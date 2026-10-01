@@ -69,7 +69,7 @@ fn bundle_id_for_app(app_path: &Path) -> Option<String> {
         if !output.status.success() {
             return None;
         }
-        return bundle_id_from_plist_xml(&String::from_utf8_lossy(&output.stdout));
+        bundle_id_from_plist_xml(&String::from_utf8_lossy(&output.stdout))
     }
     #[cfg(not(target_os = "macos"))]
     None
