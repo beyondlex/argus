@@ -52,8 +52,14 @@ pub struct AiConfig {
     pub model: String,
     /// Response language (BCP 47 tag, e.g. "en-US", "zh-CN")
     pub language: String,
-    /// Max tokens per request (split batch into chunks if exceeded)
+    /// Prompt-side budget: estimated prompt tokens above this split the batch
+    /// into chunks. Does not cap the response.
     pub max_tokens_per_request: usize,
+    /// Response-side cap sent as the API request's `max_tokens`. Separate from
+    /// the prompt budget: a batch response carries several text fields per
+    /// path and grows with the path count, so reusing the (small) prompt
+    /// budget truncated large batches, failed the parse, and burned retries.
+    pub max_response_tokens: usize,
 }
 
 impl Default for AiConfig {
@@ -64,6 +70,7 @@ impl Default for AiConfig {
             model: "gpt-4o".into(),
             language: "en-US".into(),
             max_tokens_per_request: 4096,
+            max_response_tokens: 8192,
         }
     }
 }
@@ -189,7 +196,7 @@ pub fn call_ai_api(prompt: &str, config: &AiConfig) -> Result<String, AiError> {
     let body = serde_json::json!({
         "model": config.model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": config.max_tokens_per_request,
+        "max_tokens": config.max_response_tokens,
     });
 
     let resp = ureq::post(&config.api_url)

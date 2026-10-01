@@ -204,7 +204,8 @@ model = "gpt-4o"
 api_url = ""
 api_key = ""
 language = "en-US"
-max_tokens_per_request = 4096
+max_tokens_per_request = 4096   # prompt budget; larger batches are split into chunks
+max_response_tokens = 8192      # API response cap, independent of the prompt budget
 ```
 
 ## Data Model

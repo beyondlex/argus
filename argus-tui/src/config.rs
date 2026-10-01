@@ -23,7 +23,12 @@ pub struct AiConfig {
     pub api_key: String,
     pub model: String,
     pub language: String,
+    /// Prompt-side budget: batches estimated above this are split into chunks.
     pub max_tokens_per_request: usize,
+    /// Response-side cap sent as the API request's `max_tokens`. Independent
+    /// of the prompt budget: a batch response carries several text fields per
+    /// path, and reusing the small prompt budget truncated large batches.
+    pub max_response_tokens: usize,
 }
 
 impl Default for AiConfig {
@@ -35,6 +40,7 @@ impl Default for AiConfig {
             model: "gpt-4o".into(),
             language: "en-US".into(),
             max_tokens_per_request: 4096,
+            max_response_tokens: 8192,
         }
     }
 }
@@ -48,6 +54,7 @@ impl AiConfig {
             model: self.model.clone(),
             language: self.language.clone(),
             max_tokens_per_request: self.max_tokens_per_request,
+            max_response_tokens: self.max_response_tokens,
         }
     }
 }
@@ -104,6 +111,7 @@ struct RawAi {
     model: Option<String>,
     language: Option<String>,
     max_tokens_per_request: Option<usize>,
+    max_response_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +198,9 @@ pub fn load_config(path: &Path) -> TuiConfig {
         if let Some(v) = a.max_tokens_per_request {
             config.ai.max_tokens_per_request = v;
         }
+        if let Some(v) = a.max_response_tokens {
+            config.ai.max_response_tokens = v;
+        }
     }
 
     config
@@ -212,6 +223,7 @@ mod tests {
         assert!(config.ai.api_key.is_empty());
         assert_eq!(config.ai.model, "gpt-4o");
         assert_eq!(config.ai.max_tokens_per_request, 4096);
+        assert_eq!(config.ai.max_response_tokens, 8192);
     }
 
     #[test]
@@ -298,6 +310,37 @@ auto_scan_on_start = true
         assert!(config.ai.api_url.is_empty());
         assert_eq!(config.ai.model, "gpt-4o");
         assert_eq!(config.ai.max_tokens_per_request, 4096);
+        assert_eq!(config.ai.max_response_tokens, 8192);
+    }
+
+    /// The prompt budget and the response cap are independent knobs: the
+    /// response cap used to reuse the prompt budget, truncating large batch
+    /// responses (several text fields per path) and burning retries.
+    #[test]
+    fn test_load_config_ai_response_tokens_independent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[ai]
+enabled = true
+api_url = "https://api.openai.com/v1/chat/completions"
+api_key = "sk-xxx"
+model = "gpt-4o-mini"
+language = "zh-CN"
+max_tokens_per_request = 2048
+max_response_tokens = 16384
+"#,
+        )
+        .unwrap();
+        let config = load_config(&path);
+        assert_eq!(config.ai.max_tokens_per_request, 2048);
+        assert_eq!(config.ai.max_response_tokens, 16384);
+
+        let core = config.ai.to_core_config();
+        assert_eq!(core.max_tokens_per_request, 2048);
+        assert_eq!(core.max_response_tokens, 16384);
     }
 
     #[test]
