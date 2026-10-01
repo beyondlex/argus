@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -24,6 +24,12 @@ const MAX_CACHE_ENTRIES: usize = 100_000;
 pub struct WatcherState {
     pub size_cache: HashMap<PathBuf, u64>,
     pub hardlink_cache: HashMap<(u64, u64), PathBuf>,
+    /// Paths whose create was suppressed as a duplicate hard link. Their
+    /// size_cache entry is only a baseline (the shared data is booked under
+    /// the first link), so a later remove of such a path must book nothing —
+    /// it used to subtract the full baseline, recording a phantom `-size`
+    /// for `cp -l big.bin link.bin && rm link.bin`.
+    pub dup_link_seeds: HashSet<PathBuf>,
 }
 
 impl WatcherState {
@@ -31,12 +37,14 @@ impl WatcherState {
         Self {
             size_cache: HashMap::new(),
             hardlink_cache: HashMap::new(),
+            dup_link_seeds: HashSet::new(),
         }
     }
 
     fn trim_caches_if_needed(&mut self) {
         trim_map_half_if_over(&mut self.size_cache, MAX_CACHE_ENTRIES);
         trim_map_half_if_over(&mut self.hardlink_cache, MAX_CACHE_ENTRIES);
+        trim_set_half_if_over(&mut self.dup_link_seeds, MAX_CACHE_ENTRIES);
     }
 
     /// Current size of `path`, observing it into the caches. Directories and
@@ -60,6 +68,9 @@ impl WatcherState {
         }
         let size = meta.len();
         self.size_cache.insert(path.to_path_buf(), size);
+        // From here on the path has real accounting (its modifies book deltas);
+        // a later remove must negate them like any ordinary file's.
+        self.dup_link_seeds.remove(path);
         self.trim_caches_if_needed();
         Some(size)
     }
@@ -88,9 +99,11 @@ impl WatcherState {
                     .unwrap_or(false);
                 if existing != path && still_same_file {
                     // Seed the new path's baseline so later modifies measure
-                    // against the shared size, but book no delta.
+                    // against the shared size, but book no delta — and mark
+                    // it so the matching remove books nothing either.
                     let size = meta.len();
                     self.size_cache.insert(path.to_path_buf(), size);
+                    self.dup_link_seeds.insert(path.to_path_buf());
                     self.trim_caches_if_needed();
                     return None;
                 }
@@ -103,7 +116,14 @@ impl WatcherState {
         Some(size)
     }
 
+    /// Negative delta for a Remove event: the cached size, or `None` when the
+    /// path was a duplicate hard link whose data still lives under the first
+    /// link (nothing is freed, so nothing may be subtracted).
     pub fn remove(&mut self, path: &Path) -> Option<u64> {
+        if self.dup_link_seeds.remove(path) {
+            self.size_cache.remove(path);
+            return None;
+        }
         self.size_cache.remove(path)
     }
 
@@ -123,6 +143,20 @@ where
     let keys: Vec<K> = map.keys().take(remove_count).cloned().collect();
     for k in keys {
         map.remove(&k);
+    }
+}
+
+fn trim_set_half_if_over<T>(set: &mut HashSet<T>, max: usize)
+where
+    T: Eq + std::hash::Hash + Clone,
+{
+    if set.len() <= max {
+        return;
+    }
+    let remove_count = set.len() / 2;
+    let keys: Vec<T> = set.iter().take(remove_count).cloned().collect();
+    for k in keys {
+        set.remove(&k);
     }
 }
 
@@ -206,7 +240,13 @@ fn event_to_delta(
                 })
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-                state.file_size(path).map(|size| DeltaEvent {
+                // create_size, not file_size: a rename landing on a duplicate
+                // hard link must book nothing (the shared data is accounted
+                // under the first link, same as an ordinary dup create).
+                // Plain renames still book — the moved-away path no longer
+                // exists, so the stale-mapping guard passes and the To half
+                // cancels the From half.
+                state.create_size(path).map(|size| DeltaEvent {
                     path: path.clone(),
                     delta_size: size as i64,
                     event_type: "create".into(),
@@ -703,6 +743,166 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].delta_size, 5);
+    }
+
+    /// Removing a duplicate hard link whose data still lives under the first
+    /// link must book nothing: `cp -l big.bin link.bin && rm link.bin` frees
+    /// no data, but the seeded baseline used to be subtracted in full — a
+    /// phantom `-size` per dup-link removal.
+    #[cfg(unix)]
+    #[test]
+    fn test_hardlink_copy_then_remove_books_nothing() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        assert_eq!(
+            event_to_delta(
+                &EventKind::Create(CreateKind::File),
+                std::slice::from_ref(&a),
+                &mut state,
+                1000
+            )
+            .len(),
+            1
+        );
+
+        let b = dir.path().join("b.bin");
+        fs::hard_link(&a, &b).unwrap();
+        assert!(event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&b),
+            &mut state,
+            1001
+        )
+        .is_empty());
+
+        // rm b: no data freed, no delta.
+        fs::remove_file(&b).unwrap();
+        assert!(
+            event_to_delta(
+                &EventKind::Remove(RemoveKind::Any),
+                std::slice::from_ref(&b),
+                &mut state,
+                1002
+            )
+            .is_empty(),
+            "removing a dup link must book no negative delta"
+        );
+
+        // rm a: the last link is gone, the real -size lands.
+        fs::remove_file(&a).unwrap();
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&a),
+            &mut state,
+            1003,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, -5);
+    }
+
+    /// Once a dup-link seed has real accounting (a modify booked a delta), a
+    /// later remove negates like an ordinary file again — the seed mark is
+    /// cleared by the observe.
+    #[cfg(unix)]
+    #[test]
+    fn test_modified_seed_remove_books_negative() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&a),
+            &mut state,
+            1000,
+        );
+
+        let b = dir.path().join("b.bin");
+        fs::hard_link(&a, &b).unwrap();
+        assert!(event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&b),
+            &mut state,
+            1001
+        )
+        .is_empty());
+
+        // Modify through b: its churn is accounted at b, clearing the seed.
+        fs::write(&b, b"1234567890").unwrap();
+        assert_eq!(
+            event_to_delta(
+                &EventKind::Modify(ModifyKind::Any),
+                std::slice::from_ref(&b),
+                &mut state,
+                1002
+            )[0]
+                .delta_size,
+            5
+        );
+
+        fs::remove_file(&b).unwrap();
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&b),
+            &mut state,
+            1003,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, -10);
+    }
+
+    /// Renaming a duplicate link must not book the shared data again at the
+    /// destination (RenameMode::To used to go through file_size, re-adding
+    /// the full size the first link already accounted).
+    #[cfg(unix)]
+    #[test]
+    fn test_rename_of_dup_link_books_nothing() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&a),
+            &mut state,
+            1000,
+        );
+
+        let b = dir.path().join("b.bin");
+        fs::hard_link(&a, &b).unwrap();
+        assert!(event_to_delta(
+            &EventKind::Create(CreateKind::File),
+            std::slice::from_ref(&b),
+            &mut state,
+            1001
+        )
+        .is_empty());
+
+        let c = dir.path().join("c.bin");
+        fs::rename(&b, &c).unwrap();
+
+        // From half: seeded path, nothing.
+        assert!(event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            std::slice::from_ref(&b),
+            &mut state,
+            1002
+        )
+        .is_empty());
+
+        // To half: still a dup of a, nothing.
+        assert!(event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            std::slice::from_ref(&c),
+            &mut state,
+            1003
+        )
+        .is_empty());
     }
 
     /// A rename often surfaces as remove+create; the inode mapping then
