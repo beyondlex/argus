@@ -513,7 +513,12 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     }
 
     // ── Uninstalled app data ──────────────────────────────────────────────────
-    println!("➤ {}", "Uninstalled App Data".bold());
+    // Display-only: exec_clean below runs the planned targets, never the
+    // orphan paths. The section used to read as if cleanup covered them, but
+    // bulk-deleting orphan data under --yes could trash user documents in
+    // misidentified directories; deciding per app is the TUI uninstall
+    // panel's job.
+    println!("➤ {}", "Uninstalled App Data (display only)".bold());
     match find_orphaned_data() {
         Ok(orphaned) => {
             // The orphan scan already knows how many installed apps it
@@ -525,7 +530,7 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
             );
             if orphaned.item_count > 0 {
                 println!(
-                    "  ✓ {} {} items ({})",
+                    "  ✓ {} {} items ({}) — not removed by this command; review them in the TUI uninstall panel",
                     orphaned.item_count.to_string().white(),
                     "orphaned paths".white(),
                     format_size(orphaned.total_bytes).green().bold(),
