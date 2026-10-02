@@ -379,3 +379,33 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 
 - `cargo test --workspace --all-features`：391 通过（新增 8 个回归测试：nav 跨根/同根多选、同名子目录可删、dup-link 删除/修改/重命名三态、AI 响应 token 独立配置、二进制 plist）
 - `cargo clippy --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十一轮，2026-10-03）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| AI 错误信息按裸字节切片：`raw[..raw.len().min(500)]` 在多字节内容（代理返回含 CJK 的错误页）跨越 500 字节边界时 **panic**（非字符边界）。新增 `truncate_utf8` 回退到最近字符边界 | `argus-core/ai.rs` | 崩溃（错误路径 + 低概率） | eea4017 |
+| **清理详情扫描 O(n²)**：`scan_dir_details` 对每个目录条目调一次 `dir_size`，每个祖先都要重走整棵子树——`~/Library/Caches` 这类深层目录让详情弹窗转圈数分钟。改为迭代后序遍历一次累加，产出等价的逐目录累计大小，恰好走一遍树 | `argus-tui/handler/cleanup.rs` | 详情弹窗性能（分钟级 → 秒级） | 6564b2b |
+| AI 审阅滚动计算在四行终端下 `visible = 0`，`visible - 1` usize 下溢（debug 构建 panic）。抽出 `review_visible_rows` 钳到最少 1 行并补测试 | `argus-tui/handler/ai_review.rs` | 崩溃（极小终端） | 4483848 |
+
+## 存疑 / 记录在案（第十一轮新增，未改动）
+
+### 54. uninstall 残留匹配的模糊 `contains` 有过匹配风险
+`find_leftovers` 的 Application Support 扫描用 `fname.contains(&app_name.to_lowercase())` 模糊匹配：应用名短（如 `Go`、`X`）时会命中大量无关目录（`Go` 命中 `Google Drive`）。默认 8 个 LEFTOVER 目录走精确名拼接不受影响；仅 Application Support 一处模糊。删除前有 TUI 确认面板逐项复核兜底，未观察到误删；若要收紧可要求词边界匹配。
+
+### 55. `classify_risk` 的 `contains("/Caches")` 边界宽松
+`~/Library/CachesExtra` 之类名字包含 `/Caches` 的路径会被归为 Low（缓存级风险）而非 Medium。启发式分类的方向性偏差（偏宽松）只在风险标签显示与输入确认要求上体现，不拦删除；等真实路径撞上再收紧。
+
+### 56. `fuzzy_match_indices` 非 ASCII 分支高亮下标可能错位
+`target.to_lowercase()` 可能改变字符数（`İ` → `i̇`），按小写串算出的高亮区间映射回原串会偏移。只影响搜索高亮位置（无 panic、无匹配错误）；`İ` 出现在文件名首匹配段之外的几率极低，与第九轮 `:time` 修复同类但后果轻得多。
+
+## 第十一轮性能观察
+
+- cleanup 详情扫描的 O(n²) 是本轮唯一新发现的实际性能问题（已修复，6564b2b）。
+- 第八轮的 `plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）等既有观察维持不变。
+- daemon 侧（watcher/debounce/retention/IPC）经十轮打磨未发现新的记账或性能问题。
+
+## 第十一轮验证
+
+- `cargo test --workspace --all-features`：396 通过（新增 5 个：UTF-8 截断、详情扫描单文件/嵌套累计/符号链接跳过、可见行数下限）
+- `cargo clippy --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
