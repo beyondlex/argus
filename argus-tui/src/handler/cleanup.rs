@@ -1,7 +1,7 @@
 use crate::app::{App, AppMessage};
 use crate::types::UninstallPhase;
 use crossterm::event::{KeyCode, KeyEvent};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
     if app.cleanup_state.as_ref().is_some_and(|s| s.detail_pending) {
@@ -439,6 +439,12 @@ fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {
     }
 }
 
+/// One post-order pass computing every directory's cumulative size.
+///
+/// The old implementation called [`argus_core::dir_size`] once per directory
+/// entry, re-walking each subtree once per ancestor — quadratic on deep trees
+/// (`~/Library/Caches` with nested per-app dirs made the detail popup spin for
+/// minutes). Bottom-up accumulation walks the tree exactly once.
 fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
     let mut entries = Vec::new();
     if !path.is_dir() {
@@ -452,44 +458,145 @@ fn scan_dir_details(path: &Path) -> Vec<(String, u64)> {
         }
         return entries;
     }
-    let mut dirs = vec![path.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let read_dir = match std::fs::read_dir(&dir) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if ft.is_dir() {
-                // Shared recursive size from argus-core (skips symlinks).
-                let size = argus_core::dir_size(&p);
-                entries.push((
-                    p.strip_prefix(path)
-                        .unwrap_or(&p)
-                        .to_string_lossy()
-                        .to_string(),
-                    size,
-                ));
-            } else if ft.is_file() {
-                let size = match entry.metadata() {
-                    Ok(m) => m.len(),
-                    Err(_) => 0,
+
+    /// A directory whose children are being resolved. When `pending` is
+    /// exhausted, the frame's size is `file_bytes + child_sizes.sum()`.
+    struct DirFrame {
+        rel: String,
+        file_bytes: u64,
+        pending: std::vec::IntoIter<(PathBuf, String)>,
+        child_sizes: Vec<u64>,
+    }
+
+    /// Read `dir` in one pass: files are recorded and accumulated right away,
+    /// child directories are queued for their own frames. `rel` is `dir`'s
+    /// display path relative to the scan root ("app" → child "app/log.txt");
+    /// the root frame carries an empty rel.
+    fn push_frame(
+        stack: &mut Vec<DirFrame>,
+        entries: &mut Vec<(String, u64)>,
+        dir: &Path,
+        rel: &str,
+    ) {
+        let mut file_bytes = 0u64;
+        let mut pending: Vec<(PathBuf, String)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.flatten() {
+                let Ok(meta) = entry.metadata() else {
+                    continue;
                 };
-                entries.push((
-                    p.strip_prefix(path)
-                        .unwrap_or(&p)
-                        .to_string_lossy()
-                        .to_string(),
-                    size,
-                ));
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let child_rel = if rel.is_empty() {
+                    name
+                } else {
+                    format!("{rel}/{name}")
+                };
+                if meta.is_dir() {
+                    // entry.metadata() is lstat-based: symlinks to dirs (or
+                    // files) fall through both branches, matching the
+                    // dir_size contract this replaces.
+                    pending.push((entry.path(), child_rel));
+                } else if meta.is_file() {
+                    let size = meta.len();
+                    file_bytes += size;
+                    entries.push((child_rel, size));
+                }
             }
         }
+        stack.push(DirFrame {
+            rel: rel.to_string(),
+            file_bytes,
+            pending: pending.into_iter(),
+            child_sizes: Vec::new(),
+        });
     }
+
+    let mut stack: Vec<DirFrame> = Vec::new();
+    push_frame(&mut stack, &mut entries, path, "");
+
+    while let Some(frame) = stack.last_mut() {
+        let next_child = frame.pending.next();
+        let Some((child, child_rel)) = next_child else {
+            // All children resolved: finalize this directory.
+            let frame = stack
+                .pop()
+                .unwrap_or_else(|| unreachable!("frame just peeked"));
+            let total = frame.child_sizes.iter().copied().sum::<u64>() + frame.file_bytes;
+            if let Some(parent) = stack.last_mut() {
+                parent.child_sizes.push(total);
+            }
+            // The root (empty rel) is the item itself — the panel header
+            // already shows its total, so only nested dirs become entries.
+            if !frame.rel.is_empty() {
+                entries.push((frame.rel, total));
+            }
+            continue;
+        };
+
+        push_frame(&mut stack, &mut entries, &child, &child_rel);
+    }
+
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     entries.truncate(200);
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_scan_dir_details_single_file() {
+        let tmp = std::env::temp_dir().join("_argus_detail_single");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("item.bin");
+        fs::write(&file, [0u8; 512]).unwrap();
+
+        let entries = scan_dir_details(&file);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "item.bin");
+        assert_eq!(entries[0].1, 512);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Nested directories must report cumulative subtree sizes computed in
+    /// one walk: parent = own files + all nested content.
+    #[test]
+    fn test_scan_dir_details_cumulative_dir_sizes() {
+        let tmp = std::env::temp_dir().join("_argus_detail_nested");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("app/cache")).unwrap();
+        fs::write(tmp.join("app/cache/blob.bin"), [0u8; 300]).unwrap();
+        fs::write(tmp.join("app/log.txt"), [0u8; 100]).unwrap();
+
+        let entries = scan_dir_details(&tmp);
+        let find = |name: &str| entries.iter().find(|(r, _)| r == name).map(|(_, s)| *s);
+        assert_eq!(find("app/log.txt"), Some(100));
+        assert_eq!(find("app/cache/blob.bin"), Some(300));
+        assert_eq!(find("app/cache"), Some(300));
+        assert_eq!(find("app"), Some(400));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Symlinked directories must not be followed or listed (their targets
+    /// would double-count shared data), matching the dir_size contract.
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_dir_details_skips_symlink_dirs() {
+        use std::os::unix::fs::symlink;
+        let tmp = std::env::temp_dir().join("_argus_detail_symlink");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("real")).unwrap();
+        fs::write(tmp.join("real/big.bin"), [0u8; 1000]).unwrap();
+        symlink(tmp.join("real"), tmp.join("alias")).unwrap();
+
+        let entries = scan_dir_details(&tmp);
+        assert!(
+            !entries.iter().any(|(r, _)| r == "alias"),
+            "symlinked dir must not appear"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
