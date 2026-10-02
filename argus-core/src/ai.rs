@@ -185,6 +185,21 @@ fn classify_ureq_error(err: ureq::Error) -> AiError {
     }
 }
 
+/// Truncate to at most `max` bytes without splitting a UTF-8 code point.
+/// Slicing at a raw byte index would panic on multi-byte content (e.g. an
+/// error page containing CJK text returned by a proxy).
+#[cfg(feature = "ai")]
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Send a prompt to the AI API and return the raw response text.
 /// Uses OpenAI Chat Completions format.
 #[cfg(feature = "ai")]
@@ -228,7 +243,7 @@ pub fn call_ai_api(prompt: &str, config: &AiConfig) -> Result<String, AiError> {
         .ok_or_else(|| {
             AiError::Http(format!(
                 "unrecognized response format. raw: {}",
-                &raw[..raw.len().min(500)]
+                truncate_utf8(&raw, 500)
             ))
         })?
         .to_string();
@@ -465,5 +480,17 @@ mod tests {
     fn test_estimate_tokens_cjk() {
         let n = estimate_tokens("你好世界");
         assert!(n > 0);
+    }
+
+    /// Truncation must land on a char boundary: a raw byte slice at 500 would
+    /// panic on multi-byte content past that offset.
+    #[test]
+    fn test_truncate_utf8_respects_char_boundary() {
+        let s = "你".repeat(400); // 1200 bytes, all 3-byte chars
+        let t = truncate_utf8(&s, 500);
+        assert!(t.len() <= 500);
+        assert_eq!(t, "你".repeat(166));
+        assert_eq!(truncate_utf8("short", 500), "short");
+        assert_eq!(truncate_utf8("", 500), "");
     }
 }
