@@ -75,6 +75,14 @@ impl DaemonGuard {
         unsafe {
             libc::setsid();
         }
+        // Detach from the launching shell's cwd: the daemon holds a reference
+        // to that directory for its whole lifetime, which keeps its volume
+        // busy. Everything it opens afterwards (config, DB, socket, PID file)
+        // is already an absolute path.
+        if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
+            // Non-fatal: a retained cwd only blocks unmounting.
+            eprintln!("argusd: chdir(\"/\") failed, keeping inherited cwd");
+        }
         if unsafe { libc::fork() } > 0 {
             unsafe {
                 libc::_exit(0);
