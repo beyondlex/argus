@@ -5,14 +5,14 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-10-02
+- 2026-10-03
 
 ## Current State
 
 - Phase 1: complete
 - Phase 2: complete (integration tests in `argus-tui/tests/integration.rs`)
 - Phase 3: code complete (argusd, IPC, DB, TUI client); end-to-end daemon integration tests (Step 10) still pending
-- Review rounds 1-10 complete (see `docs/notes/code-review-2026-09.md`); full suite: 391 tests, clippy --all-targets --all-features 0 warnings, fmt clean
+- Review rounds 1-11 complete (see `docs/notes/code-review-2026-09.md`); full suite: 396 tests, clippy --all-targets --all-features 0 warnings, fmt clean
 
 ## Active Work
 
@@ -65,3 +65,4 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - Review round 8 (2026-09-30): fixed hung orphan-scan unit test (injectable home/apps), sandbox-container false orphans (dotted bundle ids), retention=0 purge, cleanup/uninstall scan escape, TUI config parse warning, AI-review protected-path gate + failed-delete accounting, delta-detail ghost socket, CJK/symbol display-width metrics, dead public API cleanup; open items #41-#45 recorded
 - Review round 9 (2026-10-01): fixed stale-errno process-alive probe (single-instance guard), dir_size symlink-argument follow, `:time` range panic on rescaling chars, uninstall confirm ignoring the per-item leftover selection (core gains `uninstall_app_with_leftovers`), multi-select surviving view-root changes (wrong-path deletes), missing finder nav-history entry; open items #46-#51 recorded
 - Review round 10 (2026-10-02): fixed multi-select surviving `b`/`f` cross-root nav steps (fifth root-change point), root-dir delete guard over-blocking same-named children (#47 landed), duplicate-hardlink removal/rename booking phantom deltas (daemon), binary Info.plist losing the bundle id (plutil fallback), AI prompt budget vs response cap split into `max_response_tokens` (#46 landed), CLI clean orphan section says display-only (#51 landed); open items #52-#53 recorded
+- Review round 11 (2026-10-03): fixed AI error preview slicing mid-UTF-8-char (core), cleanup detail scan re-walking every subtree once per directory (single post-order pass, minutes→seconds on deep trees), AI-review scroll underflow on ≤4-row terminals; open items #54-#56 recorded (leftover fuzzy-match over-matching, classify_risk contains-boundary, search highlight offset on exotic lowercasing)
