@@ -114,10 +114,7 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
 
     match key.code {
         KeyCode::Char('j') | KeyCode::Down if state.cursor + 1 < state.results.len() => {
-            let visible = crossterm::terminal::size()
-                .ok()
-                .map(|(_, h)| ((h as usize).saturating_sub(4)) / ITEM_LINES)
-                .unwrap_or(6);
+            let visible = review_visible_rows(crossterm::terminal::size().ok().map(|(_, h)| h));
             if state.cursor >= state.scroll_offset + visible - 1 {
                 state.scroll_offset = state.cursor + 2 - visible;
             }
@@ -206,4 +203,29 @@ fn collect_marked_paths(state: &crate::types::AiReviewState) -> Vec<PathBuf> {
         .filter_map(|&i| state.results.get(i))
         .map(|r| r.path.clone())
         .collect()
+}
+
+/// How many result rows fit on screen. `.max(1)`: a four-row terminal yields
+/// 0 and the `visible - 1` scroll math would underflow.
+fn review_visible_rows(terminal_height: Option<u16>) -> usize {
+    terminal_height
+        .map(|h| (h as usize).saturating_sub(4) / ITEM_LINES)
+        .unwrap_or(6)
+        .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tiny terminal (height ≤ 4) must clamp to one visible row: the raw
+    /// computation yields 0 and `visible - 1` underflowed in the scroll math.
+    #[test]
+    fn test_review_visible_rows_never_zero() {
+        assert_eq!(review_visible_rows(Some(4)), 1);
+        assert_eq!(review_visible_rows(Some(0)), 1);
+        assert_eq!(review_visible_rows(None), 6);
+        assert_eq!(review_visible_rows(Some(24)), 5);
+        assert_eq!(review_visible_rows(Some(u16::MAX)), 16_382);
+    }
 }
