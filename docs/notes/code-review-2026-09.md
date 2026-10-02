@@ -405,6 +405,10 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 - 第八轮的 `plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）等既有观察维持不变。
 - daemon 侧（watcher/debounce/retention/IPC）经十轮打磨未发现新的记账或性能问题。
 
+## 第十一轮其他改进
+
+- daemonize 补 `chdir("/")`（4d57633）：后台进程原本终身持有启动 shell 的工作目录，把所在卷钉在 busy 状态；此后打开的 config/DB/socket/PID 文件全是绝对路径，手动 `argusd --daemon` 场景行为不变（launchd/systemd 本就以 / 为工作目录）。
+
 ## 第十一轮验证
 
 - `cargo test --workspace --all-features`：396 通过（新增 5 个：UTF-8 截断、详情扫描单文件/嵌套累计/符号链接跳过、可见行数下限）
