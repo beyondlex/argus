@@ -413,3 +413,46 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 
 - `cargo test --workspace --all-features`：396 通过（新增 5 个：UTF-8 截断、详情扫描单文件/嵌套累计/符号链接跳过、可见行数下限）
 - `cargo clippy --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十二轮，2026-10-04）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| `:Consolidate` 的失败路径（daemon 连不上、请求出错）发 `AppMessage::Info` → 状态栏按成功色渲染，失败读成成功。改走 Error 通道（与 `R` 重连一致） | `argus-tui/command.rs` | 误导性反馈 | e229cf9 |
+| 卸载最终确认弹窗无条件写 "Uninstall X and remove leftovers?"，`t` 关掉残留开关后文案与实际行为相反；按开关条件显示 "(keep leftovers)" | `argus-tui/components/cleanup.rs` | 误导性确认文案 | 9b61716 |
+| `render_cleanup`/`render_uninstall`/`render_brew` 每帧整状态 `clone()`（数百应用/包/清理项的字符串全量复制），渲染路径无任何变更，改借用 | 同上 + `components/brew.rs` | 每次按键的多余堆复制 | 9b61716 |
+| **存疑 #56 落地**：`fuzzy_match_indices` 非 ASCII 分支按小写串数字符定位高亮，`İ`→`i̇` 这类展开让下标映射到原串不存在的位置（匹配在展开字符之后时高亮错位/越界）。改为按每字符小写展开长度回溯原串字符下标；Final_Sigma 全大小写映射不按字符复现，该罕见场景高亮可能偏 1 字符（匹配本身不受影响） | `argus-tui/search.rs` | 搜索高亮错位（显示层） | c293b12 |
+| **存疑 #54 落地**：`find_leftovers` 的 Application Support 扫描对 app name 用模糊 `contains`，短名应用（`Go`）命中无关目录（`Google Drive`）。收紧为名字精确等值（小写）或 bundle id 子串（带点/去点两种形态），谓词抽出为纯函数可测。召回让位于准确：`AppName Helpers` 类变体目录不再命中，TUI 确认面板兜底 | `argus-core/cleaner/uninstaller.rs` | 残留误报（删除前最后一道人工复核被噪音稀释） | 320ac67 |
+| `find_artifacts` 只看 `root/<project>/<kind>` 一层，嵌套工作区（`~/Projects/work/my-app/target`）对 purge 不可见。改为每根下深度 ≤ 4 的目录遍历：命中产物目录不再向下遍历（`node_modules` 内层副本不重复上报）、符号链接不匹配也不跟随（与 `dir_size` 纪律一致）、`project_name` 取父目录名；平面布局行为不变 | `argus-core/cleaner/purge.rs` | purge 漏报嵌套项目 | 3448cdf |
+| `cargo test -p argus-core`（默认 feature）编译失败：`truncate_utf8` 的测试没挂 `#[cfg(feature = "ai")]`（基线只跑 `--all-features`，从未暴露） | `argus-core/ai.rs` | 默认 feature 测试不可编译 | 489b78c |
+
+## 存疑关闭（第十二轮）
+
+### 55. `classify_risk` 的 `contains("/Caches")` 边界宽松 — 关闭，维持现状（有据 won't-fix）
+
+逐组件等值改造对该路径**行为无差**：`~/Library/CachesExtra` 即使不再命中 `/Caches` 分支，也会落进 Library 分支末尾的兜底 `return Low`，结果仍是 Low。而反向案例（`~/Library/Application SupportExtra`）现状按 contains 判 Medium，逐组件等值后反而降为 Low——**收紧边界会让分级更不保守**。contains 式匹配的方向性偏差全部朝"要求更多确认"一侧，拦不住删除但多一道键入确认，这是安全的方向。等真实路径撞上再议。
+
+## 存疑 / 记录在案（第十二轮新增，未改动）
+
+### 57. `App::new` 在单测里打开真实用户 DB
+`ai_analyzed` 启动加载直连 `default_db_path()`：每个构造 `App` 的单测/集成测试都会 open 开发者真实的 `~/.config/argus/argus.db`（只读 + `CREATE TABLE IF NOT EXISTS`，无写路径）。当前没有测试断言 `ai_analyzed` 为空所以不炸，但测试结果隐式依赖机器状态；注入构造函数要动 `App::new` 的全部调用点，等出现真实 flaky 再做。
+
+### 58. CLI 交互选择按格式化串反查下标
+`argus uninstall` / `argus brew` 用 `inquire::Select` 的选项字符串 `position()` 反查原对象——两行格式化后完全相同（同名同版本同尺寸）时会选到第一个。真实 brew 里同名包不共存，触发面极窄；改为携带索引需自定义 Select 项类型，收益不匹配改动面。
+
+### 59. 多选尺寸摘要只统计当前视图条目
+状态栏 `MULTI(n) size` 对 `current_children` 求和：选中后进入子目录，不在视图里的选中项不计入显示（删除本身仍按完整选择集执行，不受影响）。显示口径问题，修正需要在 DirEntry 之外维护一份选择集尺寸缓存，等有人被它误导再说。
+
+### 60. delta 详情弹窗页脚百分比与可见行口径不一致
+页脚 `visible_rows = popup.height - 4`，实际行渲染用 `inner.height - 2`，滚动到底前的百分比略有偏差。纯显示层，随下次触碰该弹窗一并修正。
+
+## 第十二轮性能观察
+
+- 三个清理面板的每帧整状态 clone 是本轮唯一的实际性能修复（9b61716）；渲染频率受事件驱动，按键期间每次重绘都在复制数百条 AppInfo/BrewPackage。
+- `find_artifacts` 深度 1 → 4 的代价是每根多几层 `read_dir`（只列目录名、不进产物子树），毫秒级；换来嵌套工作区可见性。
+- 第八轮的 `plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）等既有观察维持不变。
+
+## 第十二轮验证
+
+- `cargo test --workspace --all-features`：401 通过（新增 5 个：高亮下标映射、残留匹配规则、purge 嵌套/防自嵌套/符号链接）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净

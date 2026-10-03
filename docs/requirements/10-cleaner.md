@@ -171,6 +171,15 @@ pub fn find_leftovers(app: &AppInfo) -> Result<AppLeftovers, CleanerError>;
 pub fn uninstall_app(app: &AppInfo, remove_leftovers: bool) -> Result<CleanReport, CleanerError>;
 ```
 
+残留匹配规则（第十二轮收紧，此前 app name 用模糊 `contains`，短名应用如
+`Go` 会命中无关目录 `Google Drive`）：
+
+- 8 个标准 LEFTOVER 目录（`Library/Caches`、`Preferences` 等）按 bundle id
+  与 app name **精确名拼接**探测；
+- `Library/Application Support` 额外扫描按 **名字精确等值（小写）或
+  bundle id 子串（带点与去点两种形态）** 匹配。召回上让位于准确：形如
+  `AppName Helpers` 的变体目录不再命中，由 TUI 卸载确认面板兜底人工发现。
+
 ### 3.7 `cleaner/purge.rs` — 项目构建产物扫描
 
 ```rust
@@ -196,6 +205,16 @@ pub enum ArtifactKind {
 pub fn find_artifacts(roots: &[PathBuf]) -> Result<Vec<Artifact>, CleanerError>;
 pub fn remove_artifacts(artifacts: &[Artifact]) -> Result<CleanReport, CleanerError>;
 ```
+
+扫描语义（第十二轮起）：`roots` 为空时回退默认搜索根（`~/Projects`、
+`~/GitHub`、`dev`、`Work`、`Documents`、`Desktop` 及 cwd）。在每个根下做
+**深度 ≤ 4** 的目录遍历（此前只看 `root/<project>/<kind>` 一层，嵌套
+工作区如 `~/Projects/work/my-app/target` 会漏报）：
+
+- 目录名等于某个 `ArtifactKind.dir_name()` 即记录为产物，**不再向下遍历**
+  （`node_modules` 内层副本不重复上报）；
+- 符号链接目录既不算产物也不跟随（与 `dir_size` 的链接纪律一致）；
+- `project_name` 取产物的父目录名（`…/my-app/target` → `my-app`）。
 
 ## 4. 与现有系统集成
 
