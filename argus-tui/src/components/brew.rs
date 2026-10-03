@@ -13,7 +13,10 @@ use ratatui::{
 };
 
 pub fn render_brew(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(ref state) = app.brew_state.clone() else {
+    // Borrow, don't clone: the package list (hundreds of entries with names,
+    // versions and dependent lists) was re-copied on every redraw for no
+    // reason — nothing here mutates the state.
+    let Some(ref state) = app.brew_state else {
         return;
     };
     let theme = &app.theme;

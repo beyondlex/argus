@@ -12,7 +12,9 @@ use ratatui::{
 };
 
 pub fn render_cleanup(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(ref state) = app.cleanup_state.clone() else {
+    // Borrow, don't clone: the state (items with path strings, selection set)
+    // is read-only here, and a per-frame clone re-copied it on every redraw.
+    let Some(ref state) = app.cleanup_state else {
         return;
     };
     let theme = &app.theme;
@@ -423,7 +425,9 @@ fn render_cleanup_report(
 // ── Uninstall Panel ─────────────────────────────────────────────────
 
 pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(ref state) = app.uninstall_state.clone() else {
+    // Borrow, don't clone: the app list (hundreds of names/paths) was
+    // re-copied on every redraw for no reason — nothing here mutates.
+    let Some(ref state) = app.uninstall_state else {
         return;
     };
     let theme = &app.theme;
@@ -481,7 +485,14 @@ pub fn render_uninstall(f: &mut Frame, area: Rect, app: &mut App) {
             .get(app_idx)
             .map(|a| a.name.as_str())
             .unwrap_or("?");
-        let confirm_text = format!("Uninstall {} and remove leftovers?", app_name);
+        // The copy must reflect the master toggle: with leftovers deselected
+        // ('t'), the old unconditional "and remove leftovers?" told the user
+        // the opposite of what Enter would do.
+        let confirm_text = if state.remove_leftovers {
+            format!("Uninstall {} and remove leftovers?", app_name)
+        } else {
+            format!("Uninstall {} (keep leftovers)?", app_name)
+        };
         let confirm_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.danger))
