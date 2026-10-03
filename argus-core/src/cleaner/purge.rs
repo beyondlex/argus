@@ -85,6 +85,14 @@ fn default_search_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// How deep below a search root artifact directories may sit. The original
+/// single-level check (`root/<project>/<kind>`) missed nested workspaces —
+/// `~/Projects/work/app` with its `target/` was invisible to purge. 4 covers
+/// up to three project levels without walking whole projects; matched
+/// artifact dirs are never descended into, so `node_modules` trees are not
+/// re-walked at their (huge) depth.
+const ARTIFACT_MAX_DEPTH: usize = 4;
+
 pub fn find_artifacts(roots: &[PathBuf]) -> Result<Vec<Artifact>, String> {
     let search_roots = if roots.is_empty() {
         default_search_roots()
@@ -99,46 +107,63 @@ pub fn find_artifacts(roots: &[PathBuf]) -> Result<Vec<Artifact>, String> {
         if !root.exists() {
             continue;
         }
-        let read_dir = match std::fs::read_dir(root) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            for kind in ALL_ARTIFACT_KINDS {
-                let target_dir = path.join(kind.dir_name());
-                if target_dir.exists() && target_dir.is_dir() {
-                    let size = dir_size(&target_dir);
-                    let modified = std::fs::metadata(&target_dir)
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .map(|t| {
-                            let secs = t
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs() as i64;
-                            DateTime::from_timestamp(secs, 0).unwrap_or(now)
-                        })
-                        .unwrap_or(now);
-                    let age_days = (now - modified).num_days().max(0) as u64;
-
-                    artifacts.push(Artifact {
-                        path: target_dir,
-                        kind: *kind,
-                        size,
-                        last_modified: modified,
-                        project_name: dir_name.clone(),
-                        age_days,
-                    });
+        // Iterative depth-bounded walk. entry.file_type() does not follow
+        // symlinks: a `link -> /some/huge/dir` entry is neither matched as an
+        // artifact nor descended into (same symlink discipline as dir_size).
+        let mut stack = vec![(root.clone(), 0usize)];
+        while let Some((dir, depth)) = stack.pop() {
+            let read_dir = match std::fs::read_dir(&dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            for entry in read_dir.flatten() {
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if !ft.is_dir() {
+                    continue;
                 }
+                let path = entry.path();
+                let Some(kind) = ALL_ARTIFACT_KINDS
+                    .iter()
+                    .find(|k| path.file_name().is_some_and(|n| n == k.dir_name()))
+                else {
+                    if depth < ARTIFACT_MAX_DEPTH {
+                        stack.push((path, depth + 1));
+                    }
+                    continue;
+                };
+
+                let size = dir_size(&path);
+                let modified = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        let secs = t
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        DateTime::from_timestamp(secs, 0).unwrap_or(now)
+                    })
+                    .unwrap_or(now);
+                let age_days = (now - modified).num_days().max(0) as u64;
+
+                // The enclosing directory is the project (e.g. `…/my-app/target`
+                // → "my-app"), matching the flat layout's project naming.
+                let project_name = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                artifacts.push(Artifact {
+                    path,
+                    kind: *kind,
+                    size,
+                    last_modified: modified,
+                    project_name,
+                    age_days,
+                });
             }
         }
     }
@@ -206,6 +231,67 @@ mod tests {
     fn test_find_artifacts_nonexistent_root() {
         let artifacts = find_artifacts(&[PathBuf::from("/_nonexistent_root_99")]).unwrap();
         assert!(artifacts.is_empty());
+    }
+
+    /// Nested workspaces must be found: the old scan only looked at
+    /// `root/<project>/<kind>`, so `root/work/my-app/target` was invisible.
+    #[test]
+    fn test_find_artifacts_nested_workspace() {
+        let tmp = std::env::temp_dir().join("_argus_purge_nested");
+        let _ = fs::remove_dir_all(&tmp);
+        let app = tmp.join("work").join("my-app");
+        fs::create_dir_all(app.join("target")).unwrap();
+        fs::write(app.join("target").join("a.o"), b"test").unwrap();
+
+        let artifacts = find_artifacts(std::slice::from_ref(&tmp)).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, ArtifactKind::Target);
+        assert_eq!(artifacts[0].project_name, "my-app");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A matched artifact directory is reported once and not descended into:
+    /// a `node_modules` inside `node_modules` must not produce a second
+    /// artifact for the same tree.
+    #[test]
+    fn test_find_artifacts_no_self_nesting() {
+        let tmp = std::env::temp_dir().join("_argus_purge_nesting");
+        let _ = fs::remove_dir_all(&tmp);
+        let nm = tmp.join("proj").join("node_modules");
+        fs::create_dir_all(nm.join("dep").join("node_modules")).unwrap();
+
+        let artifacts = find_artifacts(std::slice::from_ref(&tmp)).unwrap();
+        assert_eq!(artifacts.len(), 1, "outer node_modules only");
+        assert_eq!(artifacts[0].path, nm);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Symlinked directories must be neither matched nor followed: a link
+    /// pointing at a tree outside the root must not make its artifacts
+    /// visible (same discipline as `dir_size` — links are not walked).
+    #[cfg(unix)]
+    #[test]
+    fn test_find_artifacts_skips_symlinked_dirs() {
+        use std::os::unix::fs::symlink;
+        let outside = std::env::temp_dir().join("_argus_purge_symlink_outside");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(outside.join("real").join("target")).unwrap();
+
+        let tmp = std::env::temp_dir().join("_argus_purge_symlink");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        symlink(outside.join("real"), tmp.join("alias")).unwrap();
+
+        let artifacts = find_artifacts(std::slice::from_ref(&tmp)).unwrap();
+        assert!(
+            artifacts.is_empty(),
+            "artifact reachable only through a symlinked dir must not be reported"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
