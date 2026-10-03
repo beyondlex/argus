@@ -193,6 +193,27 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Whether an `Application Support` entry belongs to `app`.
+///
+/// Inputs are lowercase. The old rule substring-matched the app name, so a
+/// short name (`Go`) claimed unrelated directories (`Google Drive`); names
+/// must now match exactly. Bundle ids stay substring-matched in both the
+/// dotted and the dots-stripped form — vendors use both on disk, and an id
+/// (`com.google.drive`) is specific enough that a substring cannot over-match.
+fn app_support_entry_matches(
+    fname_lower: &str,
+    app_name_lower: &str,
+    bundle_id_lower: &str,
+) -> bool {
+    if fname_lower == app_name_lower {
+        return true;
+    }
+    if bundle_id_lower.is_empty() {
+        return false;
+    }
+    fname_lower.contains(bundle_id_lower) || fname_lower.contains(&bundle_id_lower.replace('.', ""))
+}
+
 pub fn find_leftovers(app: &AppInfo) -> Result<AppLeftovers, String> {
     let home = home_dir().ok_or_else(|| "HOME not set".to_string())?;
     let mut leftovers = Vec::new();
@@ -216,6 +237,8 @@ pub fn find_leftovers(app: &AppInfo) -> Result<AppLeftovers, String> {
 
     let app_support = home.join("Library/Application Support");
     if let Ok(read_dir) = std::fs::read_dir(&app_support) {
+        let name_lc = app_name.to_lowercase();
+        let id_lc = bundle_id.to_lowercase();
         for entry in read_dir.flatten() {
             let p = entry.path();
             if leftovers.contains(&p) {
@@ -225,9 +248,7 @@ pub fn find_leftovers(app: &AppInfo) -> Result<AppLeftovers, String> {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            let matches = fname.contains(&app_name.to_lowercase())
-                || fname.contains(&bundle_id.to_lowercase().replace('.', ""));
-            if matches && p.exists() {
+            if app_support_entry_matches(&fname, &name_lc, &id_lc) && p.exists() {
                 let size = dir_size(&p);
                 leftovers.push(p);
                 total += size;
@@ -457,6 +478,60 @@ mod tests {
         let leftovers = find_leftovers(&app).unwrap();
         assert!(leftovers.leftover_paths.is_empty());
         assert_eq!(leftovers.total_leftover_bytes, 0);
+    }
+
+    /// Application Support entries match by exact app name or bundle id
+    /// (dotted and stripped). A short app name must not claim unrelated
+    /// directories by substring: `Go` used to match `Google Drive`.
+    #[test]
+    fn test_app_support_entry_match_rules() {
+        // Exact name match always wins (inputs are pre-lowercased by the
+        // caller — `find_leftovers` lowercases before calling).
+        assert!(app_support_entry_matches(
+            "firefox",
+            "firefox",
+            "org.mozilla.firefox"
+        ));
+        assert!(app_support_entry_matches(
+            "google drive",
+            "google drive",
+            "x"
+        ));
+
+        // Bundle id substring, dotted and dots-stripped vendor forms.
+        assert!(app_support_entry_matches(
+            "org.videolan.vlc",
+            "vlc",
+            "org.videolan.vlc"
+        ));
+        assert!(app_support_entry_matches(
+            "orgvideolanvlc",
+            "vlc",
+            "org.videolan.vlc"
+        ));
+        assert!(app_support_entry_matches(
+            "com.google.drive.cache",
+            "google drive",
+            "com.google.drive"
+        ));
+
+        // The over-matching cases the old contains() rule claimed:
+        assert!(
+            !app_support_entry_matches("google drive", "go", "com.golang.go"),
+            "short name must not substring-match"
+        );
+        assert!(
+            !app_support_entry_matches("goland", "go", "com.jetbrains.goland"),
+            "prefix-at-boundary is still a different app"
+        );
+        assert!(
+            !app_support_entry_matches("unrelated", "app", "com.vendor.app2"),
+            "name substring inside a longer dir name no longer matches"
+        );
+
+        // Empty bundle id (no plist → "unknown.<name>" is still an id, but a
+        // defensive empty must not panic or match).
+        assert!(!app_support_entry_matches("anything", "app", ""));
     }
 
     /// Orphan classification must run against the injected temp home: entries
