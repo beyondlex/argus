@@ -273,14 +273,17 @@ impl App {
                             .await;
                     }
                     Err(e) => {
+                        // Failures must use the error channel: Info renders in
+                        // the success color, so a failed consolidation read as
+                        // if it had succeeded.
                         let _ = tx
-                            .send(AppMessage::Info(format!("consolidation failed: {e}")))
+                            .send(AppMessage::Error(format!("consolidation failed: {e}")))
                             .await;
                     }
                 },
                 Err(e) => {
                     let _ = tx
-                        .send(AppMessage::Info(format!("daemon connect failed: {e}")))
+                        .send(AppMessage::Error(format!("daemon connect failed: {e}")))
                         .await;
                 }
             }
