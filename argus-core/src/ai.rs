@@ -484,6 +484,7 @@ mod tests {
 
     /// Truncation must land on a char boundary: a raw byte slice at 500 would
     /// panic on multi-byte content past that offset.
+    #[cfg(feature = "ai")]
     #[test]
     fn test_truncate_utf8_respects_char_boundary() {
         let s = "你".repeat(400); // 1200 bytes, all 3-byte chars
