@@ -345,6 +345,15 @@ pub fn consolidate_events(conn: &mut Connection, threshold: u64) -> Result<u64, 
             if parent.as_os_str().is_empty() {
                 continue;
             }
+            // The filesystem root can never aggregate: the delete below would
+            // build the child prefix `//` (matching nothing, leaving every raw
+            // event in place) while the insert still wrote an unreachable agg
+            // row at "/" (the "/" query prefix is itself "//") and the
+            // consolidated count counted rows it never removed. Skip instead;
+            // root-level events simply stay raw.
+            if parent == Path::new("/") {
+                continue;
+            }
             let entry = parent_map
                 .entry(parent.to_string_lossy().into_owned())
                 .or_insert((0, 0, 0));
@@ -1115,6 +1124,43 @@ mod tests {
         let entries = query_delta_detail(&conn, Path::new("/tmp/my-dir"), 0, 5000).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, PathBuf::from("/tmp/my-dir/b.bin"));
+    }
+
+    /// Filesystem-root children must never aggregate: the delete prefix would
+    /// be `//` (matching nothing, every raw row stays) while the agg insert
+    /// still wrote an aggregate at "/" — a junk row no query can ever reach
+    /// (the "/" prefix is "//") plus an over-reported consolidated count.
+    #[test]
+    fn test_consolidate_skips_filesystem_root_parent() {
+        let (mut conn, _) = setup_db();
+
+        let mut events = Vec::new();
+        for i in 0..5 {
+            events.push(DeltaEntry {
+                path: PathBuf::from(format!("/top-{}.bin", i)),
+                delta_size: 100,
+                event_type: "create".into(),
+                timestamp: 1000 + i as u64,
+                is_agg: false,
+            });
+        }
+        insert_events(&mut conn, &events).unwrap();
+
+        let consolidated = consolidate_events(&mut conn, 1).unwrap();
+        assert_eq!(consolidated, 0, "root parent must not aggregate");
+
+        // Raw rows stay, and no unreachable agg row at "/" appeared.
+        let entries = query_delta_detail(&conn, Path::new("/top-0.bin"), 0, 9999).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let agg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM delta_events WHERE is_agg = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agg_count, 0, "no aggregate row may be written for /");
     }
 
     #[test]
