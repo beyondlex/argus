@@ -202,7 +202,9 @@ pub struct App {
 impl App {
     /// Risk levels persisted by earlier AI analyses, loaded once at startup
     /// (one bulk query for the whole cache instead of a path-listing query
-    /// plus one blob query per entry).
+    /// plus one blob query per entry). Only the production build calls this —
+    /// unit tests stay hermetic (see `App::new`).
+    #[cfg(not(test))]
     fn load_persisted_ai_levels() -> HashMap<PathBuf, RiskLevel> {
         load_ai_levels_from_db_file(&argus_core::default_db_path())
     }

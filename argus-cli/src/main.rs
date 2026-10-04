@@ -903,7 +903,11 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
                 index: i,
                 label: format!(
                     "{:<30} {:>9}  {:>5}  {}{}",
-                    p.name, size, p.package_type.label(), time_str, deps
+                    p.name,
+                    size,
+                    p.package_type.label(),
+                    time_str,
+                    deps
                 ),
             }
         })
