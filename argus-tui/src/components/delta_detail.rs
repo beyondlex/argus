@@ -149,6 +149,15 @@ fn format_timestamp(ts_ms: u64) -> String {
         .unwrap_or_default()
 }
 
+/// Data rows the popup can show: popup height minus top/bottom borders (2)
+/// minus the column header (1). The footer percentage and the row loop must
+/// agree on this number — the footer used `popup.height - 4` while the row
+/// loop rendered `inner.height - 2`, leaving one blank row at the bottom of
+/// the table and skewing the scrolled percentage (review #60).
+fn visible_row_count(popup_height: u16) -> usize {
+    (popup_height as usize).saturating_sub(3)
+}
+
 /// Render the delta detail popup
 pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &ColorTheme) {
     let popup = crate::components::popup::centered_rect(70, 65, area);
@@ -156,7 +165,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &Color
 
     let entry_count = state.entries.len();
     let total_title = format!(" Delta Events for: {} ", display_path(&state.path));
-    let visible_rows = (popup.height as usize).saturating_sub(4);
+    let visible_rows = visible_row_count(popup.height);
     let needs_scroll = entry_count > visible_rows;
     let footer = if state.entries.is_empty() {
         " [Esc close] ".into()
@@ -170,10 +179,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &Color
     } else {
         format!(" {} entries · [Esc close] ", entry_count)
     };
-    let block = popup_block(total_title, PopupStyle::Normal, theme)
-        .title_bottom(Line::from(footer).right_aligned());
-
-    let inner = block.inner(popup);
+    let block = popup_block(total_title, PopupStyle::Normal, theme);
+    let block = block.title_bottom(Line::from(footer).right_aligned());
     let scroll = state.scroll;
 
     let widths = [
@@ -208,7 +215,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &Color
     let mut rows: Vec<Row> = Vec::new();
 
     if !state.entries.is_empty() {
-        let visible_count = (inner.height as usize).saturating_sub(2);
+        let visible_count = visible_row_count(popup.height);
         for i in scroll..(scroll + visible_count).min(state.entries.len()) {
             let row = &state.entries[i];
             let prefix = if row.is_aggregated { "- " } else { "  " };
@@ -240,4 +247,19 @@ pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &Color
 
     let table = Table::new(rows, widths).header(header).block(block);
     f.render_widget(table, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Popup height minus two borders minus the header row. A 20-row popup
+    /// shows 17 entries; tiny popups clamp to 0 (the callers also guard with
+    /// `entry_count > visible_rows`, so 0 just means "no scroll").
+    #[test]
+    fn test_visible_row_count_matches_layout() {
+        assert_eq!(visible_row_count(20), 17);
+        assert_eq!(visible_row_count(3), 0);
+        assert_eq!(visible_row_count(0), 0);
+    }
 }
