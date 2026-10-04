@@ -197,12 +197,16 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
 }
 
 fn collect_marked_paths(state: &crate::types::AiReviewState) -> Vec<PathBuf> {
-    state
+    // Sorted: mark_for_delete is a HashSet, and arbitrary iteration order made
+    // both the confirm dialog's row order and the deletion order nondeterministic.
+    let mut paths: Vec<PathBuf> = state
         .mark_for_delete
         .iter()
         .filter_map(|&i| state.results.get(i))
         .map(|r| r.path.clone())
-        .collect()
+        .collect();
+    paths.sort();
+    paths
 }
 
 /// How many result rows fit on screen. `.max(1)`: a four-row terminal yields

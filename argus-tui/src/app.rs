@@ -288,7 +288,7 @@ impl App {
             ai_analyzed: {
                 #[cfg(not(test))]
                 {
-                    load_persisted_ai_levels()
+                    Self::load_persisted_ai_levels()
                 }
                 #[cfg(test)]
                 {

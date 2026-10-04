@@ -312,9 +312,22 @@ pub fn query_event_count(conn: &Connection) -> Result<u64, DbError> {
     Ok(count)
 }
 
+/// On-disk size of the delta DB, including the WAL sidecar when present.
+/// The daemon keeps a connection open in WAL mode, so un-checkpointed pages
+/// (routine with a live writer) live in `<path>-wal`; reporting only the main
+/// file understated the status panel's "db size" between checkpoints.
 pub fn query_db_size(path: &Path) -> Result<u64, DbError> {
-    let meta = fs::metadata(path)?;
-    Ok(meta.len())
+    let mut total = fs::metadata(path)?.len();
+    if let Ok(wal) = fs::metadata(wal_path(path)) {
+        total = total.saturating_add(wal.len());
+    }
+    Ok(total)
+}
+
+fn wal_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push("-wal");
+    PathBuf::from(s)
 }
 
 pub fn clear_all_events(conn: &Connection) -> Result<u64, DbError> {
@@ -1161,6 +1174,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(agg_count, 0, "no aggregate row may be written for /");
+    }
+
+    /// The reported size must include the `-wal` sidecar: a live WAL-mode
+    /// writer keeps un-checkpointed pages there, so main-file-only reporting
+    /// understates the delta log's actual footprint.
+    #[test]
+    fn test_query_db_size_includes_wal() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("size.db");
+        fs::write(&db_path, [0u8; 100]).unwrap();
+        assert_eq!(query_db_size(&db_path).unwrap(), 100);
+
+        fs::write(temp.path().join("size.db-wal"), [0u8; 40]).unwrap();
+        assert_eq!(query_db_size(&db_path).unwrap(), 140);
     }
 
     #[test]
