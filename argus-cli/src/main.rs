@@ -639,6 +639,23 @@ fn free_space_bytes() -> u64 {
 
 // ── Uninstall ────────────────────────────────────────────────────────────────
 
+/// `inquire::Select` option carrying its index into the source list. The old
+/// flow re-formatted every item and string-compared the choice back to an
+/// index, so two rows that formatted identically (same name, version, size)
+/// always resolved to the first one (review #58).
+#[cfg(feature = "cleanup")]
+struct SelectItem {
+    index: usize,
+    label: String,
+}
+
+#[cfg(feature = "cleanup")]
+impl std::fmt::Display for SelectItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 #[cfg(feature = "cleanup")]
 fn cmd_uninstall(dry_run: bool) -> Result<i32> {
     let apps = find_installed_apps(None).map_err(|e| anyhow::anyhow!("find apps: {e}"))?;
@@ -647,11 +664,12 @@ fn cmd_uninstall(dry_run: bool) -> Result<i32> {
         return Ok(0);
     }
 
-    let selections: Vec<String> = apps
+    let selections: Vec<SelectItem> = apps
         .iter()
-        .map(|a| {
-            let size = format_size(a.size);
-            format!("{:<30} {:>9}  {}", a.name, size, a.id)
+        .enumerate()
+        .map(|(i, a)| SelectItem {
+            index: i,
+            label: format!("{:<30} {:>9}  {}", a.name, format_size(a.size), a.id),
         })
         .collect();
 
@@ -664,17 +682,9 @@ fn cmd_uninstall(dry_run: bool) -> Result<i32> {
     .with_help_message("↑↓ navigate • type to filter • Enter confirm • Esc cancel")
     .prompt();
 
-    let idx = match sel {
-        Ok(chosen) => apps.iter().position(|a| {
-            let size = format_size(a.size);
-            format!("{:<30} {:>9}  {}", a.name, size, a.id) == chosen
-        }),
-        Err(_) => None,
-    };
-
-    let app = match idx {
-        Some(i) => &apps[i],
-        None => {
+    let app = match sel {
+        Ok(chosen) => &apps[chosen.index],
+        Err(_) => {
             println!("{}", "cancelled".yellow());
             return Ok(0);
         }
@@ -878,9 +888,10 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
     }
 
     // 交互式选择要卸载的包
-    let selections: Vec<String> = sorted
+    let selections: Vec<SelectItem> = sorted
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let time_str = format_brew_last_used(p.last_used);
             let size = format_size(p.size);
             let deps = if p.dependents > 0 {
@@ -888,14 +899,13 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
             } else {
                 String::new()
             };
-            format!(
-                "{:<30} {:>9}  {:>5}  {}{}",
-                p.name,
-                size,
-                p.package_type.label(),
-                time_str,
-                deps
-            )
+            SelectItem {
+                index: i,
+                label: format!(
+                    "{:<30} {:>9}  {:>5}  {}{}",
+                    p.name, size, p.package_type.label(), time_str, deps
+                ),
+            }
         })
         .collect();
 
@@ -908,30 +918,9 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
     .with_help_message("↑↓ navigate • type to filter • Enter confirm • Esc cancel")
     .prompt();
 
-    let idx = match sel {
-        Ok(chosen) => sorted.iter().position(|p| {
-            let time_str = format_brew_last_used(p.last_used);
-            let size = format_size(p.size);
-            let deps = if p.dependents > 0 {
-                format!(" deps:{}", p.dependents)
-            } else {
-                String::new()
-            };
-            format!(
-                "{:<30} {:>9}  {:>5}  {}{}",
-                p.name,
-                size,
-                p.package_type.label(),
-                time_str,
-                deps
-            ) == chosen
-        }),
-        Err(_) => None,
-    };
-
-    let pkg = match idx {
-        Some(i) => &sorted[i],
-        None => {
+    let pkg = match sel {
+        Ok(chosen) => &sorted[chosen.index],
+        Err(_) => {
             println!("{}", "cancelled".yellow());
             return Ok(0);
         }
