@@ -87,10 +87,14 @@ fn default_search_roots() -> Vec<PathBuf> {
 
 /// How deep below a search root artifact directories may sit. The original
 /// single-level check (`root/<project>/<kind>`) missed nested workspaces —
-/// `~/Projects/work/app` with its `target/` was invisible to purge. 4 covers
-/// up to three project levels without walking whole projects; matched
-/// artifact dirs are never descended into, so `node_modules` trees are not
-/// re-walked at their (huge) depth.
+/// `~/Projects/work/app` with its `target/` was invisible to purge.
+///
+/// Depth bookkeeping: non-matching dirs are pushed with their level; a dir
+/// pushed at `ARTIFACT_MAX_DEPTH` still has its children examined, so an
+/// artifact can sit up to `ARTIFACT_MAX_DEPTH + 1` path components below the
+/// root (five here) — enough for three project levels without walking whole
+/// projects. Matched artifact dirs are never descended into, so
+/// `node_modules` trees are not re-walked at their (huge) depth.
 const ARTIFACT_MAX_DEPTH: usize = 4;
 
 pub fn find_artifacts(roots: &[PathBuf]) -> Result<Vec<Artifact>, String> {
