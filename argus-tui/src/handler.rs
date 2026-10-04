@@ -40,6 +40,7 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::TreeNode;
+    use crate::app::{AppMessage, AppMode};
     use crate::handler::browsing::{handle_browsing_key, handle_gg_double_tap, move_cursor};
     use crate::handler::command::{execute_command, handle_command_key};
     use crate::handler::prompt::{
@@ -1025,6 +1026,111 @@ mod tests {
 
         assert_eq!(app.mode, AppMode::DeletePrompt, "child must be deletable");
         assert_eq!(app.delete_target_path, Some(root_path.join("test")));
+    }
+
+    // ── panel scanning failure recovery ─────────────────────────────────
+
+    /// A failed panel scan (Error message) must clear the panel's scanning
+    /// flag: the completion message that normally clears it never arrives, so
+    /// the panel used to sit on its scanning screen forever (only Esc, which
+    /// quit the whole panel, still worked).
+    #[test]
+    fn test_error_clears_panel_scanning_flags() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Uninstall;
+        app.uninstall_state = Some(crate::types::UninstallState {
+            scanning: true,
+            ..Default::default()
+        });
+        app.cleanup_state = Some(crate::types::CleanupState {
+            scanning: true,
+            ..Default::default()
+        });
+
+        app.handle_message(AppMessage::Error("leftover scan failed".into()));
+
+        assert!(!app.uninstall_state.as_ref().unwrap().scanning);
+        assert!(!app.cleanup_state.as_ref().unwrap().scanning);
+    }
+
+    /// Esc during the Confirm-phase leftover scan must return to the app list,
+    /// not quit the whole uninstall panel.
+    #[test]
+    fn test_uninstall_confirm_scan_esc_returns_to_select_app() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Uninstall;
+        app.uninstall_state = Some(crate::types::UninstallState {
+            scanning: true,
+            phase: crate::types::UninstallPhase::Confirm,
+            selected_app: Some(0),
+            ..Default::default()
+        });
+
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::Uninstall, "panel must stay open");
+        let state = app.uninstall_state.as_ref().unwrap();
+        assert_eq!(state.phase, crate::types::UninstallPhase::SelectApp);
+        assert!(!state.scanning);
+        assert!(state.selected_app.is_none());
+
+        // SelectApp-phase scans keep the old behavior: Esc leaves the panel.
+        app.uninstall_state.as_mut().unwrap().scanning = true;
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(app.uninstall_state.is_none());
+    }
+
+    /// A leftover scan that completes after the user backed out of Confirm —
+    /// or after a *different* app was selected — must not populate the panel.
+    #[test]
+    fn test_stale_leftovers_for_other_app_ignored() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Uninstall;
+        let app_b = argus_core::AppInfo {
+            id: "com.b".into(),
+            name: "B".into(),
+            path: PathBuf::from("/Applications/B.app"),
+            size: 0,
+            last_used: None,
+            is_from_app_store: false,
+        };
+        app.uninstall_state = Some(crate::types::UninstallState {
+            scanning: true,
+            phase: crate::types::UninstallPhase::Confirm,
+            selected_app: Some(0),
+            apps: vec![app_b.clone()],
+            ..Default::default()
+        });
+
+        // Leftovers of a different app arrive (the scan the user backed out
+        // of, racing a new selection).
+        let stale = argus_core::AppLeftovers {
+            app: argus_core::AppInfo {
+                id: "com.a".into(),
+                name: "A".into(),
+                path: PathBuf::from("/Applications/A.app"),
+                size: 0,
+                last_used: None,
+                is_from_app_store: false,
+            },
+            leftover_paths: vec![PathBuf::from("/Users/x/Library/A")],
+            total_leftover_bytes: 10,
+        };
+        app.handle_message(AppMessage::UninstallLeftoversReady(stale));
+
+        let state = app.uninstall_state.as_ref().unwrap();
+        assert!(state.scanning, "stale result must not end the wait");
+        assert!(state.leftovers.is_none(), "stale leftovers must be dropped");
     }
 
     // ── ai_review delete confirm ─────────────────────────────────────────

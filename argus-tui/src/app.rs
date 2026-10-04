@@ -459,6 +459,15 @@ impl App {
                         });
                     }
                 }
+                // A failed panel scan (clean/purge target scan, leftover scan)
+                // would otherwise leave the panel stuck on its scanning screen:
+                // the completion message that clears the flag never arrives.
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.scanning = false;
+                }
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.scanning = false;
+                }
                 self.set_error(e, 5);
             }
             AppMessage::DaemonConnected(client) => {
@@ -599,10 +608,22 @@ impl App {
             }
             AppMessage::UninstallLeftoversReady(leftovers) => {
                 if let Some(ref mut state) = self.uninstall_state {
-                    state.scanning = false;
-                    state.leftovers = Some(leftovers.clone());
-                    // Pre-select all leftovers
-                    state.selected_leftovers = (0..leftovers.leftover_paths.len()).collect();
+                    // Only the scan for the app currently being confirmed may
+                    // land here. Backing out of Confirm (Esc) while the scan
+                    // runs leaves the thread alive; without this guard a stale
+                    // completion could populate the panel — and, if it arrived
+                    // after a *different* app was re-selected, present the
+                    // wrong app's leftovers as its own.
+                    let matches_selection = state
+                        .selected_app
+                        .and_then(|i| state.apps.get(i))
+                        .is_some_and(|a| a.path == leftovers.app.path);
+                    if state.phase == UninstallPhase::Confirm && matches_selection {
+                        state.scanning = false;
+                        state.leftovers = Some(leftovers.clone());
+                        // Pre-select all leftovers
+                        state.selected_leftovers = (0..leftovers.leftover_paths.len()).collect();
+                    }
                 }
             }
             AppMessage::UninstallComplete(report) => {

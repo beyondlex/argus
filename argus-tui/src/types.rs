@@ -324,14 +324,15 @@ impl AiPathVerdict {
 // ── Cleanup / Uninstall ─────────────────────────────────────────────
 
 /// Cleanup mode (Clean vs Purge)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CleanupMode {
+    #[default]
     Clean,
     Purge,
 }
 
 /// State for the Clean / Purge panel
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CleanupState {
     pub mode: CleanupMode,
     pub scanning: bool,
@@ -349,14 +350,15 @@ pub struct CleanupState {
 }
 
 /// Uninstall phase
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UninstallPhase {
+    #[default]
     SelectApp,
     Confirm,
 }
 
 /// State for the Uninstall panel
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UninstallState {
     pub apps: Vec<argus_core::AppInfo>,
     pub filtered: Vec<usize>,

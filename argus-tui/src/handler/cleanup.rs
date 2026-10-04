@@ -222,7 +222,21 @@ pub(crate) fn handle_uninstall_key(key: KeyEvent, app: &mut App) {
     // late AppListReady messages hit the None state guard and no-op.
     if state.scanning {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-            app.exit_uninstall();
+            if state.phase == UninstallPhase::Confirm {
+                // Waiting on the leftover scan: back out to the app list
+                // instead of tearing down the whole panel. The late scan
+                // result is dropped by the phase guard in
+                // `UninstallLeftoversReady` handling.
+                if let Some(ref mut s) = app.uninstall_state {
+                    s.phase = UninstallPhase::SelectApp;
+                    s.selected_app = None;
+                    s.leftovers = None;
+                    s.scanning = false;
+                    s.cursor = 0;
+                }
+            } else {
+                app.exit_uninstall();
+            }
         }
         return;
     }
