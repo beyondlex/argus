@@ -5,14 +5,14 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-10-04
+- 2026-10-05
 
 ## Current State
 
 - Phase 1: complete
 - Phase 2: complete (integration tests in `argus-tui/tests/integration.rs`)
 - Phase 3: code complete (argusd, IPC, DB, TUI client); end-to-end daemon integration tests (Step 10) still pending
-- Review rounds 1-12 complete (see `docs/notes/code-review-2026-09.md`); full suite: 401 tests, clippy --all-targets --all-features 0 warnings, fmt clean
+- Review rounds 1-13 complete (see `docs/notes/code-review-2026-09.md`); full suite: 408 tests, clippy --all-targets --all-features 0 warnings, fmt clean
 
 ## Active Work
 
@@ -67,3 +67,4 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - Review round 10 (2026-10-02): fixed multi-select surviving `b`/`f` cross-root nav steps (fifth root-change point), root-dir delete guard over-blocking same-named children (#47 landed), duplicate-hardlink removal/rename booking phantom deltas (daemon), binary Info.plist losing the bundle id (plutil fallback), AI prompt budget vs response cap split into `max_response_tokens` (#46 landed), CLI clean orphan section says display-only (#51 landed); open items #52-#53 recorded
 - Review round 11 (2026-10-03): fixed AI error preview slicing mid-UTF-8-char (core), cleanup detail scan re-walking every subtree once per directory (single post-order pass, minutes→seconds on deep trees), AI-review scroll underflow on ≤4-row terminals, daemonize now chdir's to / (stale cwd pinned its volume); open items #54-#56 recorded (leftover fuzzy-match over-matching, classify_risk contains-boundary, search highlight offset on exotic lowercasing); doc-poste overview verified still accurate (no behavior-level changes this round)
 - Review round 12 (2026-10-04): landed open items #54 (Application Support leftovers now match by exact name or bundle id — short names no longer claim unrelated dirs) and #56 (search highlight maps through per-char lowercase expansion); closed #55 as reasoned won't-fix (boundary tightening would make risk classification less conservative); fixed consolidation failures reporting via success-styled Info, uninstall confirm copy contradicting the remove-leftovers toggle, per-frame whole-state clones in the three cleanup panels, `find_artifacts` missing nested workspaces (depth-bounded walk, depth ≤ 4), `truncate_utf8` test not gated behind the `ai` feature (default-feature `cargo test -p argus-core` did not compile); new open items #57-#60 recorded; doc-poste argus overview synced (purge nesting + leftover matching)
+- Review round 13 (2026-10-05): landed open items #57 (unit tests construct `App` without touching the real user DB), #58 (CLI selects resolve by index, not re-formatted strings) and #60 (delta-detail popup fills its row area, footer pct matches); fixed consolidation writing an unreachable junk agg row for the filesystem root (delete prefix `//` matched nothing, count over-reported), panel scans stuck on the scanning screen after a failure (Error never cleared `cleanup_state`/`uninstall_state.scanning`) with uninstall Confirm-phase Esc now returning to the app list plus a stale-leftover phase guard, `query_db_size` missing the WAL sidecar, nondeterministic AI-review delete order; new open items #61-#63 recorded; doc-poste argus overview verified still accurate (no behavior-level user-facing changes this round)

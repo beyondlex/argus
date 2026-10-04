@@ -456,3 +456,41 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 
 - `cargo test --workspace --all-features`：401 通过（新增 5 个：高亮下标映射、残留匹配规则、purge 嵌套/防自嵌套/符号链接）；`cargo test --workspace`（默认 feature）同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十三轮，2026-10-05）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| `consolidate_events` 对 parent 为 `/` 的原始事件照常聚合：DELETE 的子前缀是 `//`（一行都删不掉，原始行原地不动），INSERT 却照写一条 `/` 聚合行——一条任何查询都命不中的垃圾行（`/` 查询的前缀本身是 `//`），且 `total_consolidated` 把没删掉的行计入。根级事件现在与相对路径空 parent 一样跳过 | `argus-core/db.rs` | DB 垃圾行 + 统计虚报 | 17de760 |
+| **存疑 #60 落地**：delta 详情弹窗行循环按 `inner.height - 2` 取行，而表头下的实际行区是 `inner.height - 1`——表格底部永远空一行；页脚百分比又按 `popup.height - 4`（同一个少一行的口径）算。两处统一到 `visible_row_count`（弹窗高 − 2 边框 − 1 表头），弹窗用满行区、百分比与实际一致 | `argus-tui/components/delta_detail.rs` | 显示层（空行 + 百分比偏差） | 0946bc0 |
+| **面板扫描失败永久卡死**：`AppMessage::Error` 从不清 `cleanup_state`/`uninstall_state` 的 `scanning`——清理目标扫描或残留扫描失败时，本该清旗标的完成消息不会到来，面板停在扫描屏，除"退出整个面板"的 Esc 外全部按键失效。Error 路径现在解除两个面板的 scanning；配套地，Uninstall 确认页等待残留扫描期间 Esc 改为返回应用列表（原来直接丢掉整个面板），迟到的扫描结果由新增的「阶段 + 所选应用」校验丢弃——否则用户退出后换了应用重选，旧应用的残留可能冒充新应用的残留出现在确认页 | `argus-tui/app.rs` `handler/cleanup.rs` | 面板不可恢复 + 确认页数据张冠李戴（竞态） | 6b142bf |
+| **存疑 #57 落地**：`App::new` 直连 `default_db_path()` 加载 `ai_analyzed`，全部约 110 处测试构造都在读（并创建）开发者真实的 `~/.config/argus/argus.db`。加载抽为 `load_ai_levels_from_db_file(db_path)` 并在单测构建中跳过；加载器本身补了对临时 DB 的测试（含 DB 缺失返回空表） | `argus-tui/app.rs` | 测试隐式依赖机器状态 | 2acf194 |
+| **存疑 #58 落地**：`argus uninstall`/`argus brew` 的 Select 用重新格式化的字符串反查下标，两行格式化后完全相同时永远选到第一个。改为携带源下标的 `SelectItem`（Display 输出同样的标签） | `argus-cli/main.rs` | 同名同版本同尺寸包选错 | a89ce59 |
+| `query_db_size` 只看主文件：daemon 常驻 WAL 模式连接，未 checkpoint 的页常规性落在 `-wal` 侧车文件里，status 面板的 db size 长期偏小。改为主文件 + WAL 求和；AI 审阅删除确认的路径列表排序（`mark_for_delete` 是 HashSet，确认框行序与删除顺序都是随机序） | `argus-core/db.rs` `argus-tui/handler/ai_review.rs` | 显示口径 + 确定性 | d49ca06 |
+
+## 存疑关闭（第十三轮）
+
+### 57. `App::new` 在单测里打开真实用户 DB — 关闭（已修复，2acf194）
+### 58. CLI 交互选择按格式化串反查下标 — 关闭（已修复，a89ce59）
+### 60. delta 详情弹窗页脚百分比与可见行口径不一致 — 关闭（已修复，0946bc0；`K` 的滚动开关仍用 `(h*0.65)-4` 启发式，与精确值差一行，只影响边界处是否还能再滚一格，无碍）
+
+## 存疑 / 记录在案（第十三轮新增，未改动）
+
+### 61. 以 `/` 为根的 delta 查询永远匹配不到顶层事件
+`query_delta_total/detail` 对 path `/` 构造的前缀是 `//`，而顶层事件形如 `/a.bin`——`substr(path,1,2) = "/t"` 不等。查询文件系统根实际不可用（返回 0），第十三轮的 consolidate 修复只是让根级事件不再聚合。watch dir 配成 `/` 本就不是受支持场景（配置默认 `~/Downloads`、`~/Desktop`），记录以免将来有人把「根查询返回 0」当成没有数据。
+
+### 62. 孤儿扫描的 known 匹配仍是双向模糊 contains
+第十二轮把 `find_leftovers` 收紧为「名字精确等值或 bundle id 子串」，但 `find_orphaned_data_in` 的 known 判定仍是 `fc == kc || fc.contains(kc) || kc.contains(fc)`：短名应用（`Go`）会把大量无关目录认成 known 而不进孤儿报告，目录名恰好是某个 known 名的子串时同样被吞。方向是保守的（少报孤儿），该节在 CLI 里也只是 display-only，与 #54 不同没有删除路径兜底诉求；两个表面的精度口径不一致，等孤儿报告有人当真用时再对齐。
+
+### 63. daemon 配置里 watch_dirs 非法时整份配置回退默认值
+`load_config_from_path` 只在 `[daemon] watch_dirs` 的 glob 编译失败时，把 debounce_seconds、uds_path、retention 等同文件里合法的配置一并丢掉、整份回到默认（有 eprintln + warn 提示）。按字段合并默认值是更对的行为，但改动面涉及 RawDaemonConfig 的字段级 fallback，等真实踩到再修。
+
+## 第十三轮性能观察
+
+- 未发现新的实际性能问题。第八轮的 `plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）、多选尺寸摘要只统计当前视图（#59）等既有观察维持不变。
+- #59 维持记录在案：状态栏 `MULTI(n) size` 只累计当前视图条目，删除本身按完整选择集执行，显示口径问题。
+
+## 第十三轮验证
+
+- `cargo test --workspace --all-features`：408 通过（新增 7 个：consolidate 根路径、弹窗行数、面板失败恢复、Confirm Esc 返回、迟到残留丢弃、AI 等级加载器、WAL 尺寸）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
