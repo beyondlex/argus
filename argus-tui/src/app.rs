@@ -27,6 +27,25 @@ pub struct NavPosition {
 
 // ── App ─────────────────────────────────────────────────────────────────────
 
+/// Risk levels from the AI-analysis cache DB at `db_path`: path → risk
+/// level, one bulk query. Takes the path as a parameter so tests run against
+/// a temp DB instead of touching the developer's real
+/// `~/.config/argus/argus.db` (review #57).
+fn load_ai_levels_from_db_file(db_path: &Path) -> HashMap<PathBuf, RiskLevel> {
+    let Ok(conn) = argus_core::open_db(db_path) else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    if let Ok(entries) = argus_core::load_ai_cache_entries(&conn) {
+        for (p, data) in entries {
+            if let Ok(verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
+                map.insert(PathBuf::from(&p), verdict.risk_level);
+            }
+        }
+    }
+    map
+}
+
 pub struct App {
     pub config: crate::config::TuiConfig,
     pub theme: ColorTheme,
@@ -181,6 +200,13 @@ pub struct App {
 }
 
 impl App {
+    /// Risk levels persisted by earlier AI analyses, loaded once at startup
+    /// (one bulk query for the whole cache instead of a path-listing query
+    /// plus one blob query per entry).
+    fn load_persisted_ai_levels() -> HashMap<PathBuf, RiskLevel> {
+        load_ai_levels_from_db_file(&argus_core::default_db_path())
+    }
+
     pub fn new(
         config: crate::config::TuiConfig,
         tx: mpsc::Sender<AppMessage>,
@@ -260,19 +286,19 @@ impl App {
             ai_state: None,
             ai_cache: HashMap::new(),
             ai_analyzed: {
-                // One bulk query for the whole cache instead of a
-                // path-listing query plus one blob query per entry.
-                let mut map = HashMap::new();
-                if let Ok(conn) = argus_core::open_db(&argus_core::default_db_path()) {
-                    if let Ok(entries) = argus_core::load_ai_cache_entries(&conn) {
-                        for (p, data) in entries {
-                            if let Ok(verdict) = serde_json::from_slice::<AiPathVerdict>(&data) {
-                                map.insert(PathBuf::from(&p), verdict.risk_level);
-                            }
-                        }
-                    }
+                #[cfg(not(test))]
+                {
+                    load_persisted_ai_levels()
                 }
-                map
+                #[cfg(test)]
+                {
+                    // Unit tests construct `App` over a hundred times; loading
+                    // the developer's real ~/.config/argus/argus.db in each of
+                    // them made every test depend on (and create) machine
+                    // state (review #57). The loader is exercised directly
+                    // against a temp DB instead.
+                    HashMap::new()
+                }
             },
             cleanup_state: None,
             uninstall_state: None,

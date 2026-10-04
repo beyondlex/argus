@@ -1080,3 +1080,39 @@ fn test_nav_within_same_root_keeps_multi_select() {
     assert!(app.multi_select, "same-root nav keeps the selection");
     assert!(!app.selected_paths.is_empty());
 }
+
+/// The persisted-AI-levels loader reads every cached verdict from the cache
+/// DB at the given path — verified against a temp DB so neither the test nor
+/// unit tests constructing `App` ever touch the developer's real
+/// ~/.config/argus/argus.db (review #57).
+#[test]
+fn test_load_ai_levels_from_db_reads_cache() {
+    let db_path = {
+        let dir = std::env::temp_dir().join("_argus_tui_ai_levels");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("cache.db")
+    };
+    let conn = argus_core::open_db(&db_path).unwrap();
+    let verdict = AiPathVerdict {
+        path: PathBuf::from("/tmp/thing"),
+        size: 1,
+        label: "build-artifacts".into(),
+        label_detail: String::new(),
+        purpose: String::new(),
+        risk_level: RiskLevel::High,
+        suggestion: String::new(),
+        background: String::new(),
+        deletable: false,
+        source: AI_SOURCE_MODEL.into(),
+    };
+    argus_core::set_ai_analysis(&conn, "/tmp/thing", &serde_json::to_vec(&verdict).unwrap())
+        .unwrap();
+    drop(conn);
+
+    let map = load_ai_levels_from_db_file(&db_path);
+    assert_eq!(map.get(Path::new("/tmp/thing")), Some(&RiskLevel::High));
+    assert_eq!(map.len(), 1);
+
+    // A missing DB is an empty map, not an error.
+    assert!(load_ai_levels_from_db_file(Path::new("/nonexistent/dir/x.db")).is_empty());
+}
