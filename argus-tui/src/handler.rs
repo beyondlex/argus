@@ -1089,6 +1089,40 @@ mod tests {
         assert!(!app.cleanup_state.as_ref().unwrap().scanning);
     }
 
+    /// A failed delta-detail fetch must not strand the user in DeltaDetail
+    /// mode with no popup data: the overlay renders nothing there and only
+    /// Esc worked. The Error falls back to the browsing list instead.
+    #[test]
+    fn test_error_returns_from_empty_delta_detail() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeltaDetail;
+        app.delta_detail = None;
+
+        app.handle_message(AppMessage::Error("failed to fetch delta detail".into()));
+
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    /// A loaded popup must survive unrelated error messages: only the empty
+    /// (fetch failed) state bounces back to browsing.
+    #[test]
+    fn test_error_keeps_loaded_delta_detail() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeltaDetail;
+        app.delta_detail = Some(crate::types::DeltaDetailState {
+            path: PathBuf::from("/tmp/test"),
+            entries: Vec::new(),
+            scroll: 0,
+        });
+
+        app.handle_message(AppMessage::Error("unrelated failure".into()));
+
+        assert_eq!(app.mode, AppMode::DeltaDetail);
+        assert!(app.delta_detail.is_some());
+    }
+
     /// Esc during the Confirm-phase leftover scan must return to the app list,
     /// not quit the whole uninstall panel.
     #[test]

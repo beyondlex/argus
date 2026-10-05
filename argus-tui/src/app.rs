@@ -444,6 +444,13 @@ impl App {
                 self.scanning = false;
                 self.scan_current_path = None;
                 self.scan_started_at = None;
+                // A failed delta-detail fetch leaves the popup without data;
+                // render draws nothing in that state and only Esc worked.
+                // Fall back to the list instead of stranding the user on an
+                // invisible overlay.
+                if self.mode == AppMode::DeltaDetail && self.delta_detail.is_none() {
+                    self.mode = AppMode::Browsing;
+                }
                 if let Some(ref mut state) = self.brew_state {
                     if state.uninstalling {
                         state.uninstalling = false;
