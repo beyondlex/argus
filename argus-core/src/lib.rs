@@ -21,8 +21,8 @@ pub use cleaner::{
     audit::{log_operation, read_audit_log, AuditEntry, AuditOp},
     brew::{
         brew_cache_size, brew_dependents_of, brew_prefix, is_brew_available, keg_path,
-        list_brew_packages, uninstall_brew_package, BrewFilterType, BrewPackage, BrewPackageType,
-        BrewSortMode,
+        list_brew_packages, sort_oldest_first, uninstall_brew_package, BrewFilterType, BrewPackage,
+        BrewPackageType, BrewSortMode,
     },
     categories::{default_clean_targets, CleanTarget, TargetCategory},
     cleaner::{dry_clean, exec_clean, plan_clean, CleanItem, CleanPlan, CleanReport},

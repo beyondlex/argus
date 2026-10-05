@@ -461,6 +461,19 @@ pub fn keg_path(prefix: &Path, name: &str, ptype: &BrewPackageType) -> PathBuf {
     }
 }
 
+/// Display ordering shared by the scanner and the CLI: least-recently-used
+/// first, never-used packages before all used ones (sized descending within
+/// each group). One definition — the CLI used to re-sort its filtered list
+/// with a private copy of this closure that could drift from the scan order.
+pub fn sort_oldest_first(packages: &mut [BrewPackage]) {
+    packages.sort_by(|a, b| match (&a.last_used, &b.last_used) {
+        (None, None) => b.size.cmp(&a.size),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
+    });
+}
+
 /// 获取所有已安装的 brew 包，按 last_used 升序排列
 pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> Vec<BrewPackage> {
     let mut packages = Vec::new();
@@ -524,12 +537,7 @@ pub fn list_brew_packages(progress: Option<std::sync::mpsc::Sender<String>>) -> 
         });
     }
 
-    packages.sort_by(|a, b| match (&a.last_used, &b.last_used) {
-        (None, None) => b.size.cmp(&a.size),
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
-    });
+    sort_oldest_first(&mut packages);
 
     packages
 }
@@ -616,6 +624,37 @@ pub fn is_brew_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pkg(name: &str, last_used: Option<DateTime<Utc>>, size: u64) -> BrewPackage {
+        BrewPackage {
+            name: name.into(),
+            package_type: BrewPackageType::Formula,
+            version: String::new(),
+            size,
+            installed_date: None,
+            last_used,
+            description: String::new(),
+            dependents: 0,
+            dependents_names: Vec::new(),
+        }
+    }
+
+    /// Never-used packages come first (largest first within the group),
+    /// then used ones oldest-first. The CLI re-applies this rule to its
+    /// filtered subset; both callers must agree.
+    #[test]
+    fn test_sort_oldest_first() {
+        let t = |secs: i64| Utc.timestamp_opt(secs, 0).single();
+        let mut packages = vec![
+            pkg("recent", t(1_700_000_100), 10),
+            pkg("never-big", None, 500),
+            pkg("old", t(1_600_000_000), 10),
+            pkg("never-small", None, 5),
+        ];
+        sort_oldest_first(&mut packages);
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["never-big", "never-small", "old", "recent"]);
+    }
 
     #[test]
     fn test_brew_bin_path() {

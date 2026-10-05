@@ -836,14 +836,11 @@ fn cmd_brew(formula: bool, cask: bool, dry_run: bool, yes: bool) -> Result<i32> 
             .collect(),
     };
 
-    // 按 last_used 升序 (None 排最前 = 最久没用)
+    // 按 last_used 升序 (None 排最前 = 最久没用)。The scan already returns
+    // this order; re-applying the shared rule keeps a filtered subset in the
+    // same order without a private copy of the comparator.
     let mut sorted = packages;
-    sorted.sort_by(|a, b| match (&a.last_used, &b.last_used) {
-        (None, None) => b.size.cmp(&a.size),
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
-    });
+    argus_core::sort_oldest_first(&mut sorted);
 
     println!(
         "{} {} packages (sorted by last used, oldest first)\n",
