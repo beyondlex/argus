@@ -127,6 +127,38 @@ impl WatcherState {
         self.size_cache.remove(path)
     }
 
+    /// Negative delta for a whole removed directory: the sum of every still
+    /// cached size under `dir`, which is dropped from the caches together
+    /// with its dup-link seeds and hardlink mappings.
+    ///
+    /// Backends usually report a recursive delete file-by-file, so by the
+    /// time the folder-level remove arrives the cache under the prefix is
+    /// already empty and this returns nothing (no double counting). When
+    /// coalescing swallows the per-file events instead (FSEvents under
+    /// pressure reports `MUST_SCAN_SUBDIRS` / only the top dir), the folder
+    /// event is the only delete that will ever be seen, and this recovers
+    /// the subtree's churn from the cache.
+    pub fn remove_tree(&mut self, dir: &Path) -> Option<u64> {
+        let keys: Vec<PathBuf> = self
+            .size_cache
+            .keys()
+            .filter(|p| p.starts_with(dir))
+            .cloned()
+            .collect();
+        if keys.is_empty() {
+            return None;
+        }
+        let mut total = 0u64;
+        for key in keys {
+            if let Some(size) = self.size_cache.remove(&key) {
+                total += size;
+            }
+            self.dup_link_seeds.remove(&key);
+        }
+        self.hardlink_cache.retain(|_, p| !p.starts_with(dir));
+        Some(total)
+    }
+
     pub fn last_known_size(&self, path: &Path) -> Option<u64> {
         self.size_cache.get(path).copied()
     }
@@ -228,6 +260,55 @@ fn event_to_delta(
                     is_agg: false,
                     process_info: None,
                 })
+            }
+            EventKind::Remove(RemoveKind::Folder) => {
+                // A directory-level delete. Directories are never size-cached,
+                // so this books only what is still cached *under* the folder —
+                // see `remove_tree` for why that matters after coalescing.
+                state.remove_tree(path).and_then(|total| {
+                    if total > 0 {
+                        Some(DeltaEvent {
+                            path: path.clone(),
+                            delta_size: -(total as i64),
+                            event_type: "delete".into(),
+                            timestamp,
+                            is_agg: false,
+                            process_info: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+            }
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => {
+                // FSEvents (macOS) and kqueue report each rename side as its
+                // own RenameMode::Any event with no From/To pairing — the
+                // paired modes below never fire there, so renames used to be
+                // completely unaccounted (source stayed on the books, the
+                // destination had no baseline for future modifies). Decide by
+                // current existence: the side that is still there is the
+                // destination (create), the side that vanished is the source
+                // (remove). inotify/kqueue rename flows never emit Any for a
+                // paired rename, so this cannot double-book on Linux.
+                if path.exists() {
+                    state.create_size(path).map(|size| DeltaEvent {
+                        path: path.clone(),
+                        delta_size: size as i64,
+                        event_type: "create".into(),
+                        timestamp,
+                        is_agg: false,
+                        process_info: None,
+                    })
+                } else {
+                    state.remove(path).map(|size| DeltaEvent {
+                        path: path.clone(),
+                        delta_size: -(size as i64),
+                        event_type: "delete".into(),
+                        timestamp,
+                        is_agg: false,
+                        process_info: None,
+                    })
+                }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
                 state.remove(path).map(|size| DeltaEvent {
@@ -901,6 +982,132 @@ mod tests {
             std::slice::from_ref(&c),
             &mut state,
             1003
+        )
+        .is_empty());
+    }
+
+    /// FSEvents (macOS) and kqueue report each rename side as its own
+    /// RenameMode::Any event. The vanished side must book the negative delta
+    /// and the appearing side the positive one — both used to fall through
+    /// to `_ => None`, so macOS renames were completely unaccounted.
+    #[cfg(unix)]
+    #[test]
+    fn test_rename_any_books_both_sides() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, b"12345").unwrap();
+
+        let mut state = WatcherState::new();
+        assert_eq!(
+            event_to_delta(
+                &EventKind::Create(CreateKind::File),
+                std::slice::from_ref(&a),
+                &mut state,
+                1000
+            )
+            .len(),
+            1
+        );
+
+        fs::rename(&a, dir.path().join("b.bin")).unwrap();
+
+        // Source side (path gone): delete event.
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            std::slice::from_ref(&a),
+            &mut state,
+            1001,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "delete");
+        assert_eq!(events[0].delta_size, -5);
+
+        // Destination side (path exists): create event.
+        let events = event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            &[dir.path().join("b.bin")],
+            &mut state,
+            1002,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "create");
+        assert_eq!(events[0].delta_size, 5);
+    }
+
+    /// A folder-level delete must book the still-cached sizes under the
+    /// prefix in one delete event and clear them: FSEvents coalescing can
+    /// surface a recursive delete as nothing but the folder event.
+    #[test]
+    fn test_folder_remove_books_cached_subtree_once() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("gone");
+        fs::create_dir_all(sub.join("nested")).unwrap();
+        let f1 = sub.join("a.bin");
+        let f2 = sub.join("nested").join("b.bin");
+        fs::write(&f1, b"12345").unwrap();
+        fs::write(&f2, b"12").unwrap();
+
+        let mut state = WatcherState::new();
+        for path in [&f1, &f2] {
+            event_to_delta(
+                &EventKind::Create(CreateKind::File),
+                std::slice::from_ref(path),
+                &mut state,
+                1000,
+            );
+        }
+
+        fs::remove_dir_all(&sub).unwrap();
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Folder),
+            std::slice::from_ref(&sub),
+            &mut state,
+            1001,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta_size, -7);
+        assert!(state.last_known_size(&f1).is_none());
+        assert!(state.last_known_size(&f2).is_none());
+
+        // A second folder event (per-file removes already drained the cache)
+        // must book nothing — this is the Linux inotify ordering.
+        assert!(event_to_delta(
+            &EventKind::Remove(RemoveKind::Folder),
+            std::slice::from_ref(&sub),
+            &mut state,
+            1002
+        )
+        .is_empty());
+    }
+
+    /// Directory renames are unaccounted by design (dirs have no size
+    /// baseline): a RenameMode::Any for a moved directory must book nothing
+    /// on either side.
+    #[cfg(unix)]
+    #[test]
+    fn test_rename_any_of_directory_books_nothing() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("d1");
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut state = WatcherState::new();
+        fs::rename(&sub, dir.path().join("d2")).unwrap();
+
+        // Source side: gone, nothing was ever cached under it.
+        assert!(event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            std::slice::from_ref(&sub),
+            &mut state,
+            1000
+        )
+        .is_empty());
+
+        // Destination side: exists but is a dir.
+        assert!(event_to_delta(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            &[dir.path().join("d2")],
+            &mut state,
+            1001
         )
         .is_empty());
     }
