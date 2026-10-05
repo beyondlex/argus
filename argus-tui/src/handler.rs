@@ -1028,6 +1028,41 @@ mod tests {
         assert_eq!(app.delete_target_path, Some(root_path.join("test")));
     }
 
+    /// A child and its ancestor can both be multi-selected (select the
+    /// child, navigate up, select the ancestor). Trashing in HashSet order
+    /// used to strand the nested path with a guaranteed ENOENT that surfaced
+    /// as a failed delete; the outermost selection must win instead.
+    #[test]
+    fn test_multi_delete_dedupes_nested_selections() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, _rx);
+        app.mode = AppMode::Browsing;
+        app.view_root_path = PathBuf::from("/tmp/test");
+        app.multi_select = true;
+        app.selected_paths
+            .insert(vec!["test".into(), "dir".into(), "f.txt".into()]);
+        app.selected_paths.insert(vec!["test".into(), "dir".into()]);
+        app.selected_paths
+            .insert(vec!["test".into(), "other.txt".into()]);
+
+        super::browsing::handle_browsing_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert_eq!(app.mode, AppMode::DeletePrompt);
+        let mut targets = app.delete_target_paths.clone();
+        targets.sort();
+        assert_eq!(
+            targets,
+            vec![
+                PathBuf::from("/tmp/test/dir"),
+                PathBuf::from("/tmp/test/other.txt"),
+            ],
+            "nested selection must be dropped in favor of its ancestor"
+        );
+    }
+
     // ── panel scanning failure recovery ─────────────────────────────────
 
     /// A failed panel scan (Error message) must clear the panel's scanning

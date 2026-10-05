@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -202,6 +203,23 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         return;
     }
     let mut paths = app.selected_paths_full();
+    // Drop selections nested inside another selection. A child and its
+    // ancestor can both be selected (select a child, navigate up, select the
+    // ancestor), and HashSet order decides who is trashed first: ancestor
+    // first strands the child with a guaranteed ENOENT that surfaced as
+    // "1 delete(s) failed". Same outermost-wins rule as plan_clean; sorting
+    // puts every ancestor before its own extensions, and Path::starts_with
+    // compares component-wise, so prefix-sibling names never collapse.
+    paths.sort();
+    let before_nested = paths.len();
+    let mut outermost: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths {
+        if !outermost.iter().any(|kept| p.starts_with(kept)) {
+            outermost.push(p);
+        }
+    }
+    let mut paths = outermost;
+    let nested_skipped = before_nested - paths.len();
     let before_protected = paths.len();
     // Filter out protected paths
     paths.retain(|p| !crate::util::is_protected_path(p));
@@ -223,9 +241,12 @@ fn handle_multi_delete_action(app: &mut App, permanent: bool) {
         app.set_error("cannot delete root directory".into(), 3);
         return;
     }
-    if protected_skipped > 0 || root_skipped > 0 {
+    if protected_skipped > 0 || root_skipped > 0 || nested_skipped > 0 {
         app.set_info(
-            format!("skipping {protected_skipped} protected and {root_skipped} root-named item(s)"),
+            format!(
+                "skipping {protected_skipped} protected, {root_skipped} root-named and \
+                 {nested_skipped} nested item(s)"
+            ),
             4,
         );
     }
