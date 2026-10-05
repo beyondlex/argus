@@ -156,8 +156,10 @@ debounce 引擎
 |-----------|----------------|
 | `Create(_)` | `+stat(path).len()` (新文件大小) |
 | `Modify(_)` | `+new_size - old_size` (差值，通过 size_cache 获取旧值) |
-| `Remove(_)` | `-size_cache.get(path)` (从缓存获取最后已知大小) |
-| `Rename(_)` | 等效于 Remove(old) + Create(new)，目标路径重新 stat |
+| `Remove(File/Any)` | `-size_cache.get(path)` (从缓存获取最后已知大小) |
+| `Remove(Folder)` | `-sum(size_cache 中该前缀下仍缓存的条目)` 并清除；逐文件删除正常到达时缓存已排空、计 0（不重复记账），事件合并吞掉逐文件事件时这是唯一入账机会（FSEvents 压力下的 MUST_SCAN_SUBDIRS 场景） |
+| `Rename(From/To)` | 等效于 Remove(old) + Create(new)，目标路径重新 stat |
+| `Rename(Any)` | FSEvents（macOS）/kqueue 对 rename 每侧各发一条 Any、无 From/To 配对：按当前存在性判定——路径仍存在按 Create 记账（dup-link 感知），已消失按 Remove 记账。inotify 的配对 rename 从不发 Any，Linux 时序不受影响 |
 
 ### 4.4 Size Cache
 

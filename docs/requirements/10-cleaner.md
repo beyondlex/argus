@@ -122,7 +122,7 @@ pub fn exec_clean(items: &[CleanItem]) -> Result<CleanReport, CleanerError>;
 
 ### 3.5 `cleaner/audit.rs` — 审计日志
 
-所有删除操作记录到 `~/.config/argus/audit.log`（JSON lines 格式）。
+所有删除操作记录到 `~/.config/argus/audit.log`（JSON lines 格式；遵循 `XDG_CONFIG_HOME`）。
 
 ```rust
 pub struct AuditEntry {
@@ -457,7 +457,7 @@ argus brew -y                   # 跳过确认
 
 - `cleaner/safety.rs` 是 `07-safety.md` §2.1/§2.2 的代码化
 - 所有清理触发前先过 `check_deletion_allowed()`
-- 审计日志写入 `~/.config/argus/audit.log`（§5）
+- 审计日志写入 `~/.config/argus/audit.log`（§5，遵循 `XDG_CONFIG_HOME`）
 
 ## 5. 实施计划
 

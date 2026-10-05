@@ -126,7 +126,7 @@ Span 覆盖所有跨越异步边界的操作，用于串联请求链路。
 
 参见 `07-safety.md` §5。独立于 tracing 系统，专用于记录删除操作。
 
-- 路径：`~/.config/argus/audit.log`
+- 路径：`~/.config/argus/audit.log`（遵循 `XDG_CONFIG_HOME`，见 `07-safety.md` §5）
 - 格式：CSV（便于 `cut` / `awk` 解析）
 - 字段：`timestamp`, `user`, `path`, `size`, `method`(trash/secure), `success`
 

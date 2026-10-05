@@ -103,5 +103,5 @@
 
 - 所有删除操作（包括废纸篓移动）均记录日志。
 - 日志包含：操作时间、用户、路径、大小、操作方式、是否成功。
-- 日志存储在 `~/.config/argus/audit.log`。
+- 日志存储在 `~/.config/argus/audit.log`（设置 `XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/argus/audit.log`，与 DB、配置文件同一解析规则）。
 - Phase 2+ 用户可通过 `argus audit` 命令查看操作历史。Phase 1 不实现删除与审计查看命令。
