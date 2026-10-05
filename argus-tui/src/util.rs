@@ -141,18 +141,7 @@ pub fn display_path(path: &Path) -> String {
 
 /// Get the default config file path
 pub fn default_config_path() -> std::path::PathBuf {
-    dirs_config_path().join("argus").join("config.toml")
-}
-
-/// Get the config directory (~/.config/argus or XDG_CONFIG_HOME)
-fn dirs_config_path() -> std::path::PathBuf {
-    if let Ok(val) = std::env::var("XDG_CONFIG_HOME") {
-        std::path::PathBuf::from(val)
-    } else if let Ok(home) = std::env::var("HOME") {
-        std::path::PathBuf::from(home).join(".config")
-    } else {
-        std::path::PathBuf::from(".")
-    }
+    argus_core::config_dir().join("config.toml")
 }
 
 /// Determine if a path is protected (system blacklist).
@@ -193,15 +182,10 @@ pub fn filesize_unit_color(unit: &str, theme: &ColorTheme) -> Color {
     }
 }
 
-/// Default path for the log file: ~/.config/argus/argus.log
+/// Default path for the log file: ~/.config/argus/argus.log (or under
+/// XDG_CONFIG_HOME — same resolution as the DB and daemon config).
 pub fn default_log_path() -> PathBuf {
-    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
-            PathBuf::from(home).join(".config")
-        });
-    let dir = config_dir.join("argus");
+    let dir = argus_core::config_dir();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("argus.log")
 }

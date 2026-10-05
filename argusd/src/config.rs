@@ -160,12 +160,7 @@ const fn default_consolidation_interval() -> u64 {
 }
 
 fn config_path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("argus")
-        .join("config.toml")
+    argus_core::config_dir().join("config.toml")
 }
 
 #[derive(Deserialize)]
