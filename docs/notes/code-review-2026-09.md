@@ -494,3 +494,37 @@ remove 分支只匹配 `File | Any`；某些后端目录删除报 `Folder` 落�
 
 - `cargo test --workspace --all-features`：408 通过（新增 7 个：consolidate 根路径、弹窗行数、面板失败恢复、Confirm Esc 返回、迟到残留丢弃、AI 等级加载器、WAL 尺寸）；`cargo test --workspace`（默认 feature）同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十四轮，2026-10-06）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| 审计日志路径硬编码 `~/.config/argus`，是全仓唯一不尊重 `XDG_CONFIG_HOME` 的状态路径：设置了 XDG 时 DB 在 `$XDG_CONFIG_HOME/argus/`、审计轨迹在 `~/.config/argus/`，分家。config 目录解析同时散落 5 处（core/db、tui/util ×2、argusd/config、argusd/daemonize），各处 fallback 还不一致（TUI 日志回退 `/tmp`，其余回退 `.`）。收敛为 `argus_core::config_dir()` 单一权威 + 可测纯函数 `config_dir_from`（XDG > HOME/.config > `.`；空 XDG 视为未设置） | `argus-core/db.rs` `cleaner/audit.rs` `argus-tui/util.rs` `argusd/config.rs` `argusd/daemonize.rs` | 状态文件路径分裂 + DRY | 35f3d51 6d14774 |
+| **macOS rename 完全不记账**：notify 的 FSEvents 后端对 rename 每侧各发一条 `Modify(Name(RenameMode::Any))`、从无 From/To 配对（kqueue 对源侧同样发 Any），watcher 只处理 From/To——`mv` 后旧路径的 size 永久留在账上，新路径没有基线（后续 modify 全部不记账）。现在 Any 侧按当前存在性判定：仍在 → `create_size`（dup-link 感知），已消失 → `remove`。inotify 的配对 rename 发 From/To/Both、从不含 Any，Linux 时序不受影响 | `argusd/watcher.rs` | delta 记账错误（macOS 主平台） | a0df5ea |
+| 目录级删除不记账：FSEvents/inotify 都会把删除报成 `Remove(Folder)`，之前落入 catch-all。新增 `WatcherState::remove_tree`：把该前缀下仍缓存的尺寸求和、清除（含 dup-link 种子与硬链接映射）后记一条负 delta。逐文件事件正常到达时缓存已排空、计 0 不重复记账；FSEvents 合并吞掉逐文件事件时这是唯一入账机会 | `argusd/watcher.rs` | delta 记账缺口（事件合并场景） | a0df5ea |
+| 多选批删不去重嵌套选择：先选子项、回退再选其祖先（合法操作序列，多选跨目录保留）后，HashSet 迭代顺序决定谁先进废纸篓——祖先先删则嵌套项必报一条 ENOENT「删除失败」。现在外层选择胜出（与 `plan_clean` 同规则），跳过数进提示消息 | `argus-tui/handler/browsing.rs` | 批删误报失败 | a6e554f |
+| K 弹窗（delta detail）取数失败把用户困在看不见的弹窗里：模式先切到 DeltaDetail 再异步取数，失败时 `delta_detail` 为 None、渲染层什么都不画，只有 Esc 能脱身。Error 到达时若弹窗仍空则自动退回浏览列表；已加载的弹窗不受无关错误影响 | `argus-tui/app.rs` | 交互死区 | f010366 |
+| brew 展示排序（never 最前、组内按尺寸降序、再按 LRU 升序）在 `list_brew_packages` 与 CLI 过滤后重排各有一份相同闭包，规则漂移即静默不一致。收敛为 `argus_core::sort_oldest_first`，测试钉住顺序 | `argus-core/cleaner/brew.rs` `argus-cli/main.rs` | DRY | 43486d4 |
+| `App::set_error` 内联了一份日志写入（无毫秒时间戳），与 `log_msg` 漂移。改走 `log_msg` | `argus-tui/app.rs` | DRY | c05779a |
+
+文档同步：`07-safety.md`/`10-cleaner.md`/`11-logging.md` 的审计日志路径补 XDG 说明；`phase3-daemon-design.md` §4.3 事件映射表补 Any/Folder 两行；`tui-current-behavior.md` 补批删去重与 K 弹窗失败回退。
+
+## 存疑 / 记录在案（第十四轮新增，未改动）
+
+### 64. cask 的 Spotlight last_used 匹配过宽且大小写不对称
+`spotlight_last_used` 判定 `stem.eq_ignore_ascii_case(pkg_name) || stem.replace(' ', "-").eq_ignore_ascii_case(pkg_name) || pkg_name.contains(&stem.to_lowercase())`：第三个条件里 stem 被小写而 `pkg_name` 没有（`pkg_name` 含大写时永不命中），且 `contains` 过宽——包名 `google-chrome` 会把任何名字含 "chrome" 的 .app（含非 brew 安装的和 Chromium 衍生品）当作匹配对象并 spawn mdls。影响仅限 last_used 显示（结果偏向「最近用过」，保守方向：推迟而非催促卸载建议），等有人对 cask 的 last_used 当真时再收紧为与 uninstaller 相同的精确/子串规则。
+
+### 65. brew 依赖错误解析依赖英文文案
+`AppMessage::Error` 的 brew 分支用 `e.split("required by ")` 从 brew 的报错里抠依赖列表。brew 本地化或改版时解析静默失效——后果只是确认弹窗缺 dependents 提示（错误本身仍完整显示），无数据风险。要稳就得让 core 的 `uninstall_brew_package` 结构化返回依赖信息，等真实踩到再做。
+
+### 66. FSEvents 事件丢弃（MUST_SCAN_SUBDIRS）无补偿
+notify 把 FSEvents 的 kernel-dropped/user-dropped 转成 `EventKind::Other` + `Flag::Rescan`，watcher 目前忽略。事件被内核丢弃后该段搅动永久缺失，第十四轮的 folder 兜底只覆盖「目录级删除仍被送达」的场景，不覆盖整段事件流丢失。正确修法是 daemon 收到 Rescan 旗标时对受影响 watch dir 做一次增量重扫（与 0..基线的 scan_cache 对账），属于设计级改动，先记录。
+
+## 第十四轮性能观察
+
+- 未发现新的实际性能问题。既有观察维持：`plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）、多选尺寸摘要只统计当前视图（#59）。`remove_tree` 对 size_cache 的一次 O(n) 遍历只发生在目录级删除事件时，量级与单文件事件相同缓存下的查询相当，不构成热点。
+
+## 第十四轮验证
+
+- `cargo test --workspace --all-features`：416 通过（新增 8 个：config_dir 回退链、rename Any 双侧记账、folder 删除一次性入账 + 二次为空、目录 rename 不记账、嵌套选择去重、delta-detail 失败回退 + 已加载不受扰、brew 排序）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
