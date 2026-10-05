@@ -14,12 +14,35 @@ pub enum DbError {
     Io(#[from] std::io::Error),
 }
 
+/// Directory holding all argus state (DB, audit log, TUI config/log, daemon
+/// config and PID file): `$XDG_CONFIG_HOME/argus`, falling back to
+/// `~/.config/argus`. Resolving this in one place matters — the audit log
+/// used to hardcode `~/.config` and ignore a set `XDG_CONFIG_HOME`, so the
+/// DB and the audit trail landed in different trees.
+pub fn config_dir() -> PathBuf {
+    config_dir_from(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+    .join("argus")
+}
+
+/// Pure core of [`config_dir`] so the fallback chain is testable without
+/// mutating process-wide env vars (tests share one environment).
+fn config_dir_from(xdg: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> PathBuf {
+    match xdg {
+        Some(x) if !x.is_empty() => PathBuf::from(x),
+        _ => match home {
+            Some(h) => PathBuf::from(h).join(".config"),
+            // No HOME (rare, e.g. stripped service env): stay relative instead
+            // of panicking; every caller creates the directory on demand.
+            None => PathBuf::from("."),
+        },
+    }
+}
+
 pub fn default_db_path() -> PathBuf {
-    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    config_dir.join("argus").join("argus.db")
+    config_dir().join("argus.db")
 }
 
 pub fn open_db(path: &Path) -> Result<Connection, DbError> {
@@ -444,6 +467,30 @@ mod tests {
     fn test_default_db_path() {
         let path = default_db_path();
         assert!(path.ends_with("argus.db"));
+    }
+
+    /// XDG wins over HOME; an empty XDG counts as unset (some launchers
+    /// export it as ""). Returns the config *root* — the `argus/` leaf is
+    /// appended by [`config_dir`].
+    #[test]
+    fn test_config_dir_from_prefers_xdg() {
+        use std::ffi::OsStr;
+        let xdg = OsStr::new("/custom/xdg");
+        let home = OsStr::new("/home/u");
+        assert_eq!(
+            config_dir_from(Some(xdg), Some(home)),
+            PathBuf::from("/custom/xdg")
+        );
+        assert_eq!(
+            config_dir_from(Some(OsStr::new("")), Some(home)),
+            PathBuf::from("/home/u/.config")
+        );
+        assert_eq!(
+            config_dir_from(None, Some(home)),
+            PathBuf::from("/home/u/.config")
+        );
+        // Neither set: relative fallback instead of a panic.
+        assert_eq!(config_dir_from(None, None), PathBuf::from("."));
     }
 
     #[test]

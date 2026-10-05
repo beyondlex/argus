@@ -34,12 +34,12 @@ pub struct AuditEntry {
 }
 
 fn audit_log_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or_else(|| "HOME not set".to_string())?;
-    let mut dir = PathBuf::from(&home);
-    dir.push(".config/argus");
+    // Same resolution as the DB (crate::db::config_dir): a set
+    // XDG_CONFIG_HOME used to be ignored here, putting the audit trail in
+    // ~/.config while the delta DB lived under $XDG_CONFIG_HOME.
+    let dir = crate::db::config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create audit dir: {e}"))?;
-    dir.push("audit.log");
-    Ok(dir)
+    Ok(dir.join("audit.log"))
 }
 
 pub fn log_operation(entry: &AuditEntry) -> Result<(), String> {

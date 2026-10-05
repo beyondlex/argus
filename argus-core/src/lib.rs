@@ -41,10 +41,10 @@ pub use cleaner::shell_cmd::{
 };
 
 pub use db::{
-    clear_all_events, consolidate_events, default_db_path, delete_ai_analysis, get_ai_analysis,
-    init_db, insert_events, load_ai_cache_entries, open_db, purge_events_before, query_db_size,
-    query_delta_detail, query_delta_summary, query_delta_total, query_event_count, set_ai_analysis,
-    DbError,
+    clear_all_events, config_dir, consolidate_events, default_db_path, delete_ai_analysis,
+    get_ai_analysis, init_db, insert_events, load_ai_cache_entries, open_db, purge_events_before,
+    query_db_size, query_delta_detail, query_delta_summary, query_delta_total, query_event_count,
+    set_ai_analysis, DbError,
 };
 pub use ipc::{DaemonRequest, DaemonResponse, WatchDirInfo, DEFAULT_UDS_PATH};
 pub use model::{
