@@ -741,13 +741,9 @@ impl App {
         self.status_is_error = true;
         self.error_clear_at =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
-        let now = chrono::Local::now();
-        let line = format!("[{}] {}\n", now.format("%Y-%m-%d %H:%M:%S"), msg);
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+        // Same writer as every other TUI log line; the private copy here
+        // drifted (it lacked log_msg's millisecond precision).
+        log_msg(&self.log_path, &msg);
     }
 
     /// Set info/status message (not an error). Displayed in status bar with success color.
