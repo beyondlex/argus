@@ -2,7 +2,7 @@
 
 配置文件路径：`~/.config/argus/config.toml`（遵循 `XDG_CONFIG_HOME`）。
 
-各客户端（CLI/TUI/Daemon）启动时自动加载；文件不存在时不报错，使用全默认值；解析失败时回退默认值并向 stderr 输出警告（daemon 的 tracing 此时可能尚未初始化）。
+各客户端（CLI/TUI/Daemon）启动时自动加载；文件不存在时不报错，使用全默认值；解析失败时回退默认值并向 stderr 输出警告（daemon 的 tracing 此时可能尚未初始化）。argusd 的 `[daemon]` 表内字段按字段校验：仅 `watch_dirs` 含非法 glob 时，只有监控列表回退默认值，同文件其他合法字段（debounce_seconds、uds_path 等）仍然生效。
 
 > 本文档描述**实际实现**的配置项。规划中但未实现的配置（键位重映射、自定义标签、扫描忽略规则、Token 统计）见文末 §7，代码不解析这些节，写了也不生效。
 

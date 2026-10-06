@@ -528,3 +528,42 @@ notify 把 FSEvents 的 kernel-dropped/user-dropped 转成 `EventKind::Other` + 
 
 - `cargo test --workspace --all-features`：416 通过（新增 8 个：config_dir 回退链、rename Any 双侧记账、folder 删除一次性入账 + 二次为空、目录 rename 不记账、嵌套选择去重、delta-detail 失败回退 + 已加载不受扰、brew 排序）；`cargo test --workspace`（默认 feature）同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十五轮，2026-10-07）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| **存疑 #59 落地**：多选尺寸摘要只对 `current_children` 求和——多选跨目录保留后，不在当前视图里的选中项从状态栏总数中消失（删除本身按完整选择集执行，显示口径与实际不符）。改为从树快照按选择键解析每个条目的尺寸，口径与可见行同源 | `argus-tui/app.rs` | 状态栏少报多选总量 | f566acb |
+| Clean/Purge 面板列表按 `CleanupState::scroll_offset` 滚动，但没有任何 handler 写过这个字段——条目多于终端行数时光标移出冻结的视口后消失（`g`/`G` 之外所有移动都看不见）。改为与 brew/uninstall 列表一致的光标锚定滚动，删除死字段 | `argus-tui/components/cleanup.rs` `types.rs` | 面板不可见光标 | 7214d34 |
+| **搜索 Active 模式按键泄漏**：`n`/`N`/`/`/`Esc` 里只有 `Esc` 上报「已消费」，其余落到浏览层——`N`（上一个匹配）同时是浏览层的永久删除快捷键，翻匹配会连带弹出永久删除确认；列表头承诺的 "Enter edit" 也不存在（Enter 实际进入光标目录并丢弃搜索）。四个键现在全部消费；`j`/`k` 与其余键继续放行，搜索态下浏览照常 | `argus-tui/handler/search.rs` | 误触删除确认 + 交互与提示不符 | 842ea0a |
+| `:Connect` 失败走 `AppMessage::Info`（成功色渲染），失败读成成功——与第十二轮 `:Consolidate` 同类问题，当时漏掉了这一处。改走 Error 通道 | `argus-tui/handler/command.rs` | 误导性反馈 | 48f8868 |
+| **存疑 #64 落地**：cask 的 Spotlight 匹配第三个条件只小写 stem（cask 名带大写时永不命中），且裸 `contains` 让 `google-chrome` 命中 `Chromium.app` 这类跨产品。新匹配器按 token 对齐：app 名的每个词都必须被 cask token 覆盖，允许数字后缀扩展（`iTerm` ↔ `iterm2`，与 shell-history 规则同源）。漏匹配会落到 keg atime 再到「从未使用」，方向偏催促卸载，因此收紧只丢跨产品误报、保留大小写/连字符/版本数字变体的召回 | `argus-core/cleaner/brew.rs` | last_used 误报 + 大小写不对称 | 3717f4e |
+| **存疑 #63 落地**：daemon 配置 `watch_dirs` 里一个 glob 拼写错误把同文件全部字段一起丢掉（debounce_seconds、uds_path、retention 静默回默认）。现在只有监控列表回退默认，其余字段重新解析保留 | `argusd/config.rs` | 一处拼写重置全部配置 | 11f0cab |
+| brew 面板 `o` 键的 Time 排序仍持有一份最旧优先比较器的私有副本（第十四轮统一了扫描序与 CLI，漏了这第三份）；CLI 与 TUI 还各有一份相同的 never/today/yesterday 相对时间格式化。收敛为 `argus_core::compare_oldest_first` 与 `argus_core::format_last_used_relative` | `argus-core/cleaner/brew.rs` `argus-tui/handler/brew.rs` `argus-cli/main.rs` | DRY | 48f8868 |
+| brew 扫描进行中退出面板再按 `B` 重入，会整体替换状态并起第二个全量扫描（history 重读 + 逐包 keg 遍历 + mdls spawn）；先完成的旧结果随后覆盖新状态。扫描在途时重入只显示面板的扫描屏 | `argus-tui/app.rs` | 重复扫描 + 迟到结果覆盖 | bed6502 |
+
+文档同步：`04-configuration.md` 补 argusd 配置按字段回退的说明；`tui-current-behavior.md` 补搜索态按键语义、Clean/Purge 滚动与多选摘要口径。doc-poste 的 argus 概览核验后无需改动（本轮修复都在交互细节层，低于概览的陈述粒度，无陈述失效）。
+
+## 存疑关闭（第十五轮）
+
+### 59. 多选尺寸摘要只统计当前视图条目 — 关闭（已修复，f566acb）
+### 63. daemon 配置里 watch_dirs 非法时整份配置回退默认值 — 关闭（已修复，11f0cab）
+### 64. cask 的 Spotlight last_used 匹配过宽且大小写不对称 — 关闭（已修复，3717f4e）
+
+## 存疑 / 记录在案（第十五轮新增，未改动）
+
+### 67. delta 详情弹窗可滚过最后满页
+`handle_delta_detail_key` 的 `j` 允许 scroll 到 `entries.len() - 1`：超过「最后一满页」后继续按 `j`，底部条目逐渐升到弹窗顶部、下方留白，页脚百分比提前到 100%。多数 TUI 把偏移钳在 `len - visible`。修这个需要 handler 复现渲染层 `centered_rect` 的百分比弹窗高度（第十三轮已记录过两侧各一行的启发式差异），两处口径要一起收敛，等下次触碰该弹窗再做。
+
+### 68. watcher 不处理 `RenameMode::Both`
+Windows 后端把 rename 报成携带双路径的 `RenameMode::Both`，watcher 落入 catch-all 不记账。argusd 的目标平台是 macOS/Linux（inotify 发 From/To、FSEvents 发 Any，均已处理），macOS 上不会出现 Both；记录以免将来移植 Windows 时把 rename 缺账当成新 bug。
+
+## 第十五轮性能观察
+
+- 未发现新的实际性能问题。`spotlight_last_used` 的 token 匹配同时减少了无关 .app 的 mdls spawn 次数（原 contains 规则命中的每个错误候选都要 spawn 一次）。既有观察维持：`plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）。
+- `selected_total_size` 改为对选择集逐键 `find_node`（每层子节点线性扫）：选择集是人为规模（数十条），状态栏每帧的开销可忽略。
+
+## 第十五轮验证
+
+- `cargo test --workspace --all-features`：423 通过（新增 7 个：搜索态按键消费 ×2、brew 比较器一致性、相对时间格式化、cask 匹配规则、watch_dirs 按字段回退、多选摘要含视图外条目）；`cargo test --workspace`（默认 feature）419 同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净

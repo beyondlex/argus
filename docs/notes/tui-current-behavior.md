@@ -57,6 +57,10 @@ Shows breadcrumb path for the current directory.
 - `/` enters search mode. Type query, press `Enter` to activate.
 - Search highlights matching characters in entry names; **non-matching items stay visible**.
 - `n` / `N` cycle through match indices (within `search_match_indices`).
+  Active 模式下这两个键由搜索层消费，不会落回浏览层——`N` 在浏览层是永久删除
+  快捷键，泄漏会在翻匹配时连带弹出删除确认（第十五轮修复）。`/`（重编辑）与
+  `Enter`（回到输入态改词）同样被消费；`j`/`k` 与其余按键照常透传，搜索态下
+  浏览不受影响。
 - `Esc` clears search; `Enter` (in active mode) re-edits the query.
 - Search is constrained to the current directory's children only (O(C) not O(N)).
 - A query in progress (typing or active) **survives background refreshes** —
@@ -109,10 +113,11 @@ Shows breadcrumb path for the current directory.
 ## Cleanup / Uninstall / Brew Panels (C / P / U / B)
 
 - `C` Clean（缓存/日志目标清理）、`P` Purge（构建产物发现，默认根下深度 ≤ 4 的目录遍历，嵌套工作区如 `~/Projects/work/app/target` 也能发现；匹配到的产物目录不再向下遍历，符号链接不跟随）、`U` Uninstall（应用卸载+残留）、`B` Brew（按最近使用排序）。
+- Clean/Purge 列表视口跟随光标滚动（与 brew/uninstall 列表同一约定）：条目多于终端行数时光标不再移出冻结视口（第十五轮修复，原 `scroll_offset` 字段无人写入已删除）。
 - Clean 面板 `d` 切换 dry-run 标记，标记保持到再次按 `d`（j/k 移动光标不再重置它）：dry-run 下确认（Enter → y）只生成预览报告，**不触碰文件系统**；真实删除仅在非 dry-run 且确认后发生。
 - 空格多选、Enter 触发确认、Esc/q 退出（包括扫描进行中——清理/卸载/brew 三面板的扫描都可能耗时数分钟，Esc 随时可离开，迟到的完成消息安全落地为 no-op）；例外：Uninstall 确认页等待残留扫描时，Esc 返回应用列表而不是退出整个面板（迟到的扫描结果按阶段+所选应用校验后丢弃，不会张冠李戴）。扫描失败的 Error 消息会解除面板的 scanning 状态（此前目标/残留扫描失败会把面板永久卡在扫描屏）；`i` 展开目录明细（后台线程扫描，最多 200 行）。
 - Uninstall 确认页逐项空格勾选残留（leftovers）是**唯一事实来源**：确认时只把勾选项传给 core（`remove_leftovers` 开关整体关闭时一项不删）；core 不再重扫全部残留（此前取消勾选的项照样进废纸篓）。最终 y/N 弹窗文案跟随 `remove_leftovers` 开关（关闭时显示 "keep leftovers"，此前无论开关状态都写 "and remove leftovers?"）。应用列表过滤态 `/` 输入、Enter/Esc 退出过滤（与 brew 面板一致）。
-- 浏览视图的多选绑定当前视图根：finder 换根、进入缓存扫描子目录、`u` 上跳、子目录扫描完成切换根、`b`/`f` 历史步进跨根时自动退出多选——否则批删会按新根解析旧选择、删错路径（换根共五处入口，行为一致）。finder 确认的根会进导航历史（`b`/`f` 可往返）。删除守卫按完整路径比较视图根：与根同名的子目录（如 `/tmp/test` 下的 `test/`）可正常删除，视图根本身仍不可删。批删前会去掉嵌套在另一选择内部的条目（先选子项、回退再选其祖先的合法操作序列）：最外层选择胜出，否则 HashSet 顺序先删祖先会让嵌套项必报一条 ENOENT 失败。K 弹窗（delta detail）取数失败时自动退回浏览列表——此前停在 DeltaDetail 模式但弹窗无数据可画，只有 Esc 能脱身。
+- 浏览视图的多选绑定当前视图根：finder 换根、进入缓存扫描子目录、`u` 上跳、子目录扫描完成切换根、`b`/`f` 历史步进跨根时自动退出多选——否则批删会按新根解析旧选择、删错路径（换根共五处入口，行为一致）。finder 确认的根会进导航历史（`b`/`f` 可往返）。删除守卫按完整路径比较视图根：与根同名的子目录（如 `/tmp/test` 下的 `test/`）可正常删除，视图根本身仍不可删。批删前会去掉嵌套在另一选择内部的条目（先选子项、回退再选其祖先的合法操作序列）：最外层选择胜出，否则 HashSet 顺序先删祖先会让嵌套项必报一条 ENOENT 失败。状态栏 `MULTI(n) size` 摘要按完整选择集统计（从树快照解析每个选择键），不再只累计当前视图可见的条目——删除本身向来按完整集合执行，显示口径第十五轮起一致。K 弹窗（delta detail）取数失败时自动退回浏览列表——此前停在 DeltaDetail 模式但弹窗无数据可画，只有 Esc 能脱身。
 - Brew 面板按 last_used 升序（never 最前）；卸载需要 y/N 确认。
 
 ## Good README / Wiki Targets
