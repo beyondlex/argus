@@ -717,8 +717,14 @@ mod tests {
         let never_big = pkg("n", None, 500);
         let never_small = pkg("m", None, 5);
 
-        assert_eq!(compare_oldest_first(&never_big, &never_small), std::cmp::Ordering::Less);
-        assert_eq!(compare_oldest_first(&never_big, &a), std::cmp::Ordering::Less);
+        assert_eq!(
+            compare_oldest_first(&never_big, &never_small),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_oldest_first(&never_big, &a),
+            std::cmp::Ordering::Less
+        );
         assert_eq!(compare_oldest_first(&a, &b), std::cmp::Ordering::Less);
         assert_eq!(compare_oldest_first(&a, &a), std::cmp::Ordering::Equal);
     }
@@ -930,7 +936,10 @@ mod tests {
         // Exact and separator/case variants.
         assert!(app_stem_matches_cask("firefox", "firefox"));
         assert!(app_stem_matches_cask("Google Chrome", "google-chrome"));
-        assert!(app_stem_matches_cask("Visual Studio Code", "visual-studio-code"));
+        assert!(app_stem_matches_cask(
+            "Visual Studio Code",
+            "visual-studio-code"
+        ));
         // Trailing digits extend a stem token (shell-history rule).
         assert!(app_stem_matches_cask("iTerm", "iterm2"));
         assert!(app_stem_matches_cask("iTerm2", "iterm2"));

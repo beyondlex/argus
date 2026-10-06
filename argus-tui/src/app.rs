@@ -1741,10 +1741,7 @@ impl App {
     }
 
     pub fn enter_brew(&mut self) {
-        let scan_in_flight = self
-            .brew_state
-            .as_ref()
-            .is_some_and(|s| s.scanning);
+        let scan_in_flight = self.brew_state.as_ref().is_some_and(|s| s.scanning);
         if !scan_in_flight {
             if let Some(ref mut state) = self.brew_state {
                 if !state.packages.is_empty() {
