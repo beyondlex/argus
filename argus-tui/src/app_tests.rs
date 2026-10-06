@@ -621,6 +621,47 @@ fn test_selected_entry_out_of_bounds() {
     assert!(app.selected_entry().is_none());
 }
 
+/// The multi-select size summary must cover the whole selection set, not
+/// only entries visible in the current view (review #59): a selection made
+/// at the root survives entering a subdirectory, and the status bar used to
+/// report just the visible slice.
+#[test]
+fn test_selected_total_size_covers_selection_outside_current_view() {
+    let root_path = PathBuf::from("/tmp/test");
+    let mut b = SnapshotBuilder::new("test");
+    let dir = b.push_dir(ROOT_NODE, "dir");
+    b.push_file(dir, "inner.txt", FileType::File, 100, 100);
+    b.push_file(ROOT_NODE, "outer.txt", FileType::File, 200, 200);
+    for i in (1..b.nodes.len()).rev() {
+        let size = b.nodes[i].size();
+        if let Some(p) = b.nodes[i].parent() {
+            let t = b.nodes[p as usize].size().saturating_add(size);
+            b.nodes[p as usize].set_size(t);
+        }
+    }
+    let total = b.nodes[0].size();
+    let snap = b.finish(root_path.clone(), total, total);
+
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.view_root_path = root_path;
+    app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+    // Browse inside `dir`: the view lists only inner.txt.
+    app.current_dir_path = vec!["test".into(), "dir".into()];
+    app.load_current_children();
+
+    app.selected_paths
+        .insert(vec!["test".into(), "dir".into(), "inner.txt".into()]);
+    app.selected_paths
+        .insert(vec!["test".into(), "outer.txt".into()]);
+
+    assert_eq!(
+        app.selected_total_size(),
+        300,
+        "hidden selected items must be counted"
+    );
+}
+
 #[test]
 fn test_enter_directory_into_subdir() {
     let mut app = make_flat_app();

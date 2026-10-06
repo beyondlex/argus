@@ -928,12 +928,19 @@ impl App {
         Some(path)
     }
 
-    /// Sum of `size` for all selected entries in `current_children`.
+    /// Sum of `size` over the whole selection set, not just the entries the
+    /// current view happens to list (review #59): selections survive
+    /// directory changes, and the status bar under-reported by every selected
+    /// item outside the view (the delete itself always used the full set).
+    /// Sizes resolve from the tree snapshot, the same source DirEntry uses.
     pub fn selected_total_size(&self) -> u64 {
-        self.current_children
+        let Some(TreeNode::Snapshot(snap, root_idx)) = &self.tree_root else {
+            return 0;
+        };
+        self.selected_paths
             .iter()
-            .filter(|e| self.selected_paths.contains(&e.path))
-            .map(|e| e.size)
+            .filter_map(|key| snap.find_node(*root_idx, key))
+            .map(|idx| snap.node(idx).size())
             .sum()
     }
 
