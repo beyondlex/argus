@@ -558,6 +558,49 @@ mod tests {
         assert!(!consumed);
     }
 
+    /// While a search is active, `N` (previous match) must be consumed by the
+    /// search handler: falling through to browsing opened the *permanent
+    /// delete* prompt, because `N` is that panel's shortcut there.
+    #[test]
+    fn test_search_keys_active_n_does_not_open_delete_prompt() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Browsing;
+        app.search_mode = SearchMode::Active;
+        app.search_word = "log".to_string();
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(
+            app.mode,
+            AppMode::Browsing,
+            "N must stay a match-cycle key, not a delete prompt"
+        );
+    }
+
+    /// The list header advertises "Enter edit"; Enter must return to input
+    /// mode with the word preserved instead of entering the directory.
+    #[test]
+    fn test_search_keys_active_enter_returns_to_input() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.search_mode = SearchMode::Active;
+        app.search_word = "log".to_string();
+
+        let consumed = handle_search_keys(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+
+        assert!(consumed);
+        assert_eq!(app.search_mode, SearchMode::Input);
+        assert_eq!(app.search_word, "log");
+    }
+
     // ── execute_command ──────────────────────────────────────────────────
     #[test]
     fn test_execute_command_empty() {

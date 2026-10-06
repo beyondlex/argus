@@ -42,23 +42,42 @@ pub(crate) fn handle_search_keys(key: KeyEvent, app: &mut App) -> bool {
             true
         }
         SearchMode::Active => {
+            // Everything this arm acts on must report consumed: a `false`
+            // lets the key fall through to browsing, where `N` is the
+            // permanent-delete shortcut — searching "N" then pressing `N`
+            // (previous match) also opened the delete prompt.
             match key.code {
-                KeyCode::Char('n') => app.cycle_match(true),
-                KeyCode::Char('N') => app.cycle_match(false),
+                KeyCode::Char('n') => {
+                    app.cycle_match(true);
+                    true
+                }
+                KeyCode::Char('N') => {
+                    app.cycle_match(false);
+                    true
+                }
                 KeyCode::Char('/') => {
                     app.search_word.clear();
                     app.refresh_current_filtered();
                     app.search_mode = SearchMode::Input;
+                    true
+                }
+                // The list header advertises "Enter edit"; the key used to
+                // fall through and enter the directory under the cursor
+                // instead (discarding the search).
+                KeyCode::Enter => {
+                    app.search_mode = SearchMode::Input;
+                    true
                 }
                 KeyCode::Esc => {
                     app.search_word.clear();
                     app.refresh_current_filtered();
                     app.search_mode = SearchMode::Inactive;
-                    return true;
+                    true
                 }
-                _ => {}
+                // j/k and every other key stay unconsumed: movement and the
+                // rest of browsing keep working while a search is active.
+                _ => false,
             }
-            false
         }
         SearchMode::Inactive => false,
     }
