@@ -1741,19 +1741,31 @@ impl App {
     }
 
     pub fn enter_brew(&mut self) {
-        if let Some(ref mut state) = self.brew_state {
-            if !state.packages.is_empty() {
-                // Reuse cached scan results
-                state.report = None;
-                state.confirm_pending = false;
-                state.uninstalling = false;
-                state.selected_pkg = None;
-                state.multi_select = false;
-                state.selected_pkgs.clear();
-                state.cursor = 0;
-                self.mode = AppMode::Brew;
-                return;
+        let scan_in_flight = self
+            .brew_state
+            .as_ref()
+            .is_some_and(|s| s.scanning);
+        if !scan_in_flight {
+            if let Some(ref mut state) = self.brew_state {
+                if !state.packages.is_empty() {
+                    // Reuse cached scan results
+                    state.report = None;
+                    state.confirm_pending = false;
+                    state.uninstalling = false;
+                    state.selected_pkg = None;
+                    state.multi_select = false;
+                    state.selected_pkgs.clear();
+                    state.cursor = 0;
+                    self.mode = AppMode::Brew;
+                    return;
+                }
             }
+        } else {
+            // A scan is already running (user left the panel mid-scan and
+            // came back): show the panel, don't spawn a second scan that
+            // would race the first completion into the same state.
+            self.mode = AppMode::Brew;
+            return;
         }
         self.brew_state = Some(BrewState {
             packages: Vec::new(),
