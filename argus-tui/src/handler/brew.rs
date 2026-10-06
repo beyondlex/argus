@@ -298,18 +298,15 @@ fn apply_brew_sort_and_filter(state: &mut crate::types::BrewState) {
         });
     }
 
-    // Sort by the selected mode
+    // Sort by the selected mode. Time mode must agree with the scan order
+    // and the CLI: it uses core's shared comparator (the private copy here
+    // could drift from `sort_oldest_first`).
     let packages = &state.packages;
     indices.sort_by(|&a, &b| {
         let pa = &packages[a];
         let pb = &packages[b];
         match state.sort_mode {
-            BrewSortMode::Time => match (&pa.last_used, &pb.last_used) {
-                (None, None) => pb.size.cmp(&pa.size),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
-            },
+            BrewSortMode::Time => argus_core::compare_oldest_first(pa, pb),
             BrewSortMode::Size => pb.size.cmp(&pa.size),
             BrewSortMode::Name => pa.name.to_lowercase().cmp(&pb.name.to_lowercase()),
             BrewSortMode::Type => pa
@@ -324,27 +321,11 @@ fn apply_brew_sort_and_filter(state: &mut crate::types::BrewState) {
     state.cursor = 0;
 }
 
-/// Format a timestamp as relative time string for display.
+/// Relative "last used" label for the brew list. The formatting rule lives
+/// in core (`format_last_used_relative`); the CLI prints the exact same
+/// labels and the two copies used to be maintained by hand.
 pub(crate) fn format_brew_time(dt: Option<chrono::DateTime<chrono::Utc>>) -> String {
-    match dt {
-        None => "never".to_string(),
-        Some(dt) => {
-            let now = chrono::Utc::now();
-            let duration = now.signed_duration_since(dt);
-            let days = duration.num_days();
-            if days == 0 {
-                "today".to_string()
-            } else if days == 1 {
-                "yesterday".to_string()
-            } else if days < 30 {
-                format!("{}d ago", days)
-            } else if days < 365 {
-                format!("{}mo ago", days / 30)
-            } else {
-                format!("{}y ago", days / 365)
-            }
-        }
-    }
+    argus_core::format_last_used_relative(dt)
 }
 
 fn handle_brew_info_popup(app: &mut App) {

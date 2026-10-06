@@ -159,7 +159,10 @@ pub(crate) fn execute_command(app: &mut App, cmd: &str) {
                 }
             }
             let _ = tx
-                .send(AppMessage::Info("daemon connect failed".into()))
+                // Failure must use the error channel: Info renders in the
+                // success color, so "daemon connect failed" read as if the
+                // connect had succeeded (same fix as :Consolidate, review 12).
+                .send(AppMessage::Error("daemon connect failed".into()))
                 .await;
         });
         return;

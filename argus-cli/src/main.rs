@@ -991,25 +991,9 @@ fn print_brew_list(packages: &[&argus_core::BrewPackage]) {
 
 #[cfg(feature = "cleanup")]
 fn format_brew_last_used(dt: Option<chrono::DateTime<chrono::Utc>>) -> String {
-    match dt {
-        None => "never".to_string(),
-        Some(dt) => {
-            let now = chrono::Utc::now();
-            let duration = now.signed_duration_since(dt);
-            let days = duration.num_days();
-            if days == 0 {
-                "today".to_string()
-            } else if days == 1 {
-                "yesterday".to_string()
-            } else if days < 30 {
-                format!("{}d ago", days)
-            } else if days < 365 {
-                format!("{}mo ago", days / 30)
-            } else {
-                format!("{}y ago", days / 365)
-            }
-        }
-    }
+    // Shared with the TUI brew panel: one definition in core, the private
+    // copies here and there used to drift.
+    argus_core::format_last_used_relative(dt)
 }
 
 trait TruncateEllipsis {

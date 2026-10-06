@@ -461,17 +461,41 @@ pub fn keg_path(prefix: &Path, name: &str, ptype: &BrewPackageType) -> PathBuf {
     }
 }
 
+/// Ordering behind [`sort_oldest_first`], exposed so filtered/partial views
+/// (TUI panel sort, CLI subset re-sort) sort identically to the full scan
+/// without each growing a private copy of the closure.
+pub fn compare_oldest_first(a: &BrewPackage, b: &BrewPackage) -> std::cmp::Ordering {
+    match (&a.last_used, &b.last_used) {
+        (None, None) => b.size.cmp(&a.size),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
+    }
+}
+
 /// Display ordering shared by the scanner and the CLI: least-recently-used
 /// first, never-used packages before all used ones (sized descending within
 /// each group). One definition — the CLI used to re-sort its filtered list
 /// with a private copy of this closure that could drift from the scan order.
 pub fn sort_oldest_first(packages: &mut [BrewPackage]) {
-    packages.sort_by(|a, b| match (&a.last_used, &b.last_used) {
-        (None, None) => b.size.cmp(&a.size),
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(a_dt), Some(b_dt)) => a_dt.cmp(b_dt),
-    });
+    packages.sort_by(compare_oldest_first);
+}
+
+/// Human-relative "last used" label shared by the CLI list and the TUI brew
+/// panel: never / today / yesterday / Nd ago / Nmo ago / Ny ago. Both clients
+/// shipped identical private copies that had to be fixed in lockstep.
+pub fn format_last_used_relative(last_used: Option<DateTime<Utc>>) -> String {
+    let Some(dt) = last_used else {
+        return "never".to_string();
+    };
+    let days = (Utc::now() - dt).num_days();
+    match days {
+        0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        d if d < 30 => format!("{d}d ago"),
+        d if d < 365 => format!("{}mo ago", d / 30),
+        d => format!("{}y ago", d / 365),
+    }
 }
 
 /// 获取所有已安装的 brew 包，按 last_used 升序排列
@@ -654,6 +678,47 @@ mod tests {
         sort_oldest_first(&mut packages);
         let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["never-big", "never-small", "old", "recent"]);
+    }
+
+    /// The shared comparator must agree with `sort_oldest_first`: filtered
+    /// views sort their subsets with it directly.
+    #[test]
+    fn test_compare_oldest_first_matches_sort() {
+        let t = |secs: i64| Utc.timestamp_opt(secs, 0).single();
+        let a = pkg("a", t(1_600_000_000), 10);
+        let b = pkg("b", t(1_700_000_000), 10);
+        let never_big = pkg("n", None, 500);
+        let never_small = pkg("m", None, 5);
+
+        assert_eq!(compare_oldest_first(&never_big, &never_small), std::cmp::Ordering::Less);
+        assert_eq!(compare_oldest_first(&never_big, &a), std::cmp::Ordering::Less);
+        assert_eq!(compare_oldest_first(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(compare_oldest_first(&a, &a), std::cmp::Ordering::Equal);
+    }
+
+    /// One relative-time formatter for CLI and TUI: the boundaries
+    /// (never / today / yesterday / <30d / <1y / older) must hold.
+    #[test]
+    fn test_format_last_used_relative() {
+        assert_eq!(format_last_used_relative(None), "never");
+        let now = Utc::now();
+        assert_eq!(format_last_used_relative(Some(now)), "today");
+        assert_eq!(
+            format_last_used_relative(Some(now - chrono::Duration::hours(30))),
+            "yesterday"
+        );
+        assert_eq!(
+            format_last_used_relative(Some(now - chrono::Duration::days(10))),
+            "10d ago"
+        );
+        assert_eq!(
+            format_last_used_relative(Some(now - chrono::Duration::days(60))),
+            "2mo ago"
+        );
+        assert_eq!(
+            format_last_used_relative(Some(now - chrono::Duration::days(730))),
+            "2y ago"
+        );
     }
 
     #[test]
