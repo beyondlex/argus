@@ -163,7 +163,7 @@ fn config_path() -> PathBuf {
     argus_core::config_dir().join("config.toml")
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawDaemonConfig {
     #[serde(default)]
     watch_dirs: Vec<WatchDirSource>,
@@ -220,14 +220,32 @@ fn load_config_from_path(path: &PathBuf) -> DaemonConfig {
     };
     match toml::from_str::<RawConfig>(&content) {
         Ok(raw) => match raw.daemon {
-            Some(raw_daemon) => match DaemonConfig::try_from(raw_daemon) {
+            Some(raw_daemon) => match DaemonConfig::try_from(raw_daemon.clone()) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     // Tracing is not initialised yet when config is loaded, so
                     // warn! alone would be swallowed — fall back loudly.
-                    eprintln!("argusd: invalid watch_dirs in config {path:?}: {e}, using defaults");
-                    tracing::warn!("invalid watch_dirs in config {path:?}: {e}, using defaults");
-                    DaemonConfig::default()
+                    eprintln!("argusd: invalid watch_dirs in config {path:?}: {e}, using defaults for watch_dirs");
+                    tracing::warn!(
+                        "invalid watch_dirs in config {path:?}: {e}, using defaults for watch_dirs"
+                    );
+                    // A bad glob used to discard the entire file: a typo in
+                    // one include pattern silently reset debounce_seconds,
+                    // uds_path, retention and consolidation too. Only the
+                    // watch list falls back to its defaults now.
+                    let partial = RawConfig {
+                        daemon: Some(RawDaemonConfig {
+                            watch_dirs: Vec::new(),
+                            ..raw_daemon
+                        }),
+                    };
+                    match partial.daemon.and_then(|d| DaemonConfig::try_from(d).ok()) {
+                        Some(mut cfg) => {
+                            cfg.watch_dirs = DaemonConfig::default().watch_dirs;
+                            cfg
+                        }
+                        None => DaemonConfig::default(),
+                    }
                 }
             },
             None => DaemonConfig::default(),
@@ -432,5 +450,43 @@ watch_dirs = [
         let raw_daemon = raw.daemon.unwrap();
         let result = DaemonConfig::try_from(raw_daemon);
         assert!(result.is_err());
+    }
+
+    /// A bad glob must not discard the whole file (review #63): every other
+    /// valid field stays, and only the watch list falls back to its defaults.
+    #[test]
+    fn test_load_config_invalid_glob_keeps_other_fields() {
+        let mut path = std::env::temp_dir();
+        path.push("_argusd_bad_glob.toml");
+        std::fs::write(
+            &path,
+            r#"
+[daemon]
+watch_dirs = [
+    { path = "/tmp", include = "[invalid" },
+]
+debounce_seconds = 42
+uds_path = "/tmp/custom.sock"
+delta_retention_days = 7
+"#,
+        )
+        .unwrap();
+        let config = load_config_from_path(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(config.debounce_seconds, 42, "valid fields must survive");
+        assert_eq!(config.uds_path, "/tmp/custom.sock");
+        assert_eq!(config.delta_retention_days, 7);
+        let default_dirs: Vec<String> = DaemonConfig::default()
+            .watch_dirs
+            .iter()
+            .map(|d| d.path.to_string_lossy().to_string())
+            .collect();
+        let got_dirs: Vec<String> = config
+            .watch_dirs
+            .iter()
+            .map(|d| d.path.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(got_dirs, default_dirs, "only watch_dirs falls back");
     }
 }
