@@ -1638,7 +1638,6 @@ impl App {
             total_bytes: 0,
             selected: HashSet::new(),
             cursor: 0,
-            scroll_offset: 0,
             dry_run: false,
             confirm_pending: false,
             report: None,

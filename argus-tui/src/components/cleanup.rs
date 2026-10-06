@@ -345,7 +345,14 @@ fn render_cleanup_list(
 ) {
     let visible_count = state.items.len();
     let max_scroll = visible_count.saturating_sub(area.height as usize);
-    let scroll = state.scroll_offset.min(max_scroll);
+    // Cursor-anchored scroll, same convention as the brew and uninstall
+    // lists: `CleanupState::scroll_offset` used to drive this and nothing
+    // ever wrote it, so on short terminals the cursor could move past the
+    // fixed viewport and disappear.
+    let scroll = state
+        .cursor
+        .saturating_sub(area.height as usize / 2)
+        .min(max_scroll);
 
     let home = std::path::Path::new("/Users")
         .join(whoami())
