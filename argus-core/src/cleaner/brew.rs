@@ -375,6 +375,36 @@ fn last_access_from_opt(prefix: &Path, pkg_name: &str) -> Option<DateTime<Utc>> 
     latest
 }
 
+/// Whether a `.app` bundle stem plausibly belongs to a cask name. Inputs
+/// differ in case and separator conventions ("Google Chrome" vs
+/// "google-chrome"). Matching is token-level with digit extension allowed
+/// (`iterm` matches `iterm2` like the shell-history rule), and *every* app
+/// name word must be accounted for by a cask token — review #64: the old
+/// `cask.contains(stem.to_lowercase())` matched `Chromium.app` for the
+/// `google-chrome` cask (any "chrome" substring did), and lowercased only
+/// the stem, so a cask name carrying uppercase could never match at all.
+/// A missed match falls through to the keg atime and then "never used",
+/// so false negatives push toward uninstall suggestions — the token rule
+/// keeps recall for the real-world name pairs (space vs dash, trailing
+/// version digits) while dropping cross-product false positives.
+fn app_stem_matches_cask(stem: &str, cask: &str) -> bool {
+    let stem_lc = stem.to_lowercase();
+    if stem_lc.replace(' ', "-") == cask.to_lowercase() {
+        return true;
+    }
+    let cask_lc = cask.to_lowercase();
+    let cask_tokens: Vec<&str> = cask_lc.split('-').collect();
+    stem_lc.split_whitespace().all(|stem_token| {
+        cask_tokens.iter().any(|cask_token| {
+            *cask_token == stem_token
+                || (cask_token.starts_with(stem_token)
+                    && cask_token[stem_token.len()..]
+                        .bytes()
+                        .all(|b| b.is_ascii_digit()))
+        })
+    })
+}
+
 /// Spotlight: 对 cask 类型的 GUI 应用获取最后使用时间
 fn spotlight_last_used(pkg_name: &str) -> Option<DateTime<Utc>> {
     // 尝试在常见应用路径下查找 .app
@@ -391,10 +421,7 @@ fn spotlight_last_used(pkg_name: &str) -> Option<DateTime<Utc>> {
                     continue;
                 }
                 let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if stem.eq_ignore_ascii_case(pkg_name)
-                    || stem.replace(' ', "-").eq_ignore_ascii_case(pkg_name)
-                    || pkg_name.contains(&stem.to_lowercase())
-                {
+                if app_stem_matches_cask(stem, pkg_name) {
                     let output = match Command::new("mdls")
                         .arg("-name")
                         .arg("kMDItemLastUsedDate")
@@ -893,6 +920,27 @@ mod tests {
     fn test_brew_prefix_fallback() {
         let prefix = brew_prefix();
         assert!(!prefix.to_string_lossy().is_empty());
+    }
+
+    /// The cask→.app matcher must keep recall for real-world name pairs
+    /// (case, spaces vs dashes, trailing version digits) while refusing
+    /// cross-product matches between distinct products.
+    #[test]
+    fn test_app_stem_matches_cask() {
+        // Exact and separator/case variants.
+        assert!(app_stem_matches_cask("firefox", "firefox"));
+        assert!(app_stem_matches_cask("Google Chrome", "google-chrome"));
+        assert!(app_stem_matches_cask("Visual Studio Code", "visual-studio-code"));
+        // Trailing digits extend a stem token (shell-history rule).
+        assert!(app_stem_matches_cask("iTerm", "iterm2"));
+        assert!(app_stem_matches_cask("iTerm2", "iterm2"));
+
+        // Distinct products must not claim each other.
+        assert!(!app_stem_matches_cask("Chromium", "google-chrome"));
+        assert!(!app_stem_matches_cask("Chrome", "chromium"));
+        assert!(!app_stem_matches_cask("Google Drive", "google-chrome"));
+        // A longer app word that merely starts with the cask token.
+        assert!(!app_stem_matches_cask("VLC Remote", "vlc"));
     }
 
     #[test]
