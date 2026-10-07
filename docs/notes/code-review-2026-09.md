@@ -577,6 +577,7 @@ Windows 后端把 rename 报成携带双路径的 `RenameMode::Both`，watcher �
 | **Clean/Uninstall 面板重入叠加扫描**：扫描在途退出再进入会整体替换状态并起第二份全量扫描（Purge 深扫所有项目树、Uninstall 逐应用 spawn mdls），旧完成消息还会落进新状态。与第十五轮 brew 同一修法：在途状态在退出时保留（重入只显示扫描屏），完成的结果同模式重入时复用（Uninstall 重置回应用列表）；完成的面板退出仍丢弃状态，下次进入重扫保证新鲜 | `argus-tui/app.rs` | 重复扫描 + 旧结果竞态 | 495c7fa |
 | **AI 审阅删除在 UI 线程同步执行**：`D`（永久删除）大目录时 `remove_dir_all` 冻结界面数十秒（浏览模式删除早已后台化 + 进度条）。确认后由后台线程执行（新增 `AiStatus::Deleting`：删除/标记键失效、标题显示 deleting…），新增 `AiDeleteComplete` 消息负责树剪枝、释放字节记账与结果清理；用户中途退出面板后完成消息仍会补齐文件系统侧的状态维护。受保护路径闸门不变 | `argus-tui/handler/ai_review.rs` `app.rs` `types.rs` | 大目录删除冻结 UI | 1423f2d |
 | `pub mod bloom` 无任何公开项（`SeenInodes` 是 `pub(crate)`），收敛为私有模块 | `argus-core/src/lib.rs` | API 面噪声 | 1423f2d |
+| 扫描耗时 ≥ 1 分钟时 "Took:" 显示 "300.45s"，读感差；改为分秒格式（"5m 0.5s"），一分钟以下不变 | `argus-tui/src/util.rs` | 可读性 | 本轮 |
 
 ## 存疑关闭（第十六轮）
 
@@ -600,6 +601,6 @@ Windows 后端把 rename 报成携带双路径的 `RenameMode::Both`，watcher �
 
 ## 第十六轮验证
 
-- `cargo test --workspace --all-features`：437 通过（新增 14 个：watcher Any-remove 目录删除 ×2、delta-detail 滚动钳制 ×3 + 几何一致性、面板重入 ×5、`delete_marked` 永久删除、AI 删除完成消息 ×1、既有 uninstall-Esc 测试按新语义更新）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo test --workspace --all-features`：438 通过（新增 15 个：watcher Any-remove 目录删除 ×2、delta-detail 滚动钳制 ×3 + 几何一致性、面板重入 ×5、`delete_marked` 永久删除、AI 删除完成消息 ×1、时长分秒格式 ×1、既有 uninstall-Esc 测试按新语义更新）；`cargo test --workspace`（默认 feature）434 同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
 - 文档同步：`tui-current-behavior.md`（面板重入语义、AI 删除后台化、K 弹窗滚动钳制）

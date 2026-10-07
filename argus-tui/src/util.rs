@@ -109,9 +109,17 @@ pub fn format_count(count: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// Format a duration as seconds with two decimal places.
+/// Format a duration for the scan summary. Seconds with two decimals below a
+/// minute; minutes + seconds above it — a 5-minute scan as "300.45s" read
+/// far worse than "5m 0.5s".
 pub fn format_duration(duration: Duration) -> String {
-    format!("{:.2}s", duration.as_secs_f64())
+    let secs = duration.as_secs_f64();
+    if secs < 60.0 {
+        return format!("{secs:.2}s");
+    }
+    let minutes = (secs / 60.0).floor() as u64;
+    let rem = secs - minutes as f64 * 60.0;
+    format!("{minutes}m {rem:.1}s")
 }
 
 /// Format a timestamp as "YYYY-MM-DD HH:MM" or "—" if unknown
@@ -228,6 +236,14 @@ mod tests {
     #[test]
     fn test_format_duration_formats_seconds() {
         assert_eq!(format_duration(Duration::from_millis(32_450)), "32.45s");
+    }
+
+    /// A minute-plus scan reads as minutes + seconds, not "300.45s".
+    #[test]
+    fn test_format_duration_minutes_for_long_scans() {
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0.0s");
+        assert_eq!(format_duration(Duration::from_millis(93_250)), "1m 33.2s");
+        assert_eq!(format_duration(Duration::from_secs(300)), "5m 0.0s");
     }
 
     /// The TUI delete guard must match the core safety list, including macOS
