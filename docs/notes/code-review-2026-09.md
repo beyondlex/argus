@@ -567,3 +567,39 @@ Windows 后端把 rename 报成携带双路径的 `RenameMode::Both`，watcher �
 
 - `cargo test --workspace --all-features`：423 通过（新增 7 个：搜索态按键消费 ×2、brew 比较器一致性、相对时间格式化、cask 匹配规则、watch_dirs 按字段回退、多选摘要含视图外条目）；`cargo test --workspace`（默认 feature）419 同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+
+## 已修复（第十六轮，2026-10-08）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| **目录删除以 `RemoveKind::Any` 面目出现时不记账**：kqueue 把所有删除（含目录）都报成 Any，降级的 FSEvents 事件丢失 `IS_DIR` 标志后同样落到 Any。Any 分支只查路径本身的 size_cache，而目录从不进缓存——被删目录下已缓存的子树 churn 静默丢失，缓存条目泄漏。普通 remove 返回 None 时回退到前缀扫（`remove_tree`），对普通文件是 no-op（`starts_with` 按组件比较）；每文件删除事件先耗尽缓存的常规路径不会二次入账 | `argusd/src/watcher.rs` | 目录删除漏账 + 缓存泄漏 | 653586e |
+| **存疑 #67 落地**：delta 详情弹窗 `j` 可滚到最后一行升顶、底部留白。handler 的可视行数来自 `(h*0.65)-4` 启发式，与渲染层 `centered_rect` 实际布局差一行；两侧收敛为同一几何函数（零宽探针 Rect 复用 `centered_rect`），滚动钳制在 `len - visible`（最后满页），页脚百分比恰在满页时到 100% | `argus-tui/handler/delta_detail.rs` `components/delta_detail.rs` | 弹窗滚动越界 + 两侧口径漂移 | c5619ed |
+| **Clean/Uninstall 面板重入叠加扫描**：扫描在途退出再进入会整体替换状态并起第二份全量扫描（Purge 深扫所有项目树、Uninstall 逐应用 spawn mdls），旧完成消息还会落进新状态。与第十五轮 brew 同一修法：在途状态在退出时保留（重入只显示扫描屏），完成的结果同模式重入时复用（Uninstall 重置回应用列表）；完成的面板退出仍丢弃状态，下次进入重扫保证新鲜 | `argus-tui/app.rs` | 重复扫描 + 旧结果竞态 | 495c7fa |
+| **AI 审阅删除在 UI 线程同步执行**：`D`（永久删除）大目录时 `remove_dir_all` 冻结界面数十秒（浏览模式删除早已后台化 + 进度条）。确认后由后台线程执行（新增 `AiStatus::Deleting`：删除/标记键失效、标题显示 deleting…），新增 `AiDeleteComplete` 消息负责树剪枝、释放字节记账与结果清理；用户中途退出面板后完成消息仍会补齐文件系统侧的状态维护。受保护路径闸门不变 | `argus-tui/handler/ai_review.rs` `app.rs` `types.rs` | 大目录删除冻结 UI | 1423f2d |
+| `pub mod bloom` 无任何公开项（`SeenInodes` 是 `pub(crate)`），收敛为私有模块 | `argus-core/src/lib.rs` | API 面噪声 | 1423f2d |
+
+## 存疑关闭（第十六轮）
+
+### 67. delta 详情弹窗可滚过最后满页 — 关闭（已修复，c5619ed；handler 与渲染层共用 `centered_rect` 几何，第十三轮记录的两侧启发式差一行的口径分叉一并消除）
+
+## 存疑 / 记录在案（第十六轮新增，未改动）
+
+### 69. `consolidate_events` 的事务外 SELECT
+聚合计数在事务开窗前流式读全表，DELETE + INSERT 在其后的事务里执行；两步之间到来的事件会被 DELETE 删掉却不进聚合和（丢账）。当前不可触发：`insert_events` 只有 argusd 调用，daemon 内部全部 DB 访问共享一把 `Arc<Mutex<Connection>>`，单实例守卫挡住第二个 daemon；CLI/TUI 只读 delta 表。把 SELECT 挪进事务（快照隔离，冲突时报 BUSY 而非静默丢账）是正确修法，等出现第二个写方（如独立的 ingest 工具）再做。
+
+### 70. `uninstall_app_with_leftovers` 对每个残留重跑 `dir_size`
+`find_leftovers` 刚为每个残留算过 `dir_size`，确认卸载时 `uninstall_app_with_leftovers` 按路径再算一遍（每残留一次全树遍历）。CLI 路径（`uninstall_app`）因此每个残留走两遍；TUI 路径同样付两次。要把尺寸穿进 API（`AppLeftovers` 增加逐路径尺寸）才消得掉，删除本身已是秒级操作，收益有限，记录备查。
+
+### 71. 关停时 debounce 通道内未合并事件丢弃
+`SHOULD_QUIT` 后 debounce 引擎的 select 循环随即退出，只 flush 已合并的 pending；此刻仍在 `event_rx` 里排队（容量 1024）的原始事件不合并直接丢弃。关停前最后两秒内的 churn 可能缺账。要修需在退出前 drain 通道（ watcher 线程还有 ≤1s 的 `recv_timeout` 尾巴，要一起等），收益是关停时刻附近几百毫秒的完整性。
+
+## 第十六轮性能观察
+
+- AI 审阅删除后台化同时消除了一个隐性 UI 卡顿源（原同步路径）；`delete_marked` 对失败路径只报错不更新状态，与原语义一致。
+- 未发现新的实际性能问题。既有观察维持：`plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）、残留尺寸双算（新 #70）。
+
+## 第十六轮验证
+
+- `cargo test --workspace --all-features`：437 通过（新增 14 个：watcher Any-remove 目录删除 ×2、delta-detail 滚动钳制 ×3 + 几何一致性、面板重入 ×5、`delete_marked` 永久删除、AI 删除完成消息 ×1、既有 uninstall-Esc 测试按新语义更新）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+- 文档同步：`tui-current-behavior.md`（面板重入语义、AI 删除后台化、K 弹窗滚动钳制）
