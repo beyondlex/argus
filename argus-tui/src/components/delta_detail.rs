@@ -158,6 +158,18 @@ fn visible_row_count(popup_height: u16) -> usize {
     (popup_height as usize).saturating_sub(3)
 }
 
+/// Visible row count as the scroll handler sees it, derived from the same
+/// `centered_rect` geometry the renderer uses. The handler used to estimate
+/// the popup height with a `(h * 0.65) - 4` heuristic that drifted from the
+/// real layout by a row — letting `j` scroll past the last full page (review
+/// #67). A zero-width probe rect is enough: the vertical split does not
+/// depend on width.
+pub(crate) fn detail_popup_visible_rows(frame_height: u16) -> usize {
+    let probe = Rect::new(0, 0, 0, frame_height);
+    let popup = crate::components::popup::centered_rect(70, 65, probe);
+    visible_row_count(popup.height)
+}
+
 /// Render the delta detail popup
 pub fn render(f: &mut Frame, area: Rect, state: &DeltaDetailState, theme: &ColorTheme) {
     let popup = crate::components::popup::centered_rect(70, 65, area);
@@ -261,5 +273,25 @@ mod tests {
         assert_eq!(visible_row_count(20), 17);
         assert_eq!(visible_row_count(3), 0);
         assert_eq!(visible_row_count(0), 0);
+    }
+
+    /// The scroll handler's row count must equal what the renderer actually
+    /// shows: both go through `centered_rect(70, 65, …)`, so a range of frame
+    /// heights (including the ±1 rounding of the percentage split) must agree.
+    #[test]
+    fn test_handler_visible_rows_match_render_geometry() {
+        for h in [5u16, 10, 15, 24, 30, 40, 50, 60, 80, 100, 120] {
+            let rendered = visible_row_count(crate::components::popup::centered_rect(
+                70,
+                65,
+                Rect::new(0, 0, 100, h),
+            )
+            .height);
+            assert_eq!(
+                detail_popup_visible_rows(h),
+                rendered,
+                "handler/render row mismatch at frame height {h}"
+            );
+        }
     }
 }
