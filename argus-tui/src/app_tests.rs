@@ -1157,3 +1157,167 @@ fn test_load_ai_levels_from_db_reads_cache() {
     // A missing DB is an empty map, not an error.
     assert!(load_ai_levels_from_db_file(Path::new("/nonexistent/dir/x.db")).is_empty());
 }
+
+/// Re-entering a panel mid-scan must show the existing scan, not spawn a
+/// second one racing the first into the same state (same fix as brew).
+#[test]
+fn test_enter_cleanup_mid_scan_reuses_state() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.cleanup_state = Some(CleanupState {
+        scanning: true,
+        mode: CleanupMode::Purge,
+        ..Default::default()
+    });
+    app.mode = AppMode::Browsing;
+
+    app.enter_cleanup(CleanupMode::Purge);
+
+    assert_eq!(app.mode, AppMode::Cleanup);
+    let state = app.cleanup_state.as_ref().unwrap();
+    assert!(state.scanning, "in-flight scan must be left alone");
+    assert!(app.scan_started_at.is_none(), "no second scan may start");
+}
+
+/// A finished cleanup scan is reused on re-entry (same mode) instead of
+/// re-walking every project tree.
+#[test]
+fn test_enter_cleanup_finished_scan_reuses_items() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.cleanup_state = Some(CleanupState {
+        scanning: false,
+        mode: CleanupMode::Clean,
+        items: vec![argus_core::CleanItem {
+            path: PathBuf::from("/tmp/x"),
+            size: 10,
+            risk: argus_core::RiskLevel::Safe,
+            target_id: "t".into(),
+        }],
+        total_bytes: 10,
+        report: Some(argus_core::CleanReport {
+            total_attempted: 1,
+            total_succeeded: 1,
+            total_failed: 0,
+            freed_bytes: 10,
+            errors: Vec::new(),
+        }),
+        cursor: 3,
+        ..Default::default()
+    });
+    app.mode = AppMode::Browsing;
+
+    app.enter_cleanup(CleanupMode::Clean);
+
+    let state = app.cleanup_state.as_ref().unwrap();
+    assert!(!state.scanning, "cached results must not rescan");
+    assert_eq!(state.items.len(), 1);
+    assert!(state.report.is_none(), "stale report must clear");
+    assert_eq!(state.cursor, 0);
+    assert_eq!(app.mode, AppMode::Cleanup);
+}
+
+/// Switching modes (Clean -> Purge) must rescan: the cached list describes
+/// different targets.
+#[test]
+fn test_enter_cleanup_mode_switch_rescans() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.cleanup_state = Some(CleanupState {
+        scanning: false,
+        mode: CleanupMode::Clean,
+        items: vec![argus_core::CleanItem {
+            path: PathBuf::from("/tmp/x"),
+            size: 10,
+            risk: argus_core::RiskLevel::Safe,
+            target_id: "t".into(),
+        }],
+        ..Default::default()
+    });
+    app.mode = AppMode::Browsing;
+
+    app.enter_cleanup(CleanupMode::Purge);
+
+    let state = app.cleanup_state.as_ref().unwrap();
+    assert!(state.scanning, "mode switch must rescan");
+    assert_eq!(state.mode, CleanupMode::Purge);
+}
+
+/// Exiting a panel mid-scan keeps the state addressable so the late
+/// completion lands somewhere harmless and re-entry sees the running scan;
+/// a finished panel drops its state.
+#[test]
+fn test_exit_cleanup_keeps_only_inflight_scan() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.mode = AppMode::Cleanup;
+    app.cleanup_state = Some(CleanupState {
+        scanning: true,
+        ..Default::default()
+    });
+
+    app.exit_cleanup();
+    assert!(app.cleanup_state.is_some(), "in-flight scan must survive");
+    assert_eq!(app.mode, AppMode::Browsing);
+
+    app.cleanup_state.as_mut().unwrap().scanning = false;
+    app.mode = AppMode::Cleanup;
+    app.exit_cleanup();
+    assert!(app.cleanup_state.is_none(), "finished panel drops state");
+}
+
+/// Same re-entry discipline for the uninstall panel.
+#[test]
+fn test_enter_uninstall_mid_scan_reuses_state() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.uninstall_state = Some(UninstallState {
+        scanning: true,
+        ..Default::default()
+    });
+    app.mode = AppMode::Browsing;
+
+    app.enter_uninstall();
+
+    assert_eq!(app.mode, AppMode::Uninstall);
+    assert!(app.uninstall_state.as_ref().unwrap().scanning);
+}
+
+/// Re-entering a finished uninstall panel resets the Confirm phase back to
+/// the app list with a cleared selection.
+#[test]
+fn test_enter_uninstall_finished_resets_to_app_list() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    app.uninstall_state = Some(UninstallState {
+        scanning: false,
+        phase: UninstallPhase::Confirm,
+        selected_app: Some(2),
+        apps: vec![argus_core::AppInfo {
+            id: "com.x".into(),
+            name: "X".into(),
+            path: PathBuf::from("/Applications/X.app"),
+            size: 0,
+            last_used: None,
+            is_from_app_store: false,
+        }],
+        report: Some(argus_core::CleanReport {
+            total_attempted: 1,
+            total_succeeded: 1,
+            total_failed: 0,
+            freed_bytes: 0,
+            errors: Vec::new(),
+        }),
+        ..Default::default()
+    });
+    app.mode = AppMode::Browsing;
+
+    app.enter_uninstall();
+
+    let state = app.uninstall_state.as_ref().unwrap();
+    assert!(!state.scanning);
+    assert_eq!(state.phase, UninstallPhase::SelectApp);
+    assert!(state.selected_app.is_none());
+    assert!(state.report.is_none());
+    assert_eq!(app.mode, AppMode::Uninstall);
+}

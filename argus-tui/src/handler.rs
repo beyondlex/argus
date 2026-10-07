@@ -1192,7 +1192,25 @@ mod tests {
         assert!(state.selected_app.is_none());
 
         // SelectApp-phase scans keep the old behavior: Esc leaves the panel.
+        // The in-flight scan's state stays addressable (re-entry shows the
+        // running scan instead of stacking a second one); a finished panel
+        // drops its state.
         app.uninstall_state.as_mut().unwrap().scanning = true;
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.mode, AppMode::Browsing);
+        assert!(
+            app.uninstall_state
+                .as_ref()
+                .is_some_and(|s| s.scanning),
+            "in-flight scan state must survive the panel exit"
+        );
+
+        // A finished panel drops its state entirely.
+        app.mode = AppMode::Uninstall;
+        app.uninstall_state.as_mut().unwrap().scanning = false;
         super::cleanup::handle_uninstall_key(
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()),
             &mut app,

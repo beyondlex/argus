@@ -1637,6 +1637,30 @@ impl App {
     // ── Cleanup / Uninstall ────────────────────────────────────────
 
     pub fn enter_cleanup(&mut self, mode: CleanupMode) {
+        // Re-entry parity with brew: a scan already in flight means the user
+        // left the panel mid-scan and came back — show the panel, don't stack
+        // a second full walk (purge re-walks every project tree) onto the
+        // same state, where the older completion would race the newer one.
+        if let Some(ref state) = self.cleanup_state {
+            if state.scanning {
+                self.mode = AppMode::Cleanup;
+                return;
+            }
+            // Finished scan of the same mode: reuse the results instead of
+            // re-walking the filesystem on every panel visit.
+            if !state.items.is_empty() && state.mode == mode {
+                if let Some(ref mut state) = self.cleanup_state {
+                    state.report = None;
+                    state.confirm_pending = false;
+                    state.detail_pending = false;
+                    state.detail_items = None;
+                    state.cursor = 0;
+                    state.selected.clear();
+                }
+                self.mode = AppMode::Cleanup;
+                return;
+            }
+        }
         self.cleanup_state = Some(CleanupState {
             mode,
             scanning: true,
@@ -1659,7 +1683,12 @@ impl App {
     }
 
     pub fn exit_cleanup(&mut self) {
-        self.cleanup_state = None;
+        // An in-flight scan keeps its state alive so re-entering shows the
+        // panel mid-scan; a finished panel drops its state entirely (the next
+        // entry rescans, keeping the item list fresh after deletions).
+        if !self.cleanup_state.as_ref().is_some_and(|s| s.scanning) {
+            self.cleanup_state = None;
+        }
         self.mode = AppMode::Browsing;
         self.scanning = false;
     }
@@ -1710,6 +1739,30 @@ impl App {
     }
 
     pub fn enter_uninstall(&mut self) {
+        // Same re-entry discipline as brew/cleanup: never stack a second app
+        // scan (one mdls spawn per app) onto a panel that already has one
+        // running, and reuse a finished app list on re-entry.
+        if let Some(ref state) = self.uninstall_state {
+            if state.scanning {
+                self.mode = AppMode::Uninstall;
+                return;
+            }
+            if !state.apps.is_empty() {
+                if let Some(ref mut state) = self.uninstall_state {
+                    state.report = None;
+                    state.confirm_pending = false;
+                    state.phase = UninstallPhase::SelectApp;
+                    state.selected_app = None;
+                    state.leftovers = None;
+                    state.selected_leftovers.clear();
+                    state.search_word.clear();
+                    state.filter_mode = false;
+                    state.cursor = 0;
+                }
+                self.mode = AppMode::Uninstall;
+                return;
+            }
+        }
         self.uninstall_state = Some(UninstallState {
             apps: Vec::new(),
             filtered: Vec::new(),
@@ -1735,7 +1788,11 @@ impl App {
     }
 
     pub fn exit_uninstall(&mut self) {
-        self.uninstall_state = None;
+        // Mirror exit_cleanup: keep an in-flight scan addressable, drop a
+        // finished panel so the next entry rescans.
+        if !self.uninstall_state.as_ref().is_some_and(|s| s.scanning) {
+            self.uninstall_state = None;
+        }
         self.mode = AppMode::Browsing;
         self.scanning = false;
     }
