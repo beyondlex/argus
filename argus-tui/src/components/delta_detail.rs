@@ -281,12 +281,9 @@ mod tests {
     #[test]
     fn test_handler_visible_rows_match_render_geometry() {
         for h in [5u16, 10, 15, 24, 30, 40, 50, 60, 80, 100, 120] {
-            let rendered = visible_row_count(crate::components::popup::centered_rect(
-                70,
-                65,
-                Rect::new(0, 0, 100, h),
-            )
-            .height);
+            let rendered = visible_row_count(
+                crate::components::popup::centered_rect(70, 65, Rect::new(0, 0, 100, h)).height,
+            );
             assert_eq!(
                 detail_popup_visible_rows(h),
                 rendered,

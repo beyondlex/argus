@@ -594,6 +594,45 @@ impl App {
                     state.status = AiStatus::Error(msg);
                 }
             }
+            AppMessage::AiDeleteComplete { errors, paths } => {
+                // Tree and freed-bytes bookkeeping must run even when the user
+                // left the review panel while the deletion ran (ai_state is
+                // gone then) — the files are gone either way.
+                let mut total_freed = 0u64;
+                for path in &paths {
+                    let freed = crate::tree_ops::apply_deletion_to_state(self, path);
+                    total_freed = total_freed.saturating_add(freed);
+                }
+                self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
+                self.reload_children_preserving_search();
+
+                // Remove deleted items from the review list; an empty list
+                // closes the panel.
+                let mut review_now_empty = false;
+                if let Some(ref mut s) = self.ai_state {
+                    s.results.retain(|r| !paths.iter().any(|p| p == &r.path));
+                    s.mark_for_delete.clear();
+                    if s.cursor >= s.results.len() {
+                        s.cursor = s.results.len().saturating_sub(1);
+                    }
+                    review_now_empty = s.results.is_empty();
+                    if !review_now_empty {
+                        s.status = AiStatus::Ready;
+                    }
+                }
+                if review_now_empty {
+                    self.exit_ai_review();
+                }
+
+                if !errors.is_empty() {
+                    self.set_error(
+                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
+                        5,
+                    );
+                } else {
+                    self.set_info(format!("deleted {} item(s)", paths.len()), 3);
+                }
+            }
             AppMessage::CleanupScanComplete {
                 mut items,
                 total_bytes,

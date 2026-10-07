@@ -1123,10 +1123,17 @@ mod tests {
             &mut state,
             1001,
         );
-        assert_eq!(events.len(), 1, "directory remove surfaced as Any must book");
+        assert_eq!(
+            events.len(),
+            1,
+            "directory remove surfaced as Any must book"
+        );
         assert_eq!(events[0].delta_size, -7);
         assert_eq!(events[0].event_type, "delete");
-        assert!(state.last_known_size(&f1).is_none(), "subtree cache cleared");
+        assert!(
+            state.last_known_size(&f1).is_none(),
+            "subtree cache cleared"
+        );
         assert!(state.last_known_size(&f2).is_none());
 
         // A second Any event (per-file removes already drained the cache)

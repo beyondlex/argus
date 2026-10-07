@@ -1321,3 +1321,95 @@ fn test_enter_uninstall_finished_resets_to_app_list() {
     assert!(state.report.is_none());
     assert_eq!(app.mode, AppMode::Uninstall);
 }
+
+/// The AI-review completion message prunes exactly the deleted paths from the
+/// results, restores Ready, and closes the panel when nothing is left. The
+/// tree/freed bookkeeping runs even for a panel the user already left.
+#[test]
+fn test_ai_delete_complete_prunes_results_and_updates_tree() {
+    let (tx, rx) = mpsc::channel(1);
+    let mut app = App::new(TuiConfig::default(), tx, rx);
+    let kept = PathBuf::from("/tmp/test/keep.bin");
+    let gone = PathBuf::from("/tmp/test/gone.bin");
+
+    // A minimal view tree so apply_deletion_to_state has something to prune.
+    let mut b = SnapshotBuilder::new("test");
+    b.push_file(ROOT_NODE, "keep.bin", FileType::File, 80, 80);
+    b.push_file(ROOT_NODE, "gone.bin", FileType::File, 20, 20);
+    let total = 100;
+    let snap = b.finish(PathBuf::from("/tmp/test"), total, total);
+    app.view_root_path = PathBuf::from("/tmp/test");
+    app.tree_root = Some(TreeNode::Snapshot(Arc::new(snap), ROOT_NODE));
+    app.current_dir_path = vec!["test".into()];
+    app.load_current_children();
+
+    app.ai_state = Some(AiReviewState {
+        results: vec![
+            AiPathVerdict {
+                path: kept.clone(),
+                size: 80,
+                label: String::new(),
+                label_detail: String::new(),
+                purpose: String::new(),
+                risk_level: RiskLevel::Safe,
+                suggestion: String::new(),
+                background: String::new(),
+                deletable: true,
+                source: AI_SOURCE_MODEL.into(),
+            },
+            AiPathVerdict {
+                path: gone.clone(),
+                size: 20,
+                label: String::new(),
+                label_detail: String::new(),
+                purpose: String::new(),
+                risk_level: RiskLevel::Safe,
+                suggestion: String::new(),
+                background: String::new(),
+                deletable: true,
+                source: AI_SOURCE_MODEL.into(),
+            },
+        ],
+        pending_paths: Vec::new(),
+        pending_total_size: 0,
+        cursor: 1,
+        scroll_offset: 0,
+        mark_for_delete: std::collections::HashSet::from([1]),
+        status: AiStatus::Deleting,
+        delete_confirm: None,
+        info_item: None,
+    });
+    app.mode = AppMode::AiReview;
+
+    // Real file so the freed accounting has a live tree entry to drop.
+    let real = PathBuf::from("/tmp/test/gone.bin");
+    let _ = std::fs::write(&real, b"x");
+
+    app.handle_message(AppMessage::AiDeleteComplete {
+        errors: Vec::new(),
+        paths: vec![real],
+    });
+
+    let state = app.ai_state.as_ref().unwrap();
+    assert_eq!(state.results.len(), 1);
+    assert_eq!(state.results[0].path, kept);
+    assert_eq!(state.status, AiStatus::Ready);
+    assert!(state.mark_for_delete.is_empty());
+    assert_eq!(
+        app.mode,
+        AppMode::AiReview,
+        "remaining results keep the panel"
+    );
+    assert_eq!(
+        app.deleted_bytes, 0,
+        "tree entry for the test path was absent"
+    );
+
+    // Last result deleted: the panel closes.
+    app.handle_message(AppMessage::AiDeleteComplete {
+        errors: Vec::new(),
+        paths: vec![kept],
+    });
+    assert!(app.ai_state.is_none(), "empty review closes the panel");
+    assert_eq!(app.mode, AppMode::Browsing);
+}

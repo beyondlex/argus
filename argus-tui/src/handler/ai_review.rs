@@ -1,4 +1,4 @@
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMessage, AppMode};
 use crate::types::AiStatus;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -27,70 +27,22 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
             {
                 let s = app.ai_state.as_mut().unwrap();
                 s.delete_confirm = None;
+                // Deleting runs on a background thread (same as the browsing
+                // prompt): the inline loop here used to freeze the UI for the
+                // whole permanent removal of a large tree. [`AiStatus::Ready`]
+                // is restored by the completion message, which also applies
+                // the tree/state updates.
+                s.status = AiStatus::Deleting;
             }
 
-            // Browsing-mode deletes refuse protected paths before the prompt;
-            // the AI-review confirm must not become a side door around that
-            // gate. Failures must not prune the view or count freed bytes —
-            // the old loop applied state updates (and the full marked size)
-            // regardless of per-path success.
-            let mut errors: Vec<String> = Vec::new();
-            let mut freed: u64 = 0;
-            let mut deleted_paths: Vec<PathBuf> = Vec::new();
-            for path in &paths {
-                if crate::util::is_protected_path(path) {
-                    errors.push(format!("{}: protected path, skipped", path.display()));
-                    continue;
-                }
-                let result = if permanent {
-                    if path.is_dir() {
-                        std::fs::remove_dir_all(path)
-                    } else {
-                        std::fs::remove_file(path)
-                    }
-                    .map_err(|e| e.to_string())
-                } else {
-                    trash::delete(path).map_err(|e| e.to_string())
-                };
-                match result {
-                    Ok(()) => {
-                        freed += app
-                            .ai_state
-                            .as_ref()
-                            .and_then(|s| s.results.iter().find(|r| &r.path == path))
-                            .map(|r| r.size)
-                            .unwrap_or(0);
-                        deleted_paths.push(path.clone());
-                        let _ = crate::tree_ops::apply_deletion_to_state(app, path);
-                    }
-                    Err(e) => errors.push(format!("{}: {}", path.display(), e)),
-                }
-            }
-
-            app.deleted_bytes = app.deleted_bytes.saturating_add(freed);
-            app.load_current_children();
-
-            // Remove deleted items from results
-            if let Some(ref mut s) = app.ai_state {
-                s.results
-                    .retain(|r| !deleted_paths.iter().any(|p| p == &r.path));
-                s.mark_for_delete.clear();
-                if s.cursor >= s.results.len() {
-                    s.cursor = s.results.len().saturating_sub(1);
-                }
-                if s.results.is_empty() {
-                    app.exit_ai_review();
-                }
-            }
-
-            if !errors.is_empty() {
-                app.set_error(
-                    format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
-                    5,
-                );
-            } else {
-                app.set_info(format!("deleted {} item(s)", deleted_paths.len()), 3);
-            }
+            let tx = app.tx.clone();
+            std::thread::spawn(move || {
+                let (errors, deleted_paths) = delete_marked(&paths, permanent);
+                let _ = tx.blocking_send(AppMessage::AiDeleteComplete {
+                    errors,
+                    paths: deleted_paths,
+                });
+            });
         } else if cancelled {
             if let Some(ref mut s) = app.ai_state {
                 s.delete_confirm = None;
@@ -209,6 +161,37 @@ fn collect_marked_paths(state: &crate::types::AiReviewState) -> Vec<PathBuf> {
     paths
 }
 
+/// Delete the confirmed paths (runs on a background thread). Browsing-mode
+/// deletes refuse protected paths before the prompt; this must not become a
+/// side door around that gate. Returns the per-path errors (including
+/// protected-path skips) and the paths that were actually removed — callers
+/// may only prune state and count freed bytes for the removed ones.
+fn delete_marked(paths: &[PathBuf], permanent: bool) -> (Vec<String>, Vec<PathBuf>) {
+    let mut errors: Vec<String> = Vec::new();
+    let mut deleted: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if crate::util::is_protected_path(path) {
+            errors.push(format!("{}: protected path, skipped", path.display()));
+            continue;
+        }
+        let result = if permanent {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            }
+            .map_err(|e| e.to_string())
+        } else {
+            trash::delete(path).map_err(|e| e.to_string())
+        };
+        match result {
+            Ok(()) => deleted.push(path.clone()),
+            Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+        }
+    }
+    (errors, deleted)
+}
+
 /// How many result rows fit on screen. `.max(1)`: a four-row terminal yields
 /// 0 and the `visible - 1` scroll math would underflow.
 fn review_visible_rows(terminal_height: Option<u16>) -> usize {
@@ -231,5 +214,26 @@ mod tests {
         assert_eq!(review_visible_rows(None), 6);
         assert_eq!(review_visible_rows(Some(24)), 5);
         assert_eq!(review_visible_rows(Some(u16::MAX)), 16_382);
+    }
+
+    /// Permanent deletion removes files and dirs and reports only the removed
+    /// paths; a failure (missing path) lands in errors instead.
+    #[test]
+    fn test_delete_marked_permanent_removes_and_reports() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = tmp.path().join("gone.txt");
+        std::fs::write(&file, "x").unwrap();
+        let dir = tmp.path().join("gone_dir");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested").join("b.bin"), "y").unwrap();
+        let missing = tmp.path().join("missing.bin");
+
+        let (errors, deleted) = delete_marked(&[file.clone(), dir.clone(), missing], true);
+
+        assert!(!file.exists());
+        assert!(!dir.exists());
+        assert_eq!(deleted, vec![file, dir]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("missing.bin"));
     }
 }

@@ -56,6 +56,13 @@ pub enum AppMessage {
         names: Vec<String>,
     },
     BrewUninstallComplete(argus_core::CleanReport),
+    /// Background AI-review deletion finished: `paths` are the entries that
+    /// were actually removed, `errors` the per-path failures (including
+    /// protected-path skips).
+    AiDeleteComplete {
+        errors: Vec<String>,
+        paths: Vec<PathBuf>,
+    },
     Error(String),
     Info(String),
 }
@@ -234,6 +241,10 @@ pub enum AiStatus {
     Idle,
     Loading,
     Ready,
+    /// Confirmed deletions are running on a background thread; the list stays
+    /// visible but delete/mark keys are inert until the completion message
+    /// flips the status back to [`AiStatus::Ready`].
+    Deleting,
     Error(String),
 }
 

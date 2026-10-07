@@ -1,5 +1,6 @@
 pub mod ai;
-pub mod bloom;
+// Internal hardlink-dedup filter for the scanner; nothing here is public API.
+mod bloom;
 pub mod db;
 pub mod ipc;
 pub mod model;

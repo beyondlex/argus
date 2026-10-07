@@ -1202,9 +1202,7 @@ mod tests {
         );
         assert_eq!(app.mode, AppMode::Browsing);
         assert!(
-            app.uninstall_state
-                .as_ref()
-                .is_some_and(|s| s.scanning),
+            app.uninstall_state.as_ref().is_some_and(|s| s.scanning),
             "in-flight scan state must survive the panel exit"
         );
 
@@ -1275,8 +1273,8 @@ mod tests {
         use crate::app::{AiPathVerdict, AiReviewState, AiStatus, RiskLevel};
         use std::collections::HashSet;
 
-        let (tx, _rx) = mpsc::channel(1);
-        let mut app = App::new(crate::config::TuiConfig::default(), tx, _rx);
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
         app.mode = AppMode::AiReview;
         app.ai_state = Some(AiReviewState {
             results: vec![AiPathVerdict {
@@ -1306,12 +1304,29 @@ mod tests {
             &mut app,
         );
 
+        // The deletion runs on a background thread: the confirm closes and
+        // the panel flips to Deleting until the completion message lands.
         assert!(
             std::path::Path::new("/etc").exists(),
             "protected path must survive"
         );
         let state = app.ai_state.as_ref().unwrap();
         assert!(state.delete_confirm.is_none());
+        assert_eq!(state.status, AiStatus::Deleting);
+
+        // The spawned thread's exact completion is covered by the
+        // delete_marked unit test; here the message handler half is driven
+        // directly (App owns the receiver, so the real message can't be
+        // intercepted from the test).
+        app.handle_message(AppMessage::AiDeleteComplete {
+            errors: vec!["/etc: protected path, skipped".into()],
+            paths: Vec::new(),
+        });
+
+        assert!(
+            std::path::Path::new("/etc").exists(),
+            "protected path must survive"
+        );
         assert!(
             app.last_error
                 .as_deref()

@@ -55,7 +55,11 @@ mod tests {
         assert_eq!(scroll_down(0, 10, 4), 1);
         assert_eq!(scroll_down(5, 10, 4), 6);
         assert_eq!(scroll_down(6, 10, 4), 6, "past the last full page");
-        assert_eq!(scroll_down(9, 10, 4), 6, "used to reach 9 (last row on top)");
+        assert_eq!(
+            scroll_down(9, 10, 4),
+            6,
+            "used to reach 9 (last row on top)"
+        );
     }
 
     /// A list shorter than one page never scrolls.

@@ -40,6 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
         AiStatus::Ready => " AI Analysis ".to_string(),
         AiStatus::Error(_) => " AI Analysis (error) ".to_string(),
         AiStatus::Idle => " AI Analysis ".to_string(),
+        AiStatus::Deleting => " AI Analysis (deleting…) ".to_string(),
     };
     let block = block.title(title);
 
