@@ -252,14 +252,24 @@ fn event_to_delta(
                 })
             }
             EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Any) => {
-                state.remove(path).map(|size| DeltaEvent {
-                    path: path.clone(),
-                    delta_size: -(size as i64),
-                    event_type: "delete".into(),
-                    timestamp,
-                    is_agg: false,
-                    process_info: None,
-                })
+                state
+                    .remove(path)
+                    // kqueue reports *every* remove as Any — including whole
+                    // directories — and a degraded FSEvents event loses the
+                    // IS_DIR flag the same way. A directory is never size-cached
+                    // itself, so the plain remove finds nothing and the still
+                    // cached subtree under it would never be booked. Fall back
+                    // to the prefix sweep, which returns None when the path was
+                    // an ordinary file (nothing cached starts with it).
+                    .or_else(|| state.remove_tree(path))
+                    .map(|size| DeltaEvent {
+                        path: path.clone(),
+                        delta_size: -(size as i64),
+                        event_type: "delete".into(),
+                        timestamp,
+                        is_agg: false,
+                        process_info: None,
+                    })
             }
             EventKind::Remove(RemoveKind::Folder) => {
                 // A directory-level delete. Directories are never size-cached,
@@ -1076,6 +1086,73 @@ mod tests {
             std::slice::from_ref(&sub),
             &mut state,
             1002
+        )
+        .is_empty());
+    }
+
+    /// kqueue reports every remove as `RemoveKind::Any`, directories included
+    /// (and a degraded FSEvents event loses the IS_DIR flag the same way). A
+    /// directory-level remove surfacing as Any must still book the cached
+    /// subtree under it — the plain remove used to find nothing (dirs are
+    /// never size-cached) and silently dropped the churn plus leaked the
+    /// cache entries.
+    #[test]
+    fn test_remove_any_on_directory_books_cached_subtree() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("gone");
+        fs::create_dir_all(sub.join("nested")).unwrap();
+        let f1 = sub.join("a.bin");
+        let f2 = sub.join("nested").join("b.bin");
+        fs::write(&f1, b"12345").unwrap();
+        fs::write(&f2, b"12").unwrap();
+
+        let mut state = WatcherState::new();
+        for path in [&f1, &f2] {
+            event_to_delta(
+                &EventKind::Create(CreateKind::File),
+                std::slice::from_ref(path),
+                &mut state,
+                1000,
+            );
+        }
+
+        fs::remove_dir_all(&sub).unwrap();
+        let events = event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&sub),
+            &mut state,
+            1001,
+        );
+        assert_eq!(events.len(), 1, "directory remove surfaced as Any must book");
+        assert_eq!(events[0].delta_size, -7);
+        assert_eq!(events[0].event_type, "delete");
+        assert!(state.last_known_size(&f1).is_none(), "subtree cache cleared");
+        assert!(state.last_known_size(&f2).is_none());
+
+        // A second Any event (per-file removes already drained the cache)
+        // must book nothing.
+        assert!(event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&sub),
+            &mut state,
+            1002
+        )
+        .is_empty());
+    }
+
+    /// An `Remove(Any)` for an unknown file (never observed) must stay
+    /// silent — the prefix-sweep fallback only fires when something is
+    /// actually cached under the path.
+    #[test]
+    fn test_remove_any_unknown_file_books_nothing() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("never-seen.bin");
+        let mut state = WatcherState::new();
+        assert!(event_to_delta(
+            &EventKind::Remove(RemoveKind::Any),
+            std::slice::from_ref(&file),
+            &mut state,
+            1000
         )
         .is_empty());
     }
