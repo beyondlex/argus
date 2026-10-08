@@ -471,25 +471,9 @@ fn cmd_clean(dry_run: bool, yes: bool) -> Result<i32> {
     println!();
 
     for (cat, items) in &grouped {
-        let label = match cat {
-            TargetCategory::AppCache => "App Cache",
-            TargetCategory::BrowserCache => "Browser Cache",
-            TargetCategory::DevTools => "Developer Tools",
-            TargetCategory::DevApps => "Development Applications",
-            TargetCategory::SystemLogs => "System Logs",
-            TargetCategory::SystemCache => "macOS System Caches",
-            TargetCategory::TempFiles => "Temp Files",
-            TargetCategory::Trash => "Trash",
-            TargetCategory::UserData => "User Essentials",
-            TargetCategory::CloudStorage => "Cloud Storage",
-            TargetCategory::Office => "Office Applications",
-            TargetCategory::VMTools => "Virtual Machine Tools",
-            TargetCategory::AppSupport => "Application Support",
-            TargetCategory::UninstalledData => "Uninstalled App Data",
-            TargetCategory::IosBackup => "iOS Device Backups",
-            TargetCategory::TimeMachine => "Time Machine",
-        };
-        println!("➤ {}", label.bold());
+        // The label mapping lives in core (TargetCategory::label); a private
+        // copy here drifted every time a category was added.
+        println!("➤ {}", cat.label().bold());
         for item in items {
             let risk_l = item.risk.label();
             let colored_risk = risk_color(risk_l);
