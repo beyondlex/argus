@@ -1413,3 +1413,51 @@ fn test_ai_delete_complete_prunes_results_and_updates_tree() {
     assert!(app.ai_state.is_none(), "empty review closes the panel");
     assert_eq!(app.mode, AppMode::Browsing);
 }
+
+/// The label table and the heuristic-verdict table are one table now
+/// (`heuristic_fields`): for every representative name, `resolve_label`
+/// must return the same label `mock_ai_verdict` carries. This used to be
+/// two parallel match arms that could drift independently.
+#[test]
+fn test_resolve_label_agrees_with_mock_verdict_label() {
+    let cases = [
+        "target",
+        "node_modules",
+        ".git",
+        "cache",
+        "logs",
+        ".terraform",
+        "tmp",
+        "downloads",
+        ".config",
+        "some-project",
+    ];
+    for name in cases {
+        let path = PathBuf::from("/data").join(name);
+        let label = resolve_label(&path);
+        let verdict = mock_ai_verdict(&path, 0);
+        assert_eq!(
+            label, verdict.label,
+            "resolve_label and mock_ai_verdict disagree for {name:?}"
+        );
+    }
+}
+
+/// The heuristic verdict stays non-empty and risk-mapped for the fallback
+/// path (no AI configured): every entry needs a label, purpose and
+/// suggestion text to render in the review panel.
+#[test]
+fn test_mock_ai_verdict_fills_display_fields() {
+    for name in ["target", "unknown-thing", ".secret"] {
+        let verdict = mock_ai_verdict(&PathBuf::from("/data").join(name), 42);
+        assert!(!verdict.label.is_empty());
+        assert!(!verdict.purpose.is_empty());
+        assert!(!verdict.suggestion.is_empty());
+        assert_eq!(verdict.size, 42);
+        assert_eq!(verdict.source, AI_SOURCE_HEURISTIC);
+    }
+    // VCS data is the one pattern the heuristics must refuse to auto-delete.
+    let git = mock_ai_verdict(&PathBuf::from("/data/.git"), 0);
+    assert!(!git.deletable);
+    assert_eq!(git.risk_level, RiskLevel::High);
+}

@@ -1955,49 +1955,22 @@ impl App {
     }
 }
 
-/// Determine the program label for a path based on built-in heuristics.
-/// Used by both mock_ai_verdict and the AI analysis path.
-fn resolve_label(path: &std::path::Path) -> String {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let name_lower = name.to_lowercase();
-
-    match name_lower.as_str() {
-        "target" | "build" | "builds" | "dist" | "out" | "output" => labels::BUILD_ARTIFACTS,
-        "node_modules" | "vendor" | "bower_components" => labels::PACKAGE_DEPENDENCIES,
-        ".git" | ".svn" | ".hg" => labels::VCS_DATA,
-        ".cache" | "cache" | "caches" => labels::APP_CACHE,
-        "logs" | "log" => labels::LOG_FILES,
-        ".terraform" | ".serverless" | ".next" | ".nuxt" => labels::FRAMEWORK_CACHE,
-        "tmp" | "temp" | "temporary" | ".trash" | "$trash" | ".recycle" => labels::TEMP_FILES,
-        "downloads" | ".download" => labels::DOWNLOADS,
-        _ => {
-            if name.starts_with('.') {
-                labels::HIDDEN_CONFIG
-            } else {
-                labels::UNCATEGORIZED
-            }
-        }
-    }
-    .to_string()
-}
-
-/// Heuristic fallback verdict derived from directory/file name patterns.
-/// Used when AI is not configured, and as the on-disk placeholder for
-/// uncached paths (source = "heuristic") so the model can replace them
-/// once AI becomes available.
-/// Label is program-determined (built-in heuristic). label_detail stays
-/// empty; only a real AI response fills it.
-fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let name_lower = name.to_lowercase();
-
-    let (label, purpose, risk_level, suggestion, deletable, background) = match name_lower.as_str() {
+/// The single name-pattern table behind both the program label and the
+/// heuristic verdict. `resolve_label` (AI prompt path) and
+/// `mock_ai_verdict` (no-model fallback) used to carry two parallel match
+/// arms for the same names: adding a pattern to one silently left the other
+/// behind. Both now read this one table.
+fn heuristic_fields(
+    name_lower: &str,
+) -> (
+    &'static str, // label
+    &'static str, // purpose
+    RiskLevel,
+    &'static str, // suggestion
+    bool,         // deletable
+    &'static str, // background
+) {
+    match name_lower {
         "target" | "build" | "builds" | "dist" | "out" | "output" => (
             labels::BUILD_ARTIFACTS,
             "Compiled output from the build process. Contains object files, binaries, and intermediate build products.",
@@ -2063,7 +2036,7 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
             "",
         ),
         _ => {
-            if name.starts_with('.') {
+            if name_lower.starts_with('.') {
                 (
                     labels::HIDDEN_CONFIG,
                     "Application configuration or data directory. Used by various programs to store settings.",
@@ -2080,11 +2053,35 @@ fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
                     "Review contents manually before deciding to delete.",
                     true,
                     "",
-
                 )
             }
         }
-    };
+    }
+}
+
+/// Determine the program label for a path based on built-in heuristics.
+/// Used by both mock_ai_verdict and the AI analysis path.
+fn resolve_label(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    heuristic_fields(&name.to_lowercase()).0.to_string()
+}
+
+/// Heuristic fallback verdict derived from directory/file name patterns.
+/// Used when AI is not configured, and as the on-disk placeholder for
+/// uncached paths (source = "heuristic") so the model can replace them
+/// once AI becomes available.
+/// Label is program-determined (built-in heuristic). label_detail stays
+/// empty; only a real AI response fills it.
+fn mock_ai_verdict(path: &std::path::Path, size: u64) -> AiPathVerdict {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let (label, purpose, risk_level, suggestion, deletable, background) =
+        heuristic_fields(&name.to_lowercase());
 
     AiPathVerdict {
         path: path.to_path_buf(),
