@@ -659,7 +659,10 @@ pub fn parse_human_size(input: &str) -> Result<u64, ParseSizeError> {
         .parse()
         .map_err(|_| ParseSizeError::InvalidFormat(input.to_string()))?;
 
-    let multiplier = match unit {
+    // The unit is trimmed: `format_size` (this parser's inverse) emits
+    // "1.43 MB" with a space, and split_number_unit stops at that space —
+    // matching the raw " MB" against "MB" rejected every spaced label.
+    let multiplier = match unit.trim() {
         "B" | "" => 1u64,
         "KB" => 1024,
         "MB" => 1024 * 1024,
@@ -685,6 +688,24 @@ fn split_number_unit(s: &str) -> (&str, &str) {
     }
 }
 
+/// Human-readable size label ("800 KB", "1.50 GB"), the inverse of
+/// [`parse_human_size`]. One shared definition: the CLI and the TUI used to
+/// each carry a private identical copy that had to be fixed in lockstep.
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{bytes} {}", UNITS[unit_idx])
+    } else {
+        format!("{size:.2} {}", UNITS[unit_idx])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +725,15 @@ mod tests {
     #[test]
     fn test_parse_human_size_kb() {
         assert_eq!(parse_human_size("10KB").unwrap(), 10240);
+    }
+
+    /// `format_size` emits a space between number and unit ("1.43 MB");
+    /// the spaced form must parse back instead of failing on the " MB"
+    /// unit (found by the format/parse roundtrip test).
+    #[test]
+    fn test_parse_human_size_spaced_unit() {
+        assert_eq!(parse_human_size("10 KB").unwrap(), 10240);
+        assert_eq!(parse_human_size("1.43 MB").unwrap(), 1_499_463);
     }
 
     #[test]
@@ -742,6 +772,28 @@ mod tests {
     #[test]
     fn test_parse_human_size_empty() {
         assert!(parse_human_size("").is_err());
+    }
+
+    /// The shared human-size formatter: byte counts stay unscaled, larger
+    /// values scale with two decimals (CLI and TUI render through this).
+    #[test]
+    fn test_format_size_scales_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(999), "999 B");
+        assert_eq!(format_size(1024), "1.00 KB");
+        assert_eq!(format_size(52_428_800), "50.00 MB");
+        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.00 GB");
+        // Beyond the last unit the value saturates in TB.
+        assert_eq!(format_size(5 * 1024u64.pow(4) * 2), "10.00 TB");
+    }
+
+    /// parse(format(x)) round-trips within the two-decimal rounding error.
+    #[test]
+    fn test_format_and_parse_human_size_roundtrip() {
+        let label = format_size(1_500_000);
+        let parsed = parse_human_size(&label).unwrap();
+        let ratio = parsed as f64 / 1_500_000.0;
+        assert!((0.99..=1.01).contains(&ratio), "{label} parsed to {parsed}");
     }
 
     /// A bare unit with no digits is a typo, not zero.

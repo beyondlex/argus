@@ -17,8 +17,8 @@ use argus_core::{
 };
 
 use argus_core::{
-    default_db_path, open_db, query_delta_summary, scan_path, DaemonRequest, DaemonResponse,
-    DeltaSummary,
+    default_db_path, format_size, open_db, query_delta_summary, scan_path, DaemonRequest,
+    DaemonResponse, DeltaSummary,
 };
 #[cfg(feature = "shell-cmds")]
 use argus_core::{default_shell_cmd_targets, try_exec_shell_cmd};
@@ -1032,23 +1032,6 @@ fn print_clean_report(report: &CleanReport) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn format_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{} {}", bytes, UNITS[unit_idx])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_idx])
-    }
-}
 
 fn format_duration(secs: u64) -> String {
     let days = secs / 86400;

@@ -45,17 +45,12 @@ pub fn key_hints(hints: &[(&'static str, &str)], theme: &ColorTheme) -> Vec<Span
     spans
 }
 
-/// Format bytes into human-readable string (e.g., "1.5 GB", "800 KB")
+/// Format bytes into human-readable string (e.g., "1.5 GB", "800 KB").
+/// One shared implementation in core; the TUI previously carried a private
+/// copy identical to the CLI's.
 pub fn format_size(bytes: u64) -> String {
-    let (size, unit_idx) = scale_size(bytes);
-    if unit_idx == 0 {
-        format!("{} {}", bytes, UNITS[unit_idx])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_idx])
-    }
+    argus_core::format_size(bytes)
 }
-
-const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
 
 pub fn size_unit_index(bytes: u64) -> usize {
     let (_, unit_idx) = scale_size(bytes);
@@ -63,6 +58,7 @@ pub fn size_unit_index(bytes: u64) -> usize {
 }
 
 fn scale_size(bytes: u64) -> (f64, usize) {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut unit_idx = 0;
     while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
