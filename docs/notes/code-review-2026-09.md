@@ -604,3 +604,38 @@ Windows 后端把 rename 报成携带双路径的 `RenameMode::Both`，watcher �
 - `cargo test --workspace --all-features`：438 通过（新增 15 个：watcher Any-remove 目录删除 ×2、delta-detail 滚动钳制 ×3 + 几何一致性、面板重入 ×5、`delete_marked` 永久删除、AI 删除完成消息 ×1、时长分秒格式 ×1、既有 uninstall-Esc 测试按新语义更新）；`cargo test --workspace`（默认 feature）434 同步绿
 - `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
 - 文档同步：`tui-current-behavior.md`（面板重入语义、AI 删除后台化、K 弹窗滚动钳制）
+
+## 已修复（第十七轮，2026-10-09）
+
+| 问题 | 位置 | 影响 | Commit |
+|------|------|------|--------|
+| **存疑 #71 落地**：关停时 debounce 引擎在 `SHOULD_QUIT` 后 200ms 内退出并 flush，而 watcher 线程还有 ≤1s 的 `recv_timeout` 尾巴——尾巴里的事件已经写进 `event_rx` 却随引擎退出一起被丢弃。现在 `start_watcher` 额外返回线程 join handle；main 关停时先 join watcher（封顶 1s 尾巴，同时销毁 channel 最后一个 sender），再翻转 `watcher_done` 旗标；引擎的 200ms 检查点要求 `SHOULD_QUIT && watcher_done` 才退出，退出后 `drain_channel`（`try_recv` 循环合并进 pending）再统一 flush。两个单测钉住 drain 行为（sender 已 drop 后的排队事件照常合并、空通道 no-op） | `argusd/src/watcher.rs` `debounce.rs` `main.rs` | 关停时刻丢账 | 93767e1 |
+| CLI clean 输出的分类标签手写了一份 16 臂 match，与 core `TargetCategory::label()` 完全重复——新增分类要两处同步。改用 core 的方法 | `argus-cli/main.rs` | DRY | （同轮提交）|
+| **`parse_human_size` 拒绝自己格式化器的输出**：`format_size` 产出 `"1.43 MB"`（数字与单位间有空格），而 `split_number_unit` 在空格处截断后拿 `" MB"` 去匹配 `"MB"`，必然 InvalidFormat。format/parse roundtrip 测试暴露了这一点。单位匹配前 trim；补 spaced-unit 与 roundtrip 测试 | `argus-core/src/model.rs` | 公共 API 格式互斥 | （见 format_size 提交）|
+| `format_size` 在 CLI 与 TUI 各有一份逐字相同的私有拷贝。收敛为 `argus_core::format_size`（与 `parse_human_size` 同模块，互为逆操作），两端委托 | `argus-core/src/model.rs` `argus-cli/main.rs` `argus-tui/util.rs` | DRY | （见 format_size 提交）|
+| `resolve_label`（AI prompt 路径）与 `mock_ai_verdict`（无模型回退）各自维护一份必须同步的目录名→语义 match 表——往一张表里加模式，另一张表静默落后。收敛为单一 `heuristic_fields` 表，两处读取；测试钉住两表面输出一致与字段非空保证 | `argus-tui/src/app.rs` `app_tests.rs` | DRY + 行为分叉 | （见 heuristic 提交）|
+| **Uninstall 面板 `o` 切换排序把激活的搜索过滤静默重置为全部应用**，而列表头仍在显示搜索词——显示与列表口径分裂。char/backspace/sort/re-entry 四处各自的过滤闭包收敛为 `apply_uninstall_filter`，排序后经同一函数重建 `filtered`；重入已完成面板时按清空后的搜索词重建（此前残留上一会话的过滤子集而无搜索词）。Clean 面板 Enter 无勾选项时给出提示（原为无声 no-op） | `argus-tui/handler/cleanup.rs` `app.rs` `handler.rs`(测试) | 口径分裂 + DRY | （见 uninstall 提交）|
+| `AiResponse` 的 `deletable`/`confidence` 缺少 serde default：模型漏掉任一字段时整批 `from_str` 失败，`try_parse_json` 返回空 map，三次重试全部烧完报 AllRetriesFailed。两个字段保守默认（false / 0.0），测试钉住 | `argus-core/src/ai.rs` | 单字段缺失毁掉整批分析 | （见 AiResponse 提交）|
+
+## 存疑关闭（第十七轮）
+
+### 71. 关停时 debounce 通道内未合并事件丢弃 — 关闭（已修复，93767e1；main 先 join watcher 再放行 debounce，引擎退出前 drain 通道）
+
+## 存疑 / 记录在案（第十七轮新增，未改动）
+
+### 72. `list_dir` 不做硬链接去重
+`scan_path` 用 `SeenInodes`（布隆过滤器）让同一 inode 的后续链接不重复计尺寸；`list_dir` 对同一目录内的硬链接会各记一次全尺寸。浅列表场景下重复计账最常见于同目录 `cp -l x y`（或 APFS clonefile 的某些工具行为）。完整对齐需要每次调用分配 4 MB 布隆过滤器（浏览时每进一个目录调一次，代价不值）；若要修，先用每调用一个 `HashSet<(dev,ino)>` 覆盖最常见的同目录硬链接。方向是保守的多报，与 #62 同类。
+
+### 73. `find_leftovers` 的 `unknown.<name>` 回退 id 参与子串匹配
+无 Info.plist（或 plutil 失败）时 bundle id 回退为 `unknown.<appname>`，`app_support_entry_matches` 的 dots-stripped 子串规则随即拿 `unknown<name>` 去做 `contains`——任何名字里恰好含 `unknown` + 应用名的目录都会被认作残留（如应用 `Go` 的 `UnknownGoods` 目录）。触发前提是该 .app 的 plist 完全读不出来（现实里罕见），方向是多报残留、删除前有人工勾选兜底（确认页逐项勾选是唯一事实来源），记录以免误判成新问题。
+
+## 第十七轮性能观察
+
+- 未发现新的实际性能问题。既有观察维持：`plan_clean` 去重 O(n²)、`lookup_scan_size` 线性扫（原 #48）、残留尺寸双算（#70）。
+- `start_watcher` 返回 join handle 后，关停路径多等 ≤1s（watcher 尾巴），换来的是尾巴内事件不再丢账——完整性换延迟的一次性成本，仅在退出时发生。
+
+## 第十七轮验证
+
+- `cargo test --workspace --all-features`：447 通过（新增 9 个：debounce drain ×2、format_size 单位缩放 + roundtrip、spaced-unit 解析、标签表一致性 ×2、uninstall 排序保留过滤、AiResponse 默认值）；`cargo test --workspace`（默认 feature）同步绿
+- `cargo clippy --workspace --all-targets --all-features`：0 警告；`cargo fmt --check` 干净
+- 文档同步：`tui-current-behavior.md`（uninstall 排序/重入过滤一致性、Clean Enter 空选提示）

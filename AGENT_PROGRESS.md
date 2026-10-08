@@ -5,14 +5,14 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 
 ## Last Updated
 
-- 2026-10-08
+- 2026-10-09
 
 ## Current State
 
 - Phase 1: complete
 - Phase 2: complete (integration tests in `argus-tui/tests/integration.rs`)
 - Phase 3: code complete (argusd, IPC, DB, TUI client); end-to-end daemon integration tests (Step 10) still pending
-- Review rounds 1-16 complete (see `docs/notes/code-review-2026-09.md`); full suite: 438 tests, clippy --all-targets --all-features 0 warnings, fmt clean
+- Review rounds 1-17 complete (see `docs/notes/code-review-2026-09.md`); full suite: 447 tests, clippy --all-targets --all-features 0 warnings, fmt clean
 
 ## Active Work
 
@@ -71,3 +71,4 @@ Read after `AGENTS.md` and relevant requirements docs, then update when task sta
 - Review round 14 (2026-10-06): fixed the audit log ignoring `XDG_CONFIG_HOME` (config-dir resolution centralized as `argus_core::config_dir`, 5 drifted copies retired), macOS renames being completely unaccounted (FSEvents/kqueue emit `RenameMode::Any`, never From/To) and coalesced tree deletes (`Remove(Folder)` now books the still-cached subtree once), multi-delete stranding nested selections with a guaranteed ENOENT (outermost wins), the delta-detail popup trapping users on an invisible overlay after a failed fetch (falls back to the list); brew display ordering and the TUI error log write deduplicated; new open items #64-#66 recorded; requirements docs (audit path), phase3 design (event mapping) and the TUI behavior note synced
 - Review round 15 (2026-10-07): landed open items #59 (multi-select size summary resolves every selected key from the tree snapshot, not just the visible slice), #63 (an invalid watch_dirs glob no longer discards the rest of the daemon config) and #64 (cask Spotlight matching is token-bounded and case-symmetric); fixed the active-search handler leaking `n`/`N`/`/`/`Enter` to browsing (N opened the permanent-delete prompt mid-search; Enter now edits as the header promises), the Clean/Purge list viewport never following the cursor (dead `scroll_offset` field), `:Connect` failures rendering in the success color, and brew re-entry mid-scan spawning a second scan; brew Time-sort comparator and last-used label formatting consolidated into core; new open items #67-#68 recorded; config requirements doc and the TUI behavior note synced
 - Review round 16 (2026-10-08): fixed directory removes surfacing as `RemoveKind::Any` booking nothing (kqueue reports every remove as Any; the cached subtree under a deleted dir was silently dropped and leaked from the cache), the delta-detail popup scrolling past the last full page (handler now shares the renderer's `centered_rect` geometry, closes #67), cleanup/uninstall panel re-entry stacking a second full scan (brew parity: in-flight scans stay addressable, finished results reused), and AI-review deletions freezing the UI (background thread + `AiStatus::Deleting` + completion message, protected-path gate unchanged); `pub mod bloom` privatized; scan-duration labels switch to minutes+seconds at the minute mark; new open items #69-#71 recorded; TUI behavior note synced
+- Review round 17 (2026-10-09): landed open item #71 (shutdown joins the watcher thread before the debounce engine drains `event_rx` and flushes — the ≤1s recv_timeout tail no longer drops events); fixed `parse_human_size` rejecting every label its inverse `format_size` emits (spaced units), `AiResponse` batch parse failing wholesale when the model omits `deletable`/`confidence` (conservative serde defaults), the uninstall panel's `o` sort silently resetting an active search filter (four private filter closures consolidated into `apply_uninstall_filter`; panel re-entry re-derives the list from the cleared word), and Clean-panel Enter with an empty selection staying silent; DRY consolidations: `format_size` moved to core (CLI/TUI copies retired), CLI category labels now use `TargetCategory::label`, TUI `resolve_label`/`mock_ai_verdict` share one `heuristic_fields` table; new open items #72 (list_dir hardlink double-count) and #73 (`unknown.<name>` fallback id substring over-match) recorded; TUI behavior note synced
