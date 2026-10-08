@@ -1,7 +1,7 @@
 mod ai_review;
 pub(crate) mod brew;
 mod browsing;
-mod cleanup;
+pub(crate) mod cleanup;
 mod command;
 mod delta_detail;
 mod finder;
@@ -1104,6 +1104,77 @@ mod tests {
             ],
             "nested selection must be dropped in favor of its ancestor"
         );
+    }
+
+    /// Pressing `o` (sort toggle) while a search filter is active must keep
+    /// the filter: the old reset to the full app list left the header showing
+    /// the word while the list silently showed everything again.
+    #[test]
+    fn test_uninstall_sort_keeps_active_search_filter() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::Uninstall;
+        let mk = |name: &str| argus_core::AppInfo {
+            id: format!("com.{name}"),
+            name: name.into(),
+            path: PathBuf::from(format!("/Applications/{name}.app")),
+            size: 0,
+            last_used: None,
+            is_from_app_store: false,
+        };
+        app.uninstall_state = Some(crate::types::UninstallState {
+            apps: vec![mk("Alpha"), mk("Beta"), mk("Alpine")],
+            filtered: (0..3).collect(),
+            ..Default::default()
+        });
+
+        // Type "al" in filter mode, then leave filter mode.
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()),
+            &mut app,
+        );
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()),
+            &mut app,
+        );
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::empty()),
+            &mut app,
+        );
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(
+            app.uninstall_state.as_ref().unwrap().filtered.len(),
+            2,
+            "search 'al' matches Alpha and Alpine"
+        );
+
+        // Sort toggle: filter must survive.
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::empty()),
+            &mut app,
+        );
+        let state = app.uninstall_state.as_ref().unwrap();
+        assert_eq!(state.search_word, "al");
+        let names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|&i| state.apps[i].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Alpha", "Alpine"]);
+
+        // Backspace past the last char restores the full list.
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+        super::cleanup::handle_uninstall_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            &mut app,
+        );
+        assert_eq!(app.uninstall_state.as_ref().unwrap().filtered.len(), 3);
     }
 
     // ── panel scanning failure recovery ─────────────────────────────────

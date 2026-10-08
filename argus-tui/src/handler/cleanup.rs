@@ -146,9 +146,16 @@ pub(crate) fn handle_cleanup_key(key: KeyEvent, app: &mut App) {
             }
         }
         KeyCode::Enter => {
+            let selected = app
+                .cleanup_state
+                .as_ref()
+                .is_some_and(|s| !s.selected.is_empty());
             if let Some(ref mut s) = app.cleanup_state {
-                if !s.selected.is_empty() {
+                if selected {
                     s.confirm_pending = true;
+                } else {
+                    // Silent no-op read as a dead key; say why nothing opened.
+                    app.set_info("no items selected".into(), 2);
                 }
             }
         }
@@ -262,35 +269,13 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
             KeyCode::Char(c) => {
                 if let Some(ref mut s) = app.uninstall_state {
                     s.search_word.push(c);
-                    s.filtered = s
-                        .apps
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, a)| {
-                            a.name
-                                .to_lowercase()
-                                .contains(&s.search_word.to_lowercase())
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    s.cursor = 0;
+                    apply_uninstall_filter(s);
                 }
             }
             KeyCode::Backspace => {
                 if let Some(ref mut s) = app.uninstall_state {
                     s.search_word.pop();
-                    s.filtered = s
-                        .apps
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, a)| {
-                            a.name
-                                .to_lowercase()
-                                .contains(&s.search_word.to_lowercase())
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    s.cursor = 0;
+                    apply_uninstall_filter(s);
                 }
             }
             _ => {}
@@ -347,25 +332,17 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
                     }),
                     _ => s.apps.sort_by_key(|a| a.name.to_lowercase()),
                 }
-                s.filtered = (0..s.apps.len()).collect();
-                s.cursor = 0;
+                // Re-derive `filtered` through the shared filter: resetting it
+                // to the full app list here used to silently drop an active
+                // search — the header kept showing the word, the list showed
+                // everything.
+                apply_uninstall_filter(s);
             }
         }
         KeyCode::Backspace => {
             if let Some(ref mut s) = app.uninstall_state {
                 s.search_word.pop();
-                s.filtered = s
-                    .apps
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, a)| {
-                        a.name
-                            .to_lowercase()
-                            .contains(&s.search_word.to_lowercase())
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                s.cursor = 0;
+                apply_uninstall_filter(s);
             }
         }
         KeyCode::Enter => {
@@ -398,6 +375,25 @@ fn handle_uninstall_select_app(key: KeyEvent, app: &mut App) {
         }
         _ => {}
     }
+}
+
+/// Rebuild `filtered` from `search_word` (case-insensitive name substring)
+/// and reset the cursor. Single definition: the char/backspace handlers and
+/// the sort toggle each used to carry a private copy of the filter closure.
+pub(crate) fn apply_uninstall_filter(state: &mut crate::types::UninstallState) {
+    if state.search_word.is_empty() {
+        state.filtered = (0..state.apps.len()).collect();
+    } else {
+        let query = state.search_word.to_lowercase();
+        state.filtered = state
+            .apps
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.name.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect();
+    }
+    state.cursor = 0;
 }
 
 fn handle_uninstall_confirm(key: KeyEvent, app: &mut App) {

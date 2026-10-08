@@ -1796,6 +1796,10 @@ impl App {
                     state.selected_leftovers.clear();
                     state.search_word.clear();
                     state.filter_mode = false;
+                    // Re-derive the list from the cleared word: keeping the
+                    // previous session's filtered subset with an empty search
+                    // box hid most apps until a key re-filtered.
+                    crate::handler::cleanup::apply_uninstall_filter(state);
                     state.cursor = 0;
                 }
                 self.mode = AppMode::Uninstall;
