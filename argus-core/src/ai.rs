@@ -34,9 +34,14 @@ pub struct AiResponse {
     /// Background knowledge explaining what the software/tool is.
     /// Helps users who are unfamiliar with the term.
     pub background: String,
-    /// Whether the AI recommends deletion
+    /// Whether the AI recommends deletion. Defaults to false (conservative):
+    /// real models occasionally omit fields, and one missing `deletable` used
+    /// to fail the whole batch parse, burning all retries on an otherwise
+    /// good response.
+    #[serde(default)]
     pub deletable: bool,
-    /// Confidence score 0.0-1.0
+    /// Confidence score 0.0-1.0. Defaults to 0 when omitted (same reason).
+    #[serde(default)]
     pub confidence: f64,
 }
 
@@ -457,6 +462,27 @@ mod tests {
     fn test_try_parse_json_invalid_returns_empty() {
         let map = try_parse_json("not json");
         assert!(map.is_empty());
+    }
+
+    /// Real models occasionally omit fields. A missing `deletable` or
+    /// `confidence` must default (conservatively) instead of failing the
+    /// whole batch parse and burning every retry.
+    #[test]
+    fn test_try_parse_json_missing_optional_fields_defaults() {
+        let raw = r#"{
+            "/var/log/nginx/": {
+                "label_detail": "Nginx logs",
+                "description": "HTTP logs",
+                "risk_level": "safe",
+                "suggestion": "Rotate logs",
+                "background": ""
+            }
+        }"#;
+        let map = try_parse_json(raw);
+        assert_eq!(map.len(), 1);
+        let resp = map.get("/var/log/nginx/").unwrap();
+        assert!(!resp.deletable, "missing deletable must default to false");
+        assert_eq!(resp.confidence, 0.0);
     }
 
     #[test]
