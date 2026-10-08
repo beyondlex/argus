@@ -131,13 +131,19 @@ async fn run(args: Args) {
 
     let (event_tx, event_rx) = mpsc::channel::<DeltaEvent>(1024);
 
-    let watcher_handle = watcher::start_watcher(config.watch_dirs.clone(), event_tx);
+    let (watcher_running, watcher_handle) =
+        watcher::start_watcher(config.watch_dirs.clone(), event_tx);
+
+    // Set only after the watcher thread has been joined: the debounce engine
+    // refuses to quit while this is down (see its run loop).
+    let watcher_done = Arc::new(AtomicBool::new(false));
 
     let debounce_db = db.clone();
     let debounce_handle = debounce::start_debounce(
         event_rx,
         debounce_db,
         Duration::from_secs(config.debounce_seconds),
+        watcher_done.clone(),
     );
 
     let retention_db = db.clone();
@@ -166,8 +172,13 @@ async fn run(args: Args) {
     wait_for_shutdown().await;
 
     tracing::info!("shutting down...");
-    watcher_handle.store(false, Ordering::Relaxed);
-    drop(watcher_handle);
+    watcher_running.store(false, Ordering::Relaxed);
+    // Join the watch thread before the debounce engine flushes: it keeps
+    // producing events for up to its 1s recv_timeout tail, and dropping the
+    // channel's last sender here is what lets the engine's final drain see
+    // every remaining event (review #71).
+    let _ = watcher_handle.join();
+    watcher_done.store(true, Ordering::Relaxed);
     debounce_handle.await.expect("debounce engine failed");
     retention_handle.abort();
     ipc_handle.abort();

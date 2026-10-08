@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -166,7 +166,7 @@ impl DebounceEngine {
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, watcher_done: Arc<AtomicBool>) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.tick().await;
 
@@ -179,7 +179,14 @@ impl DebounceEngine {
                     self.flush_expired().await;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                    if crate::SHOULD_QUIT.load(Ordering::Relaxed) {
+                    // Quit only once main has joined the watcher thread: the
+                    // watcher keeps producing events for up to its 1s
+                    // recv_timeout tail after SHOULD_QUIT, and exiting on
+                    // SHOULD_QUIT alone dropped whatever was still queued in
+                    // event_rx at that moment.
+                    if crate::SHOULD_QUIT.load(Ordering::Relaxed)
+                        && watcher_done.load(Ordering::Relaxed)
+                    {
                         break;
                     }
                 }
@@ -189,7 +196,20 @@ impl DebounceEngine {
             }
         }
 
+        // The watcher's sender is gone by now; sweep up whatever was still
+        // queued between its last merge and the quit check.
+        self.drain_channel();
         self.flush().await;
+    }
+
+    /// Merge every still-queued raw event into `pending`. Runs once at
+    /// shutdown, after the watcher thread exited and dropped its sender:
+    /// `try_recv` returns the queued events and then `Disconnected`, ending
+    /// the loop.
+    fn drain_channel(&mut self) {
+        while let Ok(event) = self.event_rx.try_recv() {
+            self.merge(event);
+        }
     }
 }
 
@@ -197,10 +217,11 @@ pub fn start_debounce(
     event_rx: mpsc::Receiver<DeltaEvent>,
     db: Arc<Mutex<Connection>>,
     window: Duration,
+    watcher_done: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut engine = DebounceEngine::new(window, event_rx, db);
-        engine.run().await;
+        engine.run(watcher_done).await;
     })
 }
 
@@ -399,5 +420,49 @@ mod tests {
                     .unwrap();
             assert_eq!(total, 100);
         });
+    }
+
+    /// Shutdown drain (review #71): events still queued when the watcher
+    /// exits must be merged, not dropped — same-path events merge into one
+    /// signed sum exactly like live arrivals would.
+    #[tokio::test]
+    async fn test_drain_channel_merges_queued_events_after_sender_drop() {
+        let (tx, rx) = mpsc::channel(8);
+        tx.send(entry("/tmp/q.txt", 100, "create", 1000))
+            .await
+            .unwrap();
+        tx.send(entry("/tmp/q.txt", -150, "delete", 2000))
+            .await
+            .unwrap();
+        tx.send(entry("/tmp/other.txt", 7, "create", 2100))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
+        engine.drain_channel();
+
+        assert_eq!(engine.pending.len(), 2);
+        let q = &engine
+            .pending
+            .get(&PathBuf::from("/tmp/q.txt"))
+            .unwrap()
+            .event;
+        assert_eq!(q.delta_size, -50);
+        assert_eq!(q.event_type, "delete");
+        assert!(engine
+            .pending
+            .contains_key(&PathBuf::from("/tmp/other.txt")));
+    }
+
+    /// Draining an empty-but-open channel must not block or error.
+    #[tokio::test]
+    async fn test_drain_channel_empty_is_noop() {
+        let (_tx, rx) = mpsc::channel(8);
+        let db = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let mut engine = DebounceEngine::new(Duration::from_secs(10), rx, db);
+        engine.drain_channel();
+        assert!(engine.pending.is_empty());
     }
 }

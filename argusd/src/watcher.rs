@@ -390,14 +390,18 @@ fn has_hidden_ancestor(root: &Path, path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The `Arc<AtomicBool>` running flag plus the watch thread's join handle:
+/// main must join the thread on shutdown so the debounce engine's final
+/// drain sees a closed channel instead of racing the watcher's ≤1s
+/// recv_timeout tail (review #71).
 pub fn start_watcher(
     watch_dirs: Vec<WatchDir>,
     event_tx: mpsc::Sender<DeltaEvent>,
-) -> Arc<AtomicBool> {
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = running.clone();
 
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
 
         let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
@@ -474,7 +478,7 @@ pub fn start_watcher(
         }
     });
 
-    running
+    (running, handle)
 }
 
 #[cfg(test)]
