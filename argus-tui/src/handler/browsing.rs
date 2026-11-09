@@ -112,6 +112,7 @@ pub(crate) fn handle_browsing_key(key: KeyEvent, app: &mut App) {
             app.sort_mode = app.sort_mode.toggle();
             crate::handler::browsing::sort_children_flat(app);
         }
+        KeyCode::Char('T') => app.clear_finished_delete_tasks(),
         KeyCode::Char('d') => handle_delete_action(app, false),
         KeyCode::Char('D') => handle_delete_action(app, true),
         KeyCode::Char('?') => app.mode = AppMode::Help,

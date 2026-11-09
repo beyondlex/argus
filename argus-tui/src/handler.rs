@@ -20,7 +20,6 @@ pub fn handle_key(key: KeyEvent, app: &mut App) {
         AppMode::Browsing => browsing::handle_browsing_key(key, app),
         AppMode::DeletePrompt => prompt::handle_delete_prompt_key(key, app),
         AppMode::DeletePermanentPrompt => prompt::handle_delete_permanent_prompt_key(key, app),
-        AppMode::Deleting => {} // ignore all keys during deletion
         AppMode::Help => prompt::handle_help_key(key, app),
         AppMode::TimeHelp => prompt::handle_time_help_key(key, app),
         AppMode::Command => command::handle_command_key(key, app),
@@ -162,7 +161,215 @@ mod tests {
         assert!(app.delete_target_path.is_none());
     }
 
-    // ── move_cursor ──────────────────────────────────────────────────────
+    /// A permanent single-directory delete must report per-item progress.
+    /// It used to take the whole-directory fast path, which emitted only an
+    /// initial (0,1) and left the gauge frozen at 0% until the entire
+    /// recursive removal returned.
+    #[test]
+    fn test_delete_permanent_dir_reports_item_progress() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("big");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), "x").unwrap();
+        fs::write(dir.join("sub").join("b.txt"), "y").unwrap();
+
+        let errors = super::prompt::delete_dir_worker(&dir, true, &tx, 7);
+
+        // The worker must emit one progress tick per item (root, a.txt,
+        // sub/, sub/b.txt) so the gauge advances instead of sitting at 0%.
+        // Ticks must carry the task id so the pane can route them.
+        let mut progress_ticks = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if let AppMessage::DeleteProgress { task_id, .. } = msg {
+                assert_eq!(task_id, 7);
+                progress_ticks += 1;
+            }
+        }
+
+        assert!(errors.is_empty(), "expected clean delete, got: {errors:?}");
+        assert!(!dir.exists(), "directory must be fully removed");
+        assert!(
+            progress_ticks >= 3,
+            "permanent dir delete must report per-item progress, got {progress_ticks} ticks"
+        );
+    }
+
+    /// Only a whole-directory trash task animates the shared spinner: it moves
+    /// the subtree in one atomic call with no intermediate progress. Tasks
+    /// with real per-item progress must not trigger a full-UI repaint 10x/sec.
+    #[test]
+    fn test_delete_spinner_active_only_for_whole_dir_trash() {
+        use crate::types::DeleteOrigin;
+        let (tx, rx) = mpsc::channel(1);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+
+        app.add_delete_task("dir".into(), false, true, DeleteOrigin::Browse, vec![]);
+        assert!(
+            app.delete_spinner_active(),
+            "whole-dir trash must animate spinner"
+        );
+
+        // A task with real per-item progress does not need the spinner.
+        app.delete_tasks[0].spinner = false;
+        assert!(
+            !app.delete_spinner_active(),
+            "per-item progress must not repaint on every spinner tick"
+        );
+
+        // A finished spinner task no longer animates.
+        app.delete_tasks[0].spinner = true;
+        app.delete_tasks[0].state = crate::types::DeleteTaskState::Finished { failed: 0 };
+        assert!(!app.delete_spinner_active(), "finished task must be inert");
+    }
+
+    /// Two separate directory deletes must become two independent registry
+    /// entries, and progress messages must be routed to the right one by id.
+    #[test]
+    fn test_parallel_delete_tasks_route_progress_by_id() {
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+
+        let a = app.add_delete_task(
+            "a".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+        let b = app.add_delete_task(
+            "b".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+        assert_ne!(a, b);
+        assert_eq!(app.delete_tasks.len(), 2);
+        assert_eq!(
+            app.mode,
+            AppMode::Browsing,
+            "delete must not block browsing"
+        );
+
+        app.handle_message(AppMessage::DeleteProgress {
+            task_id: b,
+            current: 5,
+            total: 10,
+        });
+        match &app.delete_tasks[1].state {
+            crate::types::DeleteTaskState::Running { current, total } => {
+                assert_eq!((*current, *total), (5, 10));
+            }
+            _ => panic!("task b must be running"),
+        }
+        // Task a is untouched by b's progress.
+        match &app.delete_tasks[0].state {
+            crate::types::DeleteTaskState::Running { current, total } => {
+                assert_eq!((*current, *total), (0, 1));
+            }
+            _ => panic!("task a must still be at its initial state"),
+        }
+    }
+
+    /// `T` clears only finished rows; running tasks stay in the pane.
+    #[test]
+    fn test_clear_finished_delete_tasks_keeps_running() {
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+
+        let a = app.add_delete_task(
+            "a".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+        app.add_delete_task(
+            "b".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+        app.handle_message(AppMessage::DeleteComplete {
+            task_id: a,
+            errors: Vec::new(),
+            paths: Vec::new(),
+        });
+        app.clear_finished_delete_tasks();
+
+        assert_eq!(app.delete_tasks.len(), 1, "only the running task remains");
+        assert!(app.delete_tasks[0].is_running());
+    }
+
+    /// End-to-end: two different directories deleted concurrently, each with
+    /// its own task id. Both workers run to completion and their rows finish
+    /// without either blocking the other's registration.
+    #[test]
+    fn test_two_dir_deletes_run_concurrently() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("dir-a");
+        let b = tmp.path().join("dir-b");
+        for dir in [&a, &b] {
+            fs::create_dir_all(dir.join("nested")).unwrap();
+            fs::write(dir.join("f.bin"), "x").unwrap();
+            fs::write(dir.join("nested").join("g.bin"), "y").unwrap();
+        }
+
+        let (tx, rx) = mpsc::channel(64);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        let id_a = app.add_delete_task(
+            "dir-a".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+        let id_b = app.add_delete_task(
+            "dir-b".into(),
+            true,
+            false,
+            crate::types::DeleteOrigin::Browse,
+            vec![],
+        );
+
+        // Both workers are spawned from the same handler pattern as production.
+        let (tx_a, tx_b) = (app.tx.clone(), app.tx.clone());
+        rt.block_on(async {
+            let (pa, pb) = (a.clone(), b.clone());
+            let h1 = tokio::task::spawn_blocking(move || {
+                super::prompt::delete_dir_worker(&pa, true, &tx_a, id_a)
+            });
+            let h2 = tokio::task::spawn_blocking(move || {
+                super::prompt::delete_dir_worker(&pb, true, &tx_b, id_b)
+            });
+            let (ra, rb) = tokio::join!(h1, h2);
+            assert!(ra.unwrap().is_empty());
+            assert!(rb.unwrap().is_empty());
+        });
+
+        // Drain progress + synthesize completion for both, then verify rows.
+        while app.rx.try_recv().is_ok() {}
+        app.handle_message(AppMessage::DeleteComplete {
+            task_id: id_a,
+            errors: Vec::new(),
+            paths: vec![a.clone()],
+        });
+        app.handle_message(AppMessage::DeleteComplete {
+            task_id: id_b,
+            errors: Vec::new(),
+            paths: vec![b.clone()],
+        });
+
+        assert!(!a.exists() && !b.exists(), "both trees must be gone");
+        assert_eq!(app.delete_tasks.len(), 2);
+        assert!(app.delete_tasks.iter().all(|t| !t.is_running()));
+    }
 
     #[test]
     fn test_move_cursor_basic_down() {
@@ -917,6 +1124,51 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    /// Confirming a batch delete must consume the selection immediately: the
+    /// task now runs in the background while browsing stays live, so keeping
+    /// multi-select armed would leave stale highlights (and completion used to
+    /// clear a *new* selection made during the delete).
+    #[test]
+    fn test_confirm_batch_delete_clears_multi_select_and_registers_task() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("batch.bin");
+        fs::write(&file, "x").unwrap();
+
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.mode = AppMode::DeletePrompt;
+        app.multi_select = true;
+        app.selected_paths
+            .insert(vec!["test".into(), "batch.bin".into()]);
+        app.delete_target_paths = vec![file];
+
+        // spawn_blocking uses blocking_send, which requires a Tokio runtime.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            handle_delete_common(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()),
+                &mut app,
+                |p| {
+                    std::fs::remove_file(p).map_err(|e| e.to_string())?;
+                    Ok("deleted".into())
+                },
+            );
+        });
+
+        assert_eq!(
+            app.mode,
+            AppMode::Browsing,
+            "delete must not block browsing"
+        );
+        assert!(!app.multi_select, "selection consumed into the task");
+        assert!(app.selected_paths.is_empty());
+        assert_eq!(app.delete_tasks.len(), 1, "one background task registered");
+        assert!(app.delete_tasks[0].is_running());
+    }
+
     #[test]
     fn test_browsing_key_enter_command_mode() {
         let (tx, rx) = mpsc::channel(1);
@@ -1388,8 +1640,10 @@ mod tests {
         // The spawned thread's exact completion is covered by the
         // delete_marked unit test; here the message handler half is driven
         // directly (App owns the receiver, so the real message can't be
-        // intercepted from the test).
-        app.handle_message(AppMessage::AiDeleteComplete {
+        // intercepted from the test). The confirm registered one task.
+        let task_id = app.delete_tasks[0].id;
+        app.handle_message(AppMessage::DeleteComplete {
+            task_id,
             errors: vec!["/etc: protected path, skipped".into()],
             paths: Vec::new(),
         });

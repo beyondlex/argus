@@ -1,7 +1,8 @@
 use crate::app::{App, AppMessage, AppMode};
-use crate::types::AiStatus;
+use crate::types::{AiStatus, DeleteOrigin};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 const ITEM_LINES: usize = 4;
 
@@ -27,18 +28,25 @@ pub(crate) fn handle_ai_review_key(key: KeyEvent, app: &mut App) {
             {
                 let s = app.ai_state.as_mut().unwrap();
                 s.delete_confirm = None;
-                // Deleting runs on a background thread (same as the browsing
-                // prompt): the inline loop here used to freeze the UI for the
-                // whole permanent removal of a large tree. [`AiStatus::Ready`]
-                // is restored by the completion message, which also applies
-                // the tree/state updates.
+                // Delete/mark keys stay inert until the completion message
+                // flips the status back to Ready. The task pane tracks the
+                // background job so the UI never blocks.
                 s.status = AiStatus::Deleting;
             }
 
+            let label = format!("{} review items", paths.len());
+            let task_id = app.add_delete_task(
+                label,
+                permanent,
+                false,
+                DeleteOrigin::AiReview,
+                paths.clone(),
+            );
             let tx = app.tx.clone();
             std::thread::spawn(move || {
-                let (errors, deleted_paths) = delete_marked(&paths, permanent);
-                let _ = tx.blocking_send(AppMessage::AiDeleteComplete {
+                let (errors, deleted_paths) = delete_marked(&paths, permanent, &tx, task_id);
+                let _ = tx.blocking_send(AppMessage::DeleteComplete {
+                    task_id,
                     errors,
                     paths: deleted_paths,
                 });
@@ -166,28 +174,39 @@ fn collect_marked_paths(state: &crate::types::AiReviewState) -> Vec<PathBuf> {
 /// side door around that gate. Returns the per-path errors (including
 /// protected-path skips) and the paths that were actually removed — callers
 /// may only prune state and count freed bytes for the removed ones.
-fn delete_marked(paths: &[PathBuf], permanent: bool) -> (Vec<String>, Vec<PathBuf>) {
+fn delete_marked(
+    paths: &[PathBuf],
+    permanent: bool,
+    tx: &mpsc::Sender<AppMessage>,
+    task_id: u64,
+) -> (Vec<String>, Vec<PathBuf>) {
     let mut errors: Vec<String> = Vec::new();
     let mut deleted: Vec<PathBuf> = Vec::new();
-    for path in paths {
+    let total = paths.len() as u64;
+    for (i, path) in paths.iter().enumerate() {
         if crate::util::is_protected_path(path) {
             errors.push(format!("{}: protected path, skipped", path.display()));
-            continue;
-        }
-        let result = if permanent {
-            if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            }
-            .map_err(|e| e.to_string())
         } else {
-            trash::delete(path).map_err(|e| e.to_string())
-        };
-        match result {
-            Ok(()) => deleted.push(path.clone()),
-            Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+            let result = if permanent {
+                if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                }
+                .map_err(|e| e.to_string())
+            } else {
+                trash::delete(path).map_err(|e| e.to_string())
+            };
+            match result {
+                Ok(()) => deleted.push(path.clone()),
+                Err(e) => errors.push(format!("{}: {}", path.display(), e)),
+            }
         }
+        let _ = tx.blocking_send(AppMessage::DeleteProgress {
+            task_id,
+            current: (i + 1) as u64,
+            total,
+        });
     }
     (errors, deleted)
 }
@@ -228,12 +247,24 @@ mod tests {
         std::fs::write(dir.join("nested").join("b.bin"), "y").unwrap();
         let missing = tmp.path().join("missing.bin");
 
-        let (errors, deleted) = delete_marked(&[file.clone(), dir.clone(), missing], true);
+        let (tx, mut rx) = mpsc::channel(16);
+        let (errors, deleted) = delete_marked(&[file.clone(), dir.clone(), missing], true, &tx, 9);
 
         assert!(!file.exists());
         assert!(!dir.exists());
         assert_eq!(deleted, vec![file, dir]);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("missing.bin"));
+
+        // Every path (including the skipped/failed one) must report progress
+        // so the pane gauge advances instead of freezing at 0%.
+        let mut ticks = 0;
+        while let Ok(msg) = rx.try_recv() {
+            if let AppMessage::DeleteProgress { task_id, .. } = msg {
+                assert_eq!(task_id, 9);
+                ticks += 1;
+            }
+        }
+        assert_eq!(ticks, 3);
     }
 }

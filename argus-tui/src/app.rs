@@ -106,10 +106,11 @@ pub struct App {
     pub delete_target_path: Option<PathBuf>,
     pub delete_target_paths: Vec<PathBuf>,
 
-    // Delete progress
-    pub deleting: bool,
-    pub delete_progress: Option<(u64, u64)>,
-    pub delete_permanent: bool,
+    // Background delete tasks (right-hand pane). A confirmed delete registers
+    // a task and returns to browsing, so multiple directories can be removed
+    // in parallel. `delete_tasks` is the single source of truth for progress.
+    pub delete_tasks: Vec<DeleteTask>,
+    pub next_delete_task_id: u64,
 
     // AI spinner for loading animation
     pub ai_spinner: u8,
@@ -260,9 +261,8 @@ impl App {
             cancel_scan: Arc::new(AtomicBool::new(false)),
             delete_target_path: None,
             delete_target_paths: Vec::new(),
-            deleting: false,
-            delete_progress: None,
-            delete_permanent: false,
+            delete_tasks: Vec::new(),
+            next_delete_task_id: 0,
             ai_spinner: 0,
             ai_spinner_tick: Instant::now(),
             multi_select: false,
@@ -544,31 +544,22 @@ impl App {
                 // danger color.
                 self.set_info(msg, 4);
             }
-            AppMessage::DeleteProgress { current, total } => {
-                self.delete_progress = Some((current, total));
+            AppMessage::DeleteProgress {
+                task_id,
+                current,
+                total,
+            } => {
+                if let Some(task) = self.delete_tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.state = DeleteTaskState::Running { current, total };
+                }
             }
-            AppMessage::DeleteComplete { errors, paths } => {
-                self.deleting = false;
-                self.delete_progress = None;
-                self.mode = AppMode::Browsing;
-
-                let mut total_freed = 0u64;
-                for path in &paths {
-                    let freed = crate::tree_ops::apply_deletion_to_state(self, path);
-                    total_freed = total_freed.saturating_add(freed);
-                }
-                self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
-                self.reload_children_preserving_search();
-                self.exit_multi_select();
-
-                if !errors.is_empty() {
-                    self.set_error(
-                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
-                        5,
-                    );
-                } else {
-                    self.set_info(format!("deleted {} item(s)", paths.len()), 3);
-                }
+            AppMessage::DeleteComplete {
+                task_id,
+                errors,
+                paths,
+            } => {
+                let origin = self.finish_delete_task(task_id, errors.len());
+                self.apply_delete_results(&errors, &paths, origin);
             }
             AppMessage::AiAnalysisComplete(results) => {
                 if let Some(ref mut state) = self.ai_state {
@@ -592,45 +583,6 @@ impl App {
                 if let Some(ref mut state) = self.ai_state {
                     state.results = Vec::new();
                     state.status = AiStatus::Error(msg);
-                }
-            }
-            AppMessage::AiDeleteComplete { errors, paths } => {
-                // Tree and freed-bytes bookkeeping must run even when the user
-                // left the review panel while the deletion ran (ai_state is
-                // gone then) — the files are gone either way.
-                let mut total_freed = 0u64;
-                for path in &paths {
-                    let freed = crate::tree_ops::apply_deletion_to_state(self, path);
-                    total_freed = total_freed.saturating_add(freed);
-                }
-                self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
-                self.reload_children_preserving_search();
-
-                // Remove deleted items from the review list; an empty list
-                // closes the panel.
-                let mut review_now_empty = false;
-                if let Some(ref mut s) = self.ai_state {
-                    s.results.retain(|r| !paths.iter().any(|p| p == &r.path));
-                    s.mark_for_delete.clear();
-                    if s.cursor >= s.results.len() {
-                        s.cursor = s.results.len().saturating_sub(1);
-                    }
-                    review_now_empty = s.results.is_empty();
-                    if !review_now_empty {
-                        s.status = AiStatus::Ready;
-                    }
-                }
-                if review_now_empty {
-                    self.exit_ai_review();
-                }
-
-                if !errors.is_empty() {
-                    self.set_error(
-                        format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
-                        5,
-                    );
-                } else {
-                    self.set_info(format!("deleted {} item(s)", paths.len()), 3);
                 }
             }
             AppMessage::CleanupScanComplete {
@@ -798,6 +750,110 @@ impl App {
         self.status_is_error = false;
         self.error_clear_at =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(duration_secs));
+    }
+
+    /// Whether any running task needs the shared spinner animated this frame.
+    /// Only whole-directory trash tasks set `spinner`: they move the subtree in
+    /// one atomic call with no intermediate progress, so their gauge would sit
+    /// frozen at 0% otherwise. Tasks with real per-item progress don't need it.
+    pub fn delete_spinner_active(&self) -> bool {
+        self.delete_tasks
+            .iter()
+            .any(|t| t.spinner && t.is_running())
+    }
+
+    /// Register a delete task and return its id. Called on confirmation; the
+    /// caller spawns the worker with this id so progress/complete messages can
+    /// be routed back to the right pane row. `paths` are the absolute targets,
+    /// used to mark the matching file-list rows while the task runs.
+    pub fn add_delete_task(
+        &mut self,
+        label: String,
+        permanent: bool,
+        spinner: bool,
+        origin: DeleteOrigin,
+        paths: Vec<PathBuf>,
+    ) -> u64 {
+        let id = self.next_delete_task_id;
+        self.next_delete_task_id = self.next_delete_task_id.saturating_add(1);
+        self.delete_tasks.push(DeleteTask {
+            id,
+            label,
+            permanent,
+            spinner,
+            origin,
+            state: DeleteTaskState::Running {
+                current: 0,
+                total: 1,
+            },
+            paths,
+        });
+        id
+    }
+
+    /// Drop finished rows from the pane (browsing key `T`). Running rows stay.
+    pub fn clear_finished_delete_tasks(&mut self) {
+        self.delete_tasks.retain(|t| t.is_running());
+    }
+
+    /// Mark a task finished and return its origin for completion bookkeeping.
+    fn finish_delete_task(&mut self, task_id: u64, failed: usize) -> DeleteOrigin {
+        let Some(task) = self.delete_tasks.iter_mut().find(|t| t.id == task_id) else {
+            // Late/failed lookup still needs its results applied; browse keeps
+            // the tree bookkeeping that ran before a task could be removed.
+            return DeleteOrigin::Browse;
+        };
+        let origin = task.origin;
+        task.state = DeleteTaskState::Finished { failed };
+        origin
+    }
+
+    /// Shared completion bookkeeping for browse and AI-review deletes: update
+    /// the tree/freed bytes, then apply origin-specific state cleanup. The task
+    /// pane keeps the finished row so failure counts stay visible.
+    fn apply_delete_results(&mut self, errors: &[String], paths: &[PathBuf], origin: DeleteOrigin) {
+        let mut total_freed = 0u64;
+        for path in paths {
+            let freed = crate::tree_ops::apply_deletion_to_state(self, path);
+            total_freed = total_freed.saturating_add(freed);
+        }
+        self.deleted_bytes = self.deleted_bytes.saturating_add(total_freed);
+        self.reload_children_preserving_search();
+
+        match origin {
+            // Multi-select is cleared at confirmation (the selection was
+            // consumed into the task), so completion must not wipe a new
+            // selection the user made while the task ran in the background.
+            DeleteOrigin::Browse => {}
+            DeleteOrigin::AiReview => {
+                // Prune the review list even if the user left the panel mid-delete
+                // (ai_state gone then) — the files are gone either way.
+                let mut review_now_empty = false;
+                if let Some(ref mut s) = self.ai_state {
+                    s.results.retain(|r| !paths.iter().any(|p| p == &r.path));
+                    s.mark_for_delete.clear();
+                    if s.cursor >= s.results.len() {
+                        s.cursor = s.results.len().saturating_sub(1);
+                    }
+                    review_now_empty = s.results.is_empty();
+                    if !review_now_empty {
+                        s.status = AiStatus::Ready;
+                    }
+                }
+                if review_now_empty {
+                    self.exit_ai_review();
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            self.set_error(
+                format!("{} delete(s) failed: {}", errors.len(), errors.join("; ")),
+                5,
+            );
+        } else {
+            self.set_info(format!("deleted {} item(s)", paths.len()), 3);
+        }
     }
 
     /// Set time range preset (0=1h, 1=6h, 2=12h, 3=1d, 4=3d, 5=7d)

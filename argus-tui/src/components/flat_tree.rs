@@ -37,6 +37,9 @@ pub struct FlatRenderCtx<'a> {
     pub current_dir_disk_usage: u64,
     pub multi_select: bool,
     pub selected_paths: &'a HashSet<Vec<String>>,
+    /// Absolute paths targeted by running delete tasks; matching rows get a
+    /// deletion marker in the file list.
+    pub deleting_paths: &'a [std::path::PathBuf],
     pub theme: &'a ColorTheme,
 }
 
@@ -169,6 +172,8 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
                 .iter()
                 .any(|p| p.len() < entry.path.len() && entry.path.starts_with(p));
 
+        let is_deleting = is_deleting_entry(ctx.view_root_path, &entry.path, ctx.deleting_paths);
+
         let (info_spans, mut name_spans) = render_flat_entry(
             entry,
             is_selected,
@@ -181,6 +186,7 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
             ctx.multi_select,
             is_selected_item,
             is_inherited_selected,
+            is_deleting,
             ctx.theme,
         );
 
@@ -212,6 +218,27 @@ pub fn render(f: &mut Frame, area: Rect, ctx: FlatRenderCtx) {
         f.render_widget(Paragraph::new(Line::from(info_spans)), info_area);
         f.render_widget(Paragraph::new(Line::from(name_spans)), name_area);
     }
+}
+
+/// Whether a file-list row is a target (or lies inside a target directory) of
+/// a running delete task. `entry_path` starts with the view-root name, so the
+/// absolute path is `view_root` + `entry_path[1..]`. PathBuf::starts_with is
+/// component-wise, so prefix-sibling names never match.
+fn is_deleting_entry(
+    view_root: &Path,
+    entry_path: &[String],
+    deleting_paths: &[std::path::PathBuf],
+) -> bool {
+    if deleting_paths.is_empty() {
+        return false;
+    }
+    let mut full = view_root.to_path_buf();
+    for part in entry_path.iter().skip(1) {
+        full.push(part);
+    }
+    deleting_paths
+        .iter()
+        .any(|target| full == *target || full.starts_with(target))
 }
 
 fn flat_search_status_line<'a>(
@@ -280,6 +307,7 @@ fn render_flat_entry(
     multi_select: bool,
     is_selected_item: bool,
     is_inherited_selected: bool,
+    is_deleting: bool,
     theme: &ColorTheme,
 ) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let highlighted = is_selected;
@@ -377,6 +405,19 @@ fn render_flat_entry(
         info.push(Span::styled(" ⚡", row.filesize(ai_color)));
     } else {
         info.push(Span::raw("    "));
+    }
+
+    // Fixed 2-column slot so every row's name starts at the same x, whether
+    // or not it is being deleted. `×` marks an item a running task is removing.
+    // Route the color through RowStyle so a highlighted (cursor) row keeps a
+    // legible foreground like every other info-column span.
+    if is_deleting {
+        info.push(Span::styled(
+            "× ",
+            row.filesize(theme.danger).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        info.push(Span::raw("  "));
     }
 
     let name = name_spans(
@@ -607,4 +648,55 @@ fn truncate_name_spans(spans: &mut Vec<Span<'static>>, max_width: usize) {
         Span::styled(prefix, prefix_style),
         Span::styled(format!("{}...", truncated_name), name_style),
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn paths(v: &[&str]) -> Vec<PathBuf> {
+        v.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn test_is_deleting_entry_exact_match() {
+        let targets = paths(&["/tmp/root/dir-a"]);
+        assert!(is_deleting_entry(
+            Path::new("/tmp/root"),
+            &["root".into(), "dir-a".into()],
+            &targets,
+        ));
+    }
+
+    #[test]
+    fn test_is_deleting_entry_child_of_deleted_dir() {
+        // Deleting a whole directory marks every descendant row still listed.
+        let targets = paths(&["/tmp/root/dir-a"]);
+        assert!(is_deleting_entry(
+            Path::new("/tmp/root"),
+            &["root".into(), "dir-a".into(), "f.bin".into()],
+            &targets,
+        ));
+    }
+
+    #[test]
+    fn test_is_deleting_entry_prefix_sibling_not_marked() {
+        // Component-wise comparison: dir-a2 is NOT inside dir-a.
+        let targets = paths(&["/tmp/root/dir-a"]);
+        assert!(!is_deleting_entry(
+            Path::new("/tmp/root"),
+            &["root".into(), "dir-a2".into()],
+            &targets,
+        ));
+    }
+
+    #[test]
+    fn test_is_deleting_entry_empty_targets() {
+        assert!(!is_deleting_entry(
+            Path::new("/tmp/root"),
+            &["root".into(), "dir-a".into()],
+            &[],
+        ));
+    }
 }

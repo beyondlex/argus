@@ -1385,7 +1385,15 @@ fn test_ai_delete_complete_prunes_results_and_updates_tree() {
     let real = PathBuf::from("/tmp/test/gone.bin");
     let _ = std::fs::write(&real, b"x");
 
-    app.handle_message(AppMessage::AiDeleteComplete {
+    let task_id = app.add_delete_task(
+        "review items".into(),
+        false,
+        false,
+        crate::types::DeleteOrigin::AiReview,
+        vec![],
+    );
+    app.handle_message(AppMessage::DeleteComplete {
+        task_id,
         errors: Vec::new(),
         paths: vec![real],
     });
@@ -1406,7 +1414,15 @@ fn test_ai_delete_complete_prunes_results_and_updates_tree() {
     );
 
     // Last result deleted: the panel closes.
-    app.handle_message(AppMessage::AiDeleteComplete {
+    let task_id = app.add_delete_task(
+        "review items".into(),
+        false,
+        false,
+        crate::types::DeleteOrigin::AiReview,
+        vec![],
+    );
+    app.handle_message(AppMessage::DeleteComplete {
+        task_id,
         errors: Vec::new(),
         paths: vec![kept],
     });

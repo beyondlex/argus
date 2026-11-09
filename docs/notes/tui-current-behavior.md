@@ -105,12 +105,31 @@ Shows breadcrumb path for the current directory.
 - Delta display must treat `is_agg` rows as subtree coverage, not as extra child rows.
 - Search does not filter; non-matching entries remain visible.
 - Every delete entry point (browsing single/batch, AI-review confirm) refuses
-  protected paths before touching the filesystem; AI-review deletes only prune
-  the view and count freed bytes for paths that actually deleted. AI-review
-  deletions run on a background thread like the browsing prompt: the confirm
-  flips the panel to "deleting…" (delete/mark keys inert until completion)
-  instead of freezing the UI for a large permanent removal, and the tree
-  bookkeeping still applies if the user leaves the panel mid-delete.
+  protected paths before touching the filesystem. Deletes are **non-blocking
+  background tasks**: confirming registers one task and returns to browsing, so
+  several different directories can be removed in parallel and new deletes can
+  be started while earlier ones still run. A right-hand pane (34 cols, appears
+  only when tasks exist) lists every task newest-first with its own gauge;
+  `T` clears finished rows. Finished rows stay with `done` / `N failed` until
+  cleared. Progress/complete messages carry a `task_id` so parallel tasks are
+  routed to the right row. Each task stores its absolute target paths, and the
+  file list marks every row being deleted with a `× ` in a fixed 2-column
+  info-column slot (danger color, routed through `RowStyle` so a cursor row
+  stays legible); a row inside a deleted directory also counts. Only running
+  tasks mark rows, so the marker disappears when the task finishes. Path
+  comparison is component-wise (`PathBuf::starts_with`), so prefix-sibling
+  names never match. AI-review deletes also prune the review list and
+  count freed bytes for paths actually removed, even if the user left the panel
+  mid-delete; the panel keeps its "deleting…" inert state until completion.
+- Each delete task's gauge must advance, not sit frozen at 0%. Permanent
+  single-directory deletes go per-item (depth-first, leaf-first) and emit a
+  `DeleteProgress` tick per item; batch and AI-review deletes tick once per
+  path. Trashing keeps the whole-directory single call — it moves the subtree
+  into the recycle bin as one restorable unit, so there is no intermediate
+  progress to report; that task shows an animated spinner (and one 1/1 tick)
+  as its liveness signal instead. Multi-select is consumed at confirmation,
+  not at completion, so a fresh selection made during a background delete
+  is never wiped by a late completion message.
 - Column widths, name truncation, and the command-bar caret use display width
   (`unicode-width`), not byte length, so CJK names and ⚡/⎋ symbols align.
 

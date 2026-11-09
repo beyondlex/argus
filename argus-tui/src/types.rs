@@ -24,10 +24,12 @@ pub enum AppMessage {
     DeltaData(HashMap<Vec<String>, i64>, Option<IpcClient>),
     DeltaDetailLoaded(DeltaDetailState),
     DeleteProgress {
+        task_id: u64,
         current: u64,
         total: u64,
     },
     DeleteComplete {
+        task_id: u64,
         errors: Vec<String>,
         paths: Vec<PathBuf>,
     },
@@ -56,13 +58,6 @@ pub enum AppMessage {
         names: Vec<String>,
     },
     BrewUninstallComplete(argus_core::CleanReport),
-    /// Background AI-review deletion finished: `paths` are the entries that
-    /// were actually removed, `errors` the per-path failures (including
-    /// protected-path skips).
-    AiDeleteComplete {
-        errors: Vec<String>,
-        paths: Vec<PathBuf>,
-    },
     Error(String),
     Info(String),
 }
@@ -78,7 +73,6 @@ pub enum AppMode {
     Browsing,
     DeletePrompt,
     DeletePermanentPrompt,
-    Deleting,
     Help,
     TimeHelp,
     Command,
@@ -91,6 +85,44 @@ pub enum AppMode {
     Cleanup,
     Uninstall,
     Brew,
+}
+
+/// Which UI flow spawned a delete task. Completion bookkeeping differs: AI
+/// review also prunes its result list, browsing clears multi-select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOrigin {
+    Browse,
+    AiReview,
+}
+
+/// Progress of one background delete task shown in the right-hand pane.
+#[derive(Debug, Clone)]
+pub enum DeleteTaskState {
+    Running { current: u64, total: u64 },
+    Finished { failed: usize },
+}
+
+/// One entry in the right-hand delete-task pane. A task is registered when a
+/// delete is confirmed and never blocks browsing, so several can run at once.
+#[derive(Debug, Clone)]
+pub struct DeleteTask {
+    pub id: u64,
+    pub label: String,
+    pub permanent: bool,
+    /// True only for the whole-directory trash path, which has no intermediate
+    /// progress and animates a spinner as its liveness signal.
+    pub spinner: bool,
+    pub origin: DeleteOrigin,
+    pub state: DeleteTaskState,
+    /// Absolute target paths, used to mark the corresponding rows in the file
+    /// list while the task is still running.
+    pub paths: Vec<PathBuf>,
+}
+
+impl DeleteTask {
+    pub fn is_running(&self) -> bool {
+        matches!(self.state, DeleteTaskState::Running { .. })
+    }
 }
 
 /// Tree search mode

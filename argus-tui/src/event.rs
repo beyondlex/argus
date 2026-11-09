@@ -68,6 +68,7 @@ fn next_poll_timeout(
     cursor_blink_rate: Duration,
 ) -> Duration {
     let spinner_active = app.scanning
+        || app.delete_spinner_active()
         || (matches!(app.mode, AppMode::Brew)
             && app.brew_state.as_ref().is_some_and(|s| s.uninstalling));
     let time_to_spinner = if spinner_active {
@@ -126,7 +127,9 @@ fn advance_timers(
     let mut dirty = false;
     let brew_uninstalling = matches!(app.mode, AppMode::Brew)
         && app.brew_state.as_ref().is_some_and(|s| s.uninstalling);
-    if (app.scanning || brew_uninstalling) && app.scan_spinner_tick.elapsed() >= spinner_rate {
+    if (app.scanning || app.delete_spinner_active() || brew_uninstalling)
+        && app.scan_spinner_tick.elapsed() >= spinner_rate
+    {
         app.scan_spinner = (app.scan_spinner + 1) % 10;
         app.scan_spinner_tick = Instant::now();
         dirty = true;
@@ -143,10 +146,12 @@ fn advance_timers(
         dirty = true;
     }
 
-    // Delete progress only changes on DeleteProgress messages, which
-    // already mark the frame dirty in drain_messages — no per-tick redraw
-    // needed here (it used to repaint the whole UI 10x/second while a
-    // deletion ran with the gauge unchanged).
+    // Delete-pane gauges only move on DeleteProgress messages, which already
+    // mark the frame dirty in drain_messages — no unconditional per-tick
+    // repaint here (it used to repaint the whole UI 10x/second with the gauge
+    // unchanged). A whole-dir trash task reports no intermediate progress at
+    // all, so delete_spinner_active() above keeps its spinner animating as the
+    // liveness signal instead.
 
     if let Some(clear_at) = app.error_clear_at {
         if Instant::now() >= clear_at {

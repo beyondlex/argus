@@ -40,6 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, theme: &ColorTheme) {
         Line::from(key_hints(&[("s", "Scan directory")], theme)),
         Line::from(key_hints(&[("o", "Toggle sort mode")], theme)),
         Line::from(key_hints(&[("d", "Delete selected item")], theme)),
+        Line::from(key_hints(&[("T", "Clear finished delete tasks")], theme)),
         Line::from(key_hints(&[("c", "Clear delta/time filters")], theme)),
         Line::from(key_hints(&[("Tab", "Focus next panel")], theme)),
         Line::from(key_hints(&[("/", "Search items in tree")], theme)),

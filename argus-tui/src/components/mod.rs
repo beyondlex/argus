@@ -2,6 +2,7 @@ pub mod ai_review;
 pub mod brew;
 pub mod cleanup;
 pub mod command_bar;
+pub mod delete_tasks;
 pub mod delta_detail;
 pub mod flat_tree;
 pub mod help_popup;

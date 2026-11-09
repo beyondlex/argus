@@ -17,6 +17,7 @@ pub struct StatusCtx<'a> {
     pub mode: AppMode,
     pub has_error: Option<&'a str>,
     pub status_is_error: bool,
+    pub active_delete_tasks: usize,
     pub sort_mode: SortMode,
     pub multi_select: bool,
     pub multi_select_count: usize,
@@ -61,6 +62,13 @@ pub fn render(f: &mut Frame, area: Rect, ctx: &StatusCtx) {
             Style::default()
                 .fg(theme.danger)
                 .bg(theme.bg)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    } else if ctx.active_delete_tasks > 0 {
+        left_spans.push(Span::styled(
+            format!(" DELETING {} ", ctx.active_delete_tasks),
+            Style::default()
+                .fg(theme.danger)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     } else if matches!(ctx.mode, AppMode::Help) {

@@ -1,14 +1,14 @@
 use crate::app::{App, AppMode};
 use crate::components::{
-    ai_review, brew, cleanup, command_bar, flat_tree, help_popup, metadata, popup, status_bar,
-    time_help,
+    ai_review, brew, cleanup, command_bar, delete_tasks, flat_tree, help_popup, metadata, popup,
+    status_bar, time_help,
 };
 use crate::util::{display_path, format_count, format_duration, format_size, key_hints};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Gauge, Paragraph},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -37,10 +37,19 @@ fn render_chrome(f: &mut Frame, app: &App, chunks: &[Rect], cursor_visible: bool
 }
 
 fn render_main_content(f: &mut Frame, app: &App, area: Rect, cursor_visible: bool) {
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(100)])
-        .split(area);
+    // The delete-task pane is only present when there is something to show;
+    // otherwise the file tree keeps the full width.
+    let [tree_area, tasks_area] = if app.delete_tasks.is_empty() {
+        [area, Rect::default()]
+    } else {
+        let [tree, tasks] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(delete_tasks::PANE_WIDTH),
+        ])
+        .flex(Flex::SpaceBetween)
+        .areas(area);
+        [tree, tasks]
+    };
 
     let file_tree_focused = app.mode == AppMode::Browsing;
     let delta_cache = if app.server_connected {
@@ -49,9 +58,18 @@ fn render_main_content(f: &mut Frame, app: &App, area: Rect, cursor_visible: boo
         None
     };
 
+    // Absolute paths of still-running delete targets. The file list marks
+    // matching rows with a deletion indicator; finished tasks drop out.
+    let deleting_paths: Vec<std::path::PathBuf> = app
+        .delete_tasks
+        .iter()
+        .filter(|t| t.is_running())
+        .flat_map(|t| t.paths.iter().cloned())
+        .collect();
+
     flat_tree::render(
         f,
-        main_chunks[0],
+        tree_area,
         flat_tree::FlatRenderCtx {
             children: &app.current_children,
             filtered_indices: &app.current_filtered,
@@ -67,9 +85,20 @@ fn render_main_content(f: &mut Frame, app: &App, area: Rect, cursor_visible: boo
             current_dir_disk_usage: app.current_dir_disk_usage,
             multi_select: app.multi_select,
             selected_paths: &app.selected_paths,
+            deleting_paths: &deleting_paths,
             theme: &app.theme,
         },
     );
+
+    if !app.delete_tasks.is_empty() {
+        delete_tasks::render(
+            f,
+            tasks_area,
+            &app.delete_tasks,
+            &app.theme,
+            app.scan_spinner,
+        );
+    }
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -77,6 +106,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         mode: app.mode,
         has_error: app.last_error.as_deref(),
         status_is_error: app.status_is_error,
+        active_delete_tasks: app.delete_tasks.iter().filter(|t| t.is_running()).count(),
         sort_mode: app.sort_mode,
         multi_select: app.multi_select,
         multi_select_count: app.selected_paths.len(),
@@ -212,7 +242,6 @@ fn render_overlays(f: &mut Frame, app: &mut App, area: Rect) {
     match app.mode {
         AppMode::DeletePrompt => render_delete_prompt(f, area, app, false),
         AppMode::DeletePermanentPrompt => render_delete_prompt(f, area, app, true),
-        AppMode::Deleting => render_delete_progress(f, area, app),
         AppMode::Help => help_popup::render(f, area, &app.theme),
         AppMode::TimeHelp => time_help::render(f, area, &mut app.time_help_scroll, &app.theme),
         AppMode::Command => command_bar::render(
@@ -506,53 +535,6 @@ fn render_multi_select_exit_confirm(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(text, popup);
 }
 
-fn render_delete_progress(f: &mut Frame, area: Rect, app: &App) {
-    let height_fixed: u16 = 3;
-    let popup_area = popup::centered_rect(50, 20, area);
-    let height = height_fixed.min(area.height);
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect {
-        x: popup_area.x,
-        y,
-        width: popup_area.width,
-        height,
-    };
-
-    f.render_widget(Clear, popup);
-
-    let (current, total) = app.delete_progress.unwrap_or((0, 1));
-    let label = if app.delete_permanent {
-        "Permanently Deleting..."
-    } else {
-        "Moving to Trash..."
-    };
-
-    let block = popup::popup_block(
-        format!(" {} ({}/{}) ", label, current, total),
-        popup::PopupStyle::Danger,
-        &app.theme,
-    );
-
-    let ratio = if total > 0 {
-        current as f64 / total as f64
-    } else {
-        0.0
-    };
-
-    let gauge = Gauge::default()
-        .block(block)
-        .gauge_style(
-            Style::default()
-                .fg(app.theme.danger)
-                .bg(app.theme.bg)
-                .add_modifier(Modifier::BOLD),
-        )
-        .ratio(ratio)
-        .label(format!("{:.0}%", ratio * 100.0));
-
-    f.render_widget(gauge, popup);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,6 +629,88 @@ mod tests {
         assert!(
             content.contains("permanently delete"),
             "permanent prompt should say permanently delete, got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_render_delete_tasks_pane_shows_each_task() {
+        use crate::types::{DeleteOrigin, DeleteTaskState};
+        let mut app = make_app();
+        app.add_delete_task("dir-a".into(), true, false, DeleteOrigin::Browse, vec![]);
+        app.add_delete_task("dir-b".into(), false, false, DeleteOrigin::Browse, vec![]);
+        app.delete_tasks[0].state = DeleteTaskState::Running {
+            current: 3,
+            total: 4,
+        };
+        app.delete_tasks[1].state = DeleteTaskState::Finished { failed: 2 };
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app, true)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("dir-a"), "running task label: {content:?}");
+        assert!(content.contains("75%"), "running gauge: {content:?}");
+        assert!(content.contains("2 failed"), "failed count: {content:?}");
+        assert!(content.contains("Delete tasks"), "pane title: {content:?}");
+    }
+
+    /// A running delete task marks its target row in the file list. The marker
+    /// sits in a fixed-width info-column slot so names stay aligned.
+    #[test]
+    fn test_render_marks_deleting_rows_in_file_list() {
+        use crate::types::DeleteOrigin;
+        use argus_core::{FileType, SnapshotBuilder, ROOT_NODE};
+        use std::path::PathBuf;
+        use std::sync::Arc;
+
+        let mut b = SnapshotBuilder::new("root");
+        b.push_file(ROOT_NODE, "deleting.bin", FileType::File, 10, 10);
+        b.push_file(ROOT_NODE, "kept.bin", FileType::File, 10, 10);
+        let root = PathBuf::from("/tmp/root");
+        let snap = b.finish(root.clone(), 20, 20);
+
+        let (tx, rx) = mpsc::channel(8);
+        let mut app = App::new(crate::config::TuiConfig::default(), tx, rx);
+        app.view_root_path = root.clone();
+        app.tree_root = Some(crate::app::TreeNode::Snapshot(
+            Arc::new(snap.clone()),
+            ROOT_NODE,
+        ));
+        app.scan_cache.insert(root.clone(), Arc::new(snap));
+        app.current_dir_path = vec!["root".into()];
+        app.load_current_children();
+
+        app.add_delete_task(
+            "deleting.bin".into(),
+            true,
+            false,
+            DeleteOrigin::Browse,
+            vec![root.join("deleting.bin")],
+        );
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app, true)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("deleting.bin"), "target row: {content:?}");
+        assert!(content.contains("kept.bin"), "control row: {content:?}");
+        // Exactly one marker: only the targeted row is being deleted.
+        assert_eq!(
+            content.matches('×').count(),
+            1,
+            "one row must carry the deletion marker, got: {content:?}"
         );
     }
 }

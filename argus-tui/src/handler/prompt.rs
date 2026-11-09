@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppMessage, AppMode};
+use crate::types::DeleteOrigin;
 
 pub(crate) fn handle_delete_prompt_key(key: KeyEvent, app: &mut App) {
     handle_delete_common(key, app, |path| {
@@ -29,15 +30,24 @@ where
 {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
             let is_batch = !app.delete_target_paths.is_empty();
             if is_batch {
                 let paths: Vec<PathBuf> = std::mem::take(&mut app.delete_target_paths);
                 let total = paths.len() as u64;
+                let label = format!("{} items", paths.len());
+                let task_id = app.add_delete_task(
+                    label,
+                    permanent,
+                    false,
+                    DeleteOrigin::Browse,
+                    paths.clone(),
+                );
+                // The selection was consumed into the task; clear it now so a
+                // fresh selection can be made while this delete runs.
+                app.exit_multi_select();
+                app.mode = AppMode::Browsing;
                 let tx = app.tx.clone();
-                app.deleting = true;
-                app.delete_progress = Some((0, total));
-                app.delete_permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
-                app.mode = AppMode::Deleting;
 
                 tokio::task::spawn_blocking(move || {
                     let mut errors: Vec<String> = Vec::new();
@@ -46,36 +56,36 @@ where
                             errors.push(format!("{}: {}", path.display(), e));
                         }
                         let _ = tx.blocking_send(AppMessage::DeleteProgress {
+                            task_id,
                             current: (i + 1) as u64,
                             total,
                         });
                     }
-                    let _ = tx.blocking_send(AppMessage::DeleteComplete { errors, paths });
+                    let _ = tx.blocking_send(AppMessage::DeleteComplete {
+                        task_id,
+                        errors,
+                        paths,
+                    });
                 });
             } else if let Some(path) = app.delete_target_path.clone() {
                 if path.is_dir() {
+                    // Whole-dir trash has no intermediate progress (one atomic
+                    // call); permanent goes per-item and its gauge advances.
+                    let label = path.display().to_string();
+                    let task_id = app.add_delete_task(
+                        label,
+                        permanent,
+                        !permanent,
+                        DeleteOrigin::Browse,
+                        vec![path.clone()],
+                    );
+                    app.mode = AppMode::Browsing;
                     let tx = app.tx.clone();
-                    let permanent = matches!(app.mode, AppMode::DeletePermanentPrompt);
-                    let delete_fn_clone = delete_fn;
-                    app.deleting = true;
-                    app.delete_progress = Some((0, 1));
-                    app.delete_permanent = permanent;
-                    app.mode = AppMode::Deleting;
 
                     tokio::task::spawn_blocking(move || {
-                        // Fast path: trash::delete / remove_dir_all both recurse
-                        // for directories, so try a single call first.
-                        let errors = if let Err(e) = delete_fn_clone(&path) {
-                            let fb = delete_dir_progressive(&path, permanent, &tx);
-                            if fb.is_empty() && !e.contains("No such file or directory") {
-                                vec![format!("{}: {}", path.display(), e)]
-                            } else {
-                                fb
-                            }
-                        } else {
-                            vec![]
-                        };
+                        let errors = delete_dir_worker(&path, permanent, &tx, task_id);
                         let _ = tx.blocking_send(AppMessage::DeleteComplete {
+                            task_id,
                             errors,
                             paths: vec![path],
                         });
@@ -94,9 +104,9 @@ where
                             app.set_error(format!("delete failed: {}", e), 5);
                         }
                     }
-                    app.delete_target_path = None;
-                    app.mode = AppMode::Browsing;
                 }
+                app.delete_target_path = None;
+                app.mode = AppMode::Browsing;
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') | KeyCode::Esc => {
@@ -167,31 +177,40 @@ impl DeletionFailure {
     }
 }
 
-fn delete_dir_progressive(
+/// Delete a single directory, dispatching to the strategy that fits the mode.
+/// Permanent removal always goes per-item: it needs depth-first leaf-first
+/// ordering anyway, and it is the only way to report progress while the tree
+/// is walked. Trashing moves the whole directory into the recycle bin as one
+/// unit — a single call with no intermediate progress to report. Returns the
+/// list of failure descriptions (empty on full success).
+pub(super) fn delete_dir_worker(
     path: &Path,
     permanent: bool,
     tx: &mpsc::Sender<AppMessage>,
+    task_id: u64,
 ) -> Vec<String> {
-    // Trashing moves the directory into the recycle bin as one unit: one
-    // operation, instantly restorable. Per-item deletion only pays off for
-    // permanent removal, where depth-first leaf-first ordering is required
-    // (a directory can only be removed after its contents).
-    if !permanent {
-        let _ = tx.blocking_send(AppMessage::DeleteProgress {
-            current: 0,
-            total: 1,
-        });
-        let errors = match delete_item(path, false) {
-            Ok(()) => Vec::new(),
-            Err(e) => vec![e.describe()],
-        };
-        let _ = tx.blocking_send(AppMessage::DeleteProgress {
-            current: 1,
-            total: 1,
-        });
-        return errors;
+    if permanent {
+        return delete_dir_progressive(path, tx, task_id);
     }
+    let errors = match delete_item(path, false) {
+        Ok(()) => vec![],
+        Err(e) if e.is_not_found() => vec![],
+        Err(e) => vec![e.describe()],
+    };
+    // One atomic call has no intermediate progress; a single 1/1 tick lets the
+    // pane show it as done instead of a frozen 0% bar.
+    let _ = tx.blocking_send(AppMessage::DeleteProgress {
+        task_id,
+        current: 1,
+        total: 1,
+    });
+    errors
+}
 
+/// Permanently delete a directory depth-first, leaf-first (a directory can
+/// only be removed after its contents), reporting one `DeleteProgress` tick
+/// per item so the pane's gauge advances instead of sitting at 0%.
+fn delete_dir_progressive(path: &Path, tx: &mpsc::Sender<AppMessage>, task_id: u64) -> Vec<String> {
     let mut items = Vec::new();
     collect_items(path, &mut items);
 
@@ -210,7 +229,11 @@ fn delete_dir_progressive(
     });
 
     let total = items.len() as u64;
-    let _ = tx.blocking_send(AppMessage::DeleteProgress { current: 0, total });
+    let _ = tx.blocking_send(AppMessage::DeleteProgress {
+        task_id,
+        current: 0,
+        total,
+    });
 
     let mut errors = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -222,6 +245,7 @@ fn delete_dir_progressive(
             }
         }
         let _ = tx.blocking_send(AppMessage::DeleteProgress {
+            task_id,
             current: (i + 1) as u64,
             total,
         });
